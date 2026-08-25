@@ -131,7 +131,7 @@ export function HonorariosTable() {
       <div className="bg-zinc-950/80 border border-zinc-800/80 rounded-xl p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-center">
         {/* Seletor de Ano */}
         <div>
-          <label className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider block mb-1.5 flex items-center gap-1">
+          <label className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider mb-1.5 flex items-center gap-1">
             <Calendar className="w-3.5 h-3.5 text-zinc-500" />
             Ano da Tabela
           </label>
@@ -154,7 +154,7 @@ export function HonorariosTable() {
 
         {/* Reajuste Porcentual Automático */}
         <div>
-          <label className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider block mb-1.5 flex items-center gap-1">
+          <label className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider mb-1.5 flex items-center gap-1">
             <TrendingUp className="w-3.5 h-3.5 text-emerald-400" />
             Reajuste Automático (%)
           </label>

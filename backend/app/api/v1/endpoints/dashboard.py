@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends, Query, HTTPException, status
+from fastapi import APIRouter, Depends, Query, HTTPException, status, Request
 from pydantic import BaseModel
 from typing import List, Optional
+from app.core.redis_cache import cache_response
 
 router = APIRouter()
 
@@ -91,7 +92,11 @@ DEFAULT_CRITICAL_TASKS = [
 ]
 
 @router.get("/summary", response_model=DashboardSummaryResponse)
-async def get_dashboard_summary(period: str = Query("Semana", description="Período das métricas: Hoje, Semana, Mês, Ano")):
+@cache_response(ttl_seconds=300, key_prefix="dashboard")
+async def get_dashboard_summary(
+    req: Request,
+    period: str = Query("Semana", description="Período das métricas: Hoje, Semana, Mês, Ano")
+):
     """
     Retorna o resumo consolidado de Métricas Executivas, Audit Logs e Prazos Críticos por período.
     """

@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "clsx": "^2.1.0",
+    "jspdf": "^4.2.1",
     "legaltech-saas": "file:..",
     "lucide-react": "^0.358.0",
     "next": "14.1.3",

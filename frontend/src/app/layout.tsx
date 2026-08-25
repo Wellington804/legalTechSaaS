@@ -28,9 +28,11 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "LexFlow Enterprise - SaaS LegalTech & Hub OAB",
+  title: "LegalFlow Enterprise - SaaS LegalTech & Hub OAB",
   description: "Plataforma SaaS Enterprise para Escritórios de Advocacia, Gestão Jurídica e Iniciação Profissional OAB.",
 };
+
+import CommandPalette from "@/components/ui/command-palette";
 
 export default function RootLayout({
   children,
@@ -42,6 +44,20 @@ export default function RootLayout({
       <body className={`${inter.className} bg-zinc-950 text-zinc-100 min-h-screen`}>
         <UserProvider>
           {children}
+          <CommandPalette />
+          <script
+            dangerouslySetInnerHTML={{
+              __html: `
+                if ('serviceWorker' in navigator) {
+                  window.addEventListener('load', function() {
+                    navigator.serviceWorker.register('/sw.js').catch(function(err) {
+                      console.log('SW registration failed: ', err);
+                    });
+                  });
+                }
+              `
+            }}
+          />
         </UserProvider>
       </body>
     </html>

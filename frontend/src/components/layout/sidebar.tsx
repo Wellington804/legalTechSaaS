@@ -24,7 +24,8 @@ import {
   QrCode,
   Sparkles,
   UserCog,
-  Lock
+  Lock,
+  MessageSquare
 } from "lucide-react";
 import { TenantSwitcher } from "./tenant-switcher";
 import { useUser, UserRole } from "@/context/user-context";
@@ -71,10 +72,20 @@ const navigationItems: NavItem[] = [
     ]
   },
   { name: "Simulador de Audiências", href: "/dashboard/simulator", icon: Sparkles },
+  { name: "Calculadora Judicial", href: "/dashboard/calculadora", icon: Calculator },
+  { name: "Minutas & Contratos IA", href: "/dashboard/templates", icon: FileText },
   { name: "Assinatura Eletrônica", href: "/dashboard/assinaturas", icon: FileSignature },
   { name: "Financeiro & Pix", href: "/dashboard/financial", icon: DollarSign },
   { name: "Governança & Audit Logs", href: "/dashboard/audit", icon: ShieldCheck, allowedRoles: ["SUPER_ADMIN", "SOCIO", "ASSOCIADO"] },
-  { name: "AI Brand Studio", href: "/dashboard/brand", icon: Palette },
+  {
+    name: "AI Brand & WhatsApp Escritório",
+    href: "/dashboard/brand",
+    icon: Palette,
+    subItems: [
+      { name: "Identidade & Timbrado", href: "/dashboard/brand", icon: Palette },
+      { name: "WhatsApp do Escritório", href: "/dashboard/brand", icon: MessageSquare },
+    ]
+  },
   { name: "Portal do Cliente (White-Label)", href: "/portal", icon: Bot },
 ];
 
@@ -91,7 +102,7 @@ export function Sidebar() {
             L
           </div>
           <div>
-            <span className="font-semibold text-sm text-zinc-100 tracking-tight block">LexFlow Enterprise</span>
+            <span className="font-semibold text-sm text-zinc-100 tracking-tight block">LegalFlow Enterprise</span>
             <span className="text-[10px] text-blue-400 font-mono uppercase tracking-wider">Tier 1 LegalTech</span>
           </div>
         </div>

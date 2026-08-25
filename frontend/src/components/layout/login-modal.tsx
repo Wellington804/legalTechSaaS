@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { useUser, defaultUsers, UserRole, UserProfile } from "@/context/user-context";
+import { PLATFORM_CONFIG } from "@/config/platform";
 import { UserCheck, ShieldCheck, X, KeyRound, Building2, User, Award, LogIn, Lock, Sparkles, LogOut, Eye, EyeOff, Check } from "lucide-react";
 
 export function LoginModal() {
@@ -148,7 +149,7 @@ export function LoginModal() {
               className="w-full py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl text-xs flex items-center justify-center space-x-2 shadow-lg shadow-blue-950 cursor-pointer transition-all mt-2"
             >
               <LogIn className="w-4 h-4" />
-              <span>Entrar no LexFlow Enterprise</span>
+              <span>Entrar no LegalFlow Enterprise</span>
             </button>
           </form>
         </div>

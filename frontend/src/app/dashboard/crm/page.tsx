@@ -138,7 +138,7 @@ export default function CRMPage() {
 
   const handleDeleteLead = (leadId: string) => {
     setLeads((prev) => prev.filter((l) => l.id !== leadId));
-    showToast("Oportunidade removida com sucesso.");
+    showToast("Oportunidade removida do CRM.");
   };
 
   const handleUpdateNotes = (leadId: string, notes: string) => {
@@ -151,136 +151,135 @@ export default function CRMPage() {
     showToast("Anotações salvas com sucesso!");
   };
 
+  const handleUpdateLead = (updatedLead: LeadData) => {
+    setLeads((prev) =>
+      prev.map((l) => (l.id === updatedLead.id ? updatedLead : l))
+    );
+    setSelectedLead(updatedLead);
+    showToast(`Oportunidade "${updatedLead.name}" atualizada com sucesso!`);
+  };
+
   return (
-    <div className="space-y-6 relative">
-      {/* Toast Alert */}
+    <div className="p-6 md:p-8 space-y-8 max-w-7xl mx-auto">
+      {/* Toast Notification */}
       {toastMessage && (
-        <div className="fixed top-6 right-6 z-50 bg-emerald-500 text-zinc-950 font-bold px-4 py-3 rounded-xl shadow-2xl flex items-center space-x-2 text-xs animate-in slide-in-from-top duration-300">
-          <Check className="w-4 h-4 stroke-[3]" />
+        <div className="fixed bottom-6 right-6 z-50 bg-emerald-600 border border-emerald-500 text-white px-4 py-3 rounded-xl shadow-xl flex items-center space-x-2 text-xs font-semibold animate-in slide-in-from-bottom-5 duration-200">
+          <Sparkles className="w-4 h-4 text-emerald-200" />
           <span>{toastMessage}</span>
         </div>
       )}
 
-      {/* Top Banner Header */}
-      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-xl">
+      {/* Header */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-zinc-800 pb-6">
         <div>
-          <div className="flex items-center space-x-2 text-xs text-blue-400 font-mono uppercase mb-1">
-            <Users className="w-4 h-4" />
-            <span>Módulo 2: CRM & Inbox Unificada</span>
+          <div className="flex items-center space-x-2">
+            <h1 className="text-2xl font-bold tracking-tight text-zinc-100">
+              CRM & Funil de Vendas Omnichannel
+            </h1>
+            <span className="px-2.5 py-0.5 bg-blue-950 text-blue-400 border border-blue-800 text-[10px] font-mono rounded-full font-bold">
+              PRO
+            </span>
           </div>
-          <h1 className="text-2xl font-extrabold text-zinc-100 tracking-tight">
-            Gestão Omnichannel de Oportunidades
-          </h1>
-          <p className="text-xs text-zinc-400 mt-1 max-w-xl">
-            Inbox integrada de WhatsApp, E-mail e formulários públicos com pipeline Kanban para captação e conversão de novos clientes.
+          <p className="text-xs text-zinc-400 mt-1">
+            Gestão de leads, propostas e captação de clientes da advocacia em tempo real.
           </p>
         </div>
 
         <button
           onClick={() => setIsNewLeadModalOpen(true)}
-          className="px-4 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-blue-950 transition-all flex items-center space-x-2 shrink-0 hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
+          className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-xs shadow-lg shadow-blue-950 transition-all flex items-center space-x-2 self-start md:self-auto"
         >
           <Plus className="w-4 h-4" />
           <span>Novo Lead / Oportunidade</span>
         </button>
       </div>
 
-      {/* KPI Cards Grid */}
+      {/* Metrics Bar */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex items-center justify-between">
+        <div className="bg-zinc-950 border border-zinc-800/80 rounded-2xl p-4 flex items-center justify-between">
           <div>
-            <span className="text-[11px] font-medium text-zinc-400 block">Total em Pipeline</span>
-            <span className="text-xl font-black font-mono text-blue-400 mt-0.5 block">
+            <span className="text-[11px] text-zinc-500 font-mono uppercase">VGV Em Prospecção</span>
+            <h3 className="text-xl font-extrabold text-zinc-100 mt-0.5 font-mono">
               {formatCurrency(totalPipeline)}
-            </span>
+            </h3>
           </div>
-          <div className="p-2.5 bg-blue-950/80 border border-blue-800/50 rounded-xl text-blue-400">
+          <div className="w-10 h-10 rounded-xl bg-blue-600/10 border border-blue-500/20 text-blue-400 flex items-center justify-center">
             <DollarSign className="w-5 h-5" />
           </div>
         </div>
 
-        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex items-center justify-between">
+        <div className="bg-zinc-950 border border-zinc-800/80 rounded-2xl p-4 flex items-center justify-between">
           <div>
-            <span className="text-[11px] font-medium text-zinc-400 block">Em Prospecção Ativa</span>
-            <span className="text-xl font-black font-mono text-zinc-100 mt-0.5 block">
-              {activeCount} Oportunidades
-            </span>
+            <span className="text-[11px] text-zinc-500 font-mono uppercase">Receita Fechada</span>
+            <h3 className="text-xl font-extrabold text-emerald-400 mt-0.5 font-mono">
+              {formatCurrency(totalFechado)}
+            </h3>
           </div>
-          <div className="p-2.5 bg-amber-950/80 border border-amber-800/50 rounded-xl text-amber-400">
-            <Users className="w-5 h-5" />
-          </div>
-        </div>
-
-        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex items-center justify-between">
-          <div>
-            <span className="text-[11px] font-medium text-zinc-400 block">Ticket Médio Proposta</span>
-            <span className="text-xl font-black font-mono text-zinc-100 mt-0.5 block">
-              {formatCurrency(ticketMedio)}
-            </span>
-          </div>
-          <div className="p-2.5 bg-purple-950/80 border border-purple-800/50 rounded-xl text-purple-400">
+          <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center">
             <TrendingUp className="w-5 h-5" />
           </div>
         </div>
 
-        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex items-center justify-between">
+        <div className="bg-zinc-950 border border-zinc-800/80 rounded-2xl p-4 flex items-center justify-between">
           <div>
-            <span className="text-[11px] font-medium text-zinc-400 block">Faturamento Fechado</span>
-            <span className="text-xl font-black font-mono text-emerald-400 mt-0.5 block">
-              {formatCurrency(totalFechado)}
-            </span>
+            <span className="text-[11px] text-zinc-500 font-mono uppercase">Leads Ativos</span>
+            <h3 className="text-xl font-extrabold text-zinc-100 mt-0.5 font-mono">
+              {activeCount} <span className="text-xs font-normal text-zinc-500">em progresso</span>
+            </h3>
           </div>
-          <div className="p-2.5 bg-emerald-950/80 border border-emerald-800/50 rounded-xl text-emerald-400">
-            <CheckCircle2 className="w-5 h-5" />
+          <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/20 text-purple-400 flex items-center justify-center">
+            <Users className="w-5 h-5" />
+          </div>
+        </div>
+
+        <div className="bg-zinc-950 border border-zinc-800/80 rounded-2xl p-4 flex items-center justify-between">
+          <div>
+            <span className="text-[11px] text-zinc-500 font-mono uppercase">Ticket Médio</span>
+            <h3 className="text-xl font-extrabold text-amber-400 mt-0.5 font-mono">
+              {formatCurrency(ticketMedio)}
+            </h3>
+          </div>
+          <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center">
+            <Award className="w-5 h-5" />
           </div>
         </div>
       </div>
 
       {/* Filter Bar */}
-      <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 bg-zinc-950 border border-zinc-800/80 rounded-2xl p-3">
         {/* Search */}
-        <div className="relative w-full md:w-80">
-          <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500" />
+        <div className="relative flex-1 max-w-md">
+          <Search className="w-4 h-4 text-zinc-500 absolute left-3 top-1/2 -translate-y-1/2" />
           <input
             type="text"
-            placeholder="Buscar por cliente ou assunto..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-10 pr-9 py-2 text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-blue-500"
+            placeholder="Buscar por cliente, empresa ou assunto do caso..."
+            className="w-full bg-zinc-900 border border-zinc-800 rounded-xl py-2 pl-9 pr-4 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-blue-500 transition-colors"
           />
-          {search && (
-            <button
-              onClick={() => setSearch("")}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
         </div>
 
-        {/* Channel Tabs */}
-        <div className="flex items-center space-x-1.5 overflow-x-auto w-full md:w-auto pb-1 md:pb-0 scrollbar-none">
-          <span className="text-[11px] font-semibold text-zinc-500 mr-1 flex items-center gap-1">
-            <Filter className="w-3 h-3" /> Origem:
-          </span>
-          {channels.map((chn) => (
+        {/* Channel Filter Badges */}
+        <div className="flex items-center space-x-1.5 overflow-x-auto pb-1 sm:pb-0">
+          <Filter className="w-3.5 h-3.5 text-zinc-500 mr-1 shrink-0" />
+          {channels.map((ch) => (
             <button
-              key={chn}
-              onClick={() => setSelectedChannel(chn)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all ${
-                selectedChannel === chn
-                  ? "bg-blue-600 text-white shadow-sm font-semibold"
-                  : "bg-zinc-950 text-zinc-400 border border-zinc-800 hover:bg-zinc-800 hover:text-zinc-200"
+              key={ch}
+              onClick={() => setSelectedChannel(ch)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${
+                selectedChannel === ch
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "bg-zinc-900 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 border border-zinc-800"
               }`}
             >
-              {chn}
+              {ch}
             </button>
           ))}
         </div>
       </div>
 
       {/* Kanban Board */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 items-start">
         {columns.map((col) => {
           const colLeads = filteredLeads.filter((l) => l.stageId === col.id);
           const colTotal = colLeads.reduce((acc, l) => acc + l.value, 0);
@@ -288,15 +287,16 @@ export default function CRMPage() {
           return (
             <div
               key={col.id}
-              className="bg-zinc-900/60 border border-zinc-800 rounded-2xl p-4 flex flex-col h-[640px] shadow-lg"
+              className="bg-zinc-900/60 border border-zinc-800/80 rounded-2xl p-4 min-h-[500px] flex flex-col space-y-4"
             >
-              <div className="flex items-center justify-between border-b border-zinc-800 pb-3 mb-3">
+              {/* Column Header */}
+              <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
                 <div>
                   <h3 className="text-xs font-bold text-zinc-200 uppercase tracking-wider">
                     {col.title}
                   </h3>
-                  <span className="text-[10px] text-zinc-500 font-mono block mt-0.5">
-                    Total: {formatCurrency(colTotal)}
+                  <span className="text-[10px] text-zinc-500 font-mono mt-0.5 block">
+                    VGV: {formatCurrency(colTotal)}
                   </span>
                 </div>
                 <span className="px-2.5 py-0.5 bg-zinc-950 border border-zinc-800 text-xs font-mono text-blue-400 rounded-full font-bold">
@@ -373,8 +373,8 @@ export default function CRMPage() {
         onUpdateStage={handleUpdateStage}
         onDeleteLead={handleDeleteLead}
         onUpdateNotes={handleUpdateNotes}
+        onUpdateLead={handleUpdateLead}
       />
     </div>
   );
 }
-

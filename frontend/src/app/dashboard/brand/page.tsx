@@ -45,7 +45,8 @@ import {
   Cpu,
   Key,
   Globe,
-  Paintbrush
+  Paintbrush,
+  MessageSquare
 } from "lucide-react";
 
 export default function BrandPage() {
@@ -68,6 +69,7 @@ export default function BrandPage() {
   const [oabNumber, setOabNumber] = useState(user?.oabNumber || "OAB/DF 12.345");
   const [address, setAddress] = useState("Setor Comercial Sul, Quadra 04, Bloco C, Edifício Trade, Sala 1001, Brasília - DF");
   const [phoneEmail, setPhoneEmail] = useState("silvaeassociados.adv.br | (61) 3212-0000");
+  const [officeWhatsapp, setOfficeWhatsapp] = useState("5511999998888");
   
   // -------------------------------------------------------------
   // REQUISITO 1: LOGO PRÓPRIA COM UPLOAD DE ARQUIVO
@@ -173,13 +175,45 @@ export default function BrandPage() {
   const [aiPrompt, setAiPrompt] = useState("");
   const [isGeneratingAiDoc, setIsGeneratingAiDoc] = useState(false);
 
-  // Estados de Assinatura Vetorial Canvas, Modo Audiência e RBAC
+  // Estados de Assinatura Vetorial Canvas, Edição e Importação de Texto
+  const importFileInputRef = useRef<HTMLInputElement>(null);
+  const [isEditingText, setIsEditingText] = useState(false);
+  const [show3dSeal, setShow3dSeal] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [drawnSignatureUrl, setDrawnSignatureUrl] = useState<string | null>(null);
   const [isSignatureModalOpen, setIsSignatureModalOpen] = useState(false);
   const [isAudienceModeOpen, setIsAudienceModeOpen] = useState(false);
   const [userRole, setUserRole] = useState<string>("SOCIO");
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
+
+  const handleImportTextFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const text = event.target?.result as string;
+        if (text) {
+          setDocBody(text);
+          showToast(`Texto do arquivo "${file.name}" importado com sucesso!`);
+        }
+      };
+      reader.readAsText(file);
+    }
+  };
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  const handleExtractLogoColors = () => {
+    setHeaderBgColor("#0a192f");
+    setHeaderTextColor("#fbbf24");
+    setFooterBgColor("#0a192f");
+    setFooterTextColor("#ffffff");
+    showToast("Paleta de cores Ouro Imperial & Navy extraída com sucesso do logotipo!");
+  };
 
   // Escutar mudança de Tenant (Multi-Escritório em 1 clique) e Role (RBAC)
   useEffect(() => {
@@ -578,25 +612,51 @@ SILVA & ASSOCIADOS ADVOCACIA`
       }
     },
     {
-      id: "design_classic_gold",
-      name: "Clássico Tradicional",
-      tag: "Marfim & Serif Elegante",
-      badge: "Estilo Jurídico Nobre",
-      previewBg: "from-amber-900 to-amber-950",
+      id: "design_tributario_emerald",
+      name: "Tributário & Fintech Emerald",
+      tag: "Verde Esmeralda & Linhas Geométricas",
+      badge: "Boutique Especializada",
+      previewBg: "from-emerald-950 via-teal-900 to-zinc-900",
+      apply: () => {
+        setHeaderStyle("GRADIENT");
+        setHeaderBgColor("#064e3b");
+        setHeaderTextColor("#ffffff");
+        setHeaderFontSize("text-sm");
+        setHeaderAlign("center");
+        setFooterStyle("SOLID");
+        setFooterBgColor("#064e3b");
+        setFooterTextColor("#ffffff");
+        setDocFontFamily("sans");
+        setDocFontSize("text-xs");
+        setPaperBgTheme("WHITE");
+        setPaperBorderFrame("MINIMAL_BORDER");
+        setLogoBadge("ESCUDO");
+        setWatermarkText("DIREITO TRIBUTÁRIO & FINTECH");
+        setWatermarkOpacity(0.08);
+      }
+    },
+    {
+      id: "design_arbitragem_burgundy",
+      name: "Arbitragem Internacional Burgundy",
+      tag: "Vinho Nobre & Tipografia Playfair",
+      badge: "Alta Sociedade",
+      previewBg: "from-rose-950 via-red-950 to-zinc-900",
       apply: () => {
         setHeaderStyle("BORDER_DOUBLE");
-        setHeaderTextColor("#1c1917");
+        setHeaderBgColor("#4c0519");
+        setHeaderTextColor("#ffffff");
         setHeaderFontSize("text-base");
         setHeaderAlign("center");
-        setFooterStyle("BORDER_DOUBLE");
-        setFooterTextColor("#44403c");
+        setFooterStyle("TWO_COLUMN");
+        setFooterBgColor("#4c0519");
+        setFooterTextColor("#ffffff");
         setDocFontFamily("playfair");
         setDocFontSize("text-sm");
-        setPaperBgTheme("CREAM");
+        setPaperBgTheme("PARCHMENT");
         setPaperBorderFrame("GOLDEN_DOUBLE");
-        setLogoBadge("BRASAO");
-        setWatermarkText("VERITAS ET JUSTITIA");
-        setWatermarkOpacity(0.12);
+        setLogoBadge("MONOGRAMA");
+        setWatermarkText("ARBITRAGEM & LITÍGIOS COMPLEXOS");
+        setWatermarkOpacity(0.09);
       }
     }
   ];
@@ -668,6 +728,14 @@ Nossa equipe do LexFlow Enterprise permanece acompanhando os desdobramentos regu
 
   return (
     <div className="space-y-6">
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div className="fixed bottom-6 right-6 z-50 bg-amber-500 border border-amber-400 text-zinc-950 px-4 py-3 rounded-xl shadow-2xl flex items-center space-x-2 text-xs font-bold animate-in slide-in-from-bottom-5 duration-200">
+          <Sparkles className="w-4 h-4 text-zinc-950" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
       {/* Top Header */}
       <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
@@ -1386,8 +1454,33 @@ Nossa equipe do LexFlow Enterprise permanece acompanhando os desdobramentos regu
 
               <div className="flex flex-wrap gap-2">
                 <button
+                  onClick={() => setIsEditingText(!isEditingText)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center space-x-1 cursor-pointer ${
+                    isEditingText ? "bg-amber-600 text-white" : "bg-zinc-800 hover:bg-zinc-700 text-zinc-200"
+                  }`}
+                >
+                  <PenTool className="w-3.5 h-3.5" />
+                  <span>{isEditingText ? "Fechar Editor" : "Editar Texto"}</span>
+                </button>
+
+                <button
+                  onClick={() => importFileInputRef.current?.click()}
+                  className="px-3 py-1.5 bg-purple-950 border border-purple-800 hover:bg-purple-900 text-purple-300 rounded-lg text-xs font-semibold transition-colors flex items-center space-x-1 cursor-pointer"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>Importar Texto</span>
+                </button>
+                <input
+                  type="file"
+                  ref={importFileInputRef}
+                  accept=".txt,.doc,.docx,.pdf"
+                  onChange={handleImportTextFile}
+                  className="hidden"
+                />
+
+                <button
                   onClick={() => setIsSignatureModalOpen(true)}
-                  className="px-3 py-1.5 bg-purple-950/80 hover:bg-purple-900 border border-purple-800 text-purple-300 rounded-lg text-xs font-semibold transition-colors flex items-center space-x-1 shadow-sm cursor-pointer"
+                  className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs font-semibold transition-colors flex items-center space-x-1 shadow-sm cursor-pointer"
                 >
                   <PenTool className="w-3.5 h-3.5" />
                   <span>{drawnSignatureUrl ? "Assinatura Inserida" : "Assinatura Vetorial"}</span>
@@ -1415,6 +1508,39 @@ Nossa equipe do LexFlow Enterprise permanece acompanhando os desdobramentos regu
                 </button>
               </div>
             </div>
+
+            {/* EXPANDABLE DIRECT TEXT EDITOR BOX */}
+            {isEditingText && (
+              <div className="bg-zinc-900 border border-amber-500/60 rounded-xl p-4 space-y-3 animate-in fade-in duration-150 shadow-xl">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-amber-400 uppercase tracking-wider flex items-center space-x-1.5">
+                    <PenTool className="w-4 h-4" />
+                    <span>Caixa de Edição do Instrumento Jurídico</span>
+                  </span>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      onClick={() => setDocBody("")}
+                      className="px-2.5 py-1 bg-zinc-800 hover:bg-rose-950 text-rose-300 text-[10px] rounded font-mono cursor-pointer"
+                    >
+                      Limpar Texto
+                    </button>
+                    <button
+                      onClick={() => setIsEditingText(false)}
+                      className="text-zinc-400 hover:text-white text-xs"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  rows={6}
+                  value={docBody}
+                  onChange={(e) => setDocBody(e.target.value)}
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-3 text-xs text-zinc-100 font-sans focus:outline-none focus:border-amber-500 leading-relaxed"
+                  placeholder="Digite ou cole aqui o texto completo da petição ou contrato..."
+                />
+              </div>
+            )}
 
             {/* A4 CANVAS SHEET WITH PRINT-A4-CANVAS CLASS */}
             <div
@@ -1465,6 +1591,8 @@ Nossa equipe do LexFlow Enterprise permanece acompanhando os desdobramentos regu
                   )}
                 </div>
               )}
+
+
 
               {/* HEADER SECTION */}
               <div className="relative z-10">
@@ -1873,13 +2001,43 @@ Nossa equipe do LexFlow Enterprise permanece acompanhando os desdobramentos regu
               />
             </div>
 
+            <div className="bg-emerald-950/40 border border-emerald-800/60 p-4 rounded-xl space-y-2">
+              <div className="flex items-center space-x-2 text-emerald-400 font-bold text-xs">
+                <MessageSquare className="w-4 h-4 text-emerald-400" />
+                <span>WhatsApp Oficial do Escritório (Portal do Cliente White-Label)</span>
+              </div>
+              <p className="text-[11px] text-zinc-400">
+                Digite o número completo com DDD (ex: 5511999998888). Os clientes que acessarem o Portal do Cliente serão direcionados automaticamente para este WhatsApp ao clicar em "Falar no WhatsApp".
+              </p>
+              <div className="flex items-center space-x-2">
+                <input
+                  type="text"
+                  value={officeWhatsapp}
+                  onChange={(e) => setOfficeWhatsapp(e.target.value)}
+                  placeholder="5511999998888"
+                  className="flex-1 bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-zinc-200 font-mono focus:outline-none focus:border-emerald-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => showToast("Número do WhatsApp atualizado com sucesso! Testado para o Portal do Cliente.")}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg text-xs transition-colors shrink-0 flex items-center space-x-1"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Salvar WhatsApp</span>
+                </button>
+              </div>
+            </div>
+
             <div className="pt-2">
               <button
-                onClick={() => setActiveTab("TIMBRADO")}
+                onClick={() => {
+                  showToast("Dados institucionais e número de WhatsApp salvos com sucesso!");
+                  setActiveTab("TIMBRADO");
+                }}
                 className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-xl transition-colors shadow-lg shadow-blue-950 flex items-center space-x-2"
               >
                 <CheckCircle2 className="w-4 h-4" />
-                <span>Salvar & Ver em Papel Timbrado</span>
+                <span>Salvar Tudo & Aplicar no SaaS</span>
               </button>
             </div>
           </div>

@@ -1,63 +1,74 @@
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.database import get_db
-from app.models.conflict import ConflictCheck
-from app.services.audit_service import AuditService
+from typing import List, Optional
+import hashlib
+import time
 
 router = APIRouter()
 
 class ConflictCheckRequest(BaseModel):
     entity_name: str
-    cpf_cnpj: str = None
+    cpf_cnpj: Optional[str] = None
+    entity_type: Optional[str] = "Pessoa Jurídica (PJ)"
+    role: Optional[str] = "Cliente Potencial"
     check_type: str = "GLOBAL_ETHICAL"
 
 @router.post("/check")
 async def run_conflict_check(
     req: Request,
-    check_in: ConflictCheckRequest,
-    db: AsyncSession = Depends(get_db)
+    check_in: ConflictCheckRequest
 ):
-    tenant_id = getattr(req.state, "tenant_id", "default-tenant")
-
-    # Mocked intelligent ethical search simulation
+    # Simulated intelligent search matching OAB Arts. 17-22
+    name_lower = check_in.entity_name.lower()
     has_conflict = False
-    risk_score = 0.05
+    status = "SAFE"
+    risk_score = 0.0
     matched_records = []
+    notes = "Nenhum vínculo ético adverso encontrado na base do escritório ou nos processos cadastrados."
+    oab_article = "Arts. 17 e 20 da Lei 8.906/94"
 
-    # Simple demonstration logic
-    if "conflito" in check_in.entity_name.lower():
+    if "carlos" in name_lower or "mendonça" in name_lower or "conflict" in name_lower:
         has_conflict = True
-        risk_score = 0.85
-        matched_records = [{"party": "Empresa Opponent Ltda", "role": "Réu", "process_no": "0001234-88.2025.8.02.0001"}]
+        status = "CONFLICT"
+        risk_score = 0.98
+        matched_records = [
+            {
+                "party": "Carlos Eduardo de Mendonça",
+                "role": "Réu / Polo Passivo",
+                "process_no": "Proc. 0001234-88.2025.8.26.0000",
+                "court": "3ª Vara Cível de São Paulo",
+                "link_type": "Parte contrária em litígio cível vigente patrocinado pela banca."
+            }
+        ]
+        notes = "IMPEDIMENTO ÉTICO ABSOLUTO (Art. 18 OAB): A banca já atua no polo oposto em litígio vigente. Vedada aceitação do mandato."
+    elif "silva" in name_lower or "construtora" in name_lower or "warning" in name_lower:
+        has_conflict = False
+        status = "WARNING"
+        risk_score = 0.45
+        matched_records = [
+            {
+                "party": "Silva Empreendimentos S/A",
+                "role": "Sócio Minoritário",
+                "process_no": "Proc. 1004589-12.2024.8.26.0100",
+                "court": "2ª Vara do Trabalho de SP",
+                "link_type": "Sócio minoritário consta em polo passivo de ação trabalhista patrocinada pela banca."
+            }
+        ]
+        notes = "ALERTA DE SEGREDAMENTO ÉTICO (Art. 19 OAB): Sigilo de ex-cliente ativo nos últimos 5 anos. Requer anuência expressa dos sócios."
 
-    record = ConflictCheck(
-        tenant_id=tenant_id,
-        entity_name=check_in.entity_name,
-        cpf_cnpj=check_in.cpf_cnpj,
-        check_type=check_in.check_type,
-        has_conflict=has_conflict,
-        risk_score=risk_score,
-        matched_records=matched_records,
-        checked_by_user_id="user-demo"
-    )
-    db.add(record)
-    await db.commit()
-    await db.refresh(record)
-
-    await AuditService.log_action(
-        db=db,
-        tenant_id=tenant_id,
-        user_id="user-demo",
-        action="CONFLICT_CHECK_EXECUTED",
-        resource_type="conflict_checks",
-        resource_id=record.id,
-        details={"entity": check_in.entity_name, "has_conflict": has_conflict}
-    )
+    # Generate SHA-256 proof hash
+    raw_proof = f"{check_in.entity_name}:{check_in.cpf_cnpj}:{time.time()}"
+    sha256_hash = hashlib.sha256(raw_proof.encode()).hexdigest().upper()
 
     return {
         "status": "success",
+        "ethical_status": status,
         "has_conflict": has_conflict,
         "risk_score": risk_score,
-        "matched_records": matched_records
+        "matched_records": matched_records,
+        "notes": notes,
+        "oab_article": oab_article,
+        "sha256_hash": sha256_hash,
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
     }
+
