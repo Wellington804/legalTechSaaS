@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import { useUser } from "@/context/user-context";
 import {
   Palette,
@@ -49,8 +50,20 @@ import {
   MessageSquare
 } from "lucide-react";
 
-export default function BrandPage() {
+function BrandPageContent() {
+  const searchParams = useSearchParams();
   const [activeTab, setActiveTab] = useState<"TIMBRADO" | "POSTS" | "CONFIG">("TIMBRADO");
+
+  useEffect(() => {
+    const tabParam = searchParams.get("tab");
+    if (tabParam === "CONFIG" || tabParam === "whatsapp") {
+      setActiveTab("CONFIG");
+    } else if (tabParam === "TIMBRADO") {
+      setActiveTab("TIMBRADO");
+    } else if (tabParam === "POSTS") {
+      setActiveTab("POSTS");
+    }
+  }, [searchParams]);
   
   // Clean Subtabs Structure (4 columns, 0 scrollbar)
   const [controlSubTab, setControlSubTab] = useState<"DESIGN_IA" | "CABECALHO_RODAPE" | "MARCA" | "PAPEL">("DESIGN_IA");
@@ -777,8 +790,8 @@ Nossa equipe do LexFlow Enterprise permanece acompanhando os desdobramentos regu
               activeTab === "CONFIG" ? "bg-blue-600 text-white shadow-md" : "text-zinc-400 hover:text-zinc-200"
             }`}
           >
-            <Settings className="w-4 h-4" />
-            <span>Dados Institucionais</span>
+            <MessageSquare className="w-4 h-4 text-emerald-400" />
+            <span>WhatsApp & Dados Institucionais</span>
           </button>
         </div>
       </div>
@@ -2164,5 +2177,13 @@ Nossa equipe do LexFlow Enterprise permanece acompanhando os desdobramentos regu
         </div>
       )}
     </div>
+  );
+}
+
+export default function BrandPage() {
+  return (
+    <React.Suspense fallback={<div className="p-6 text-zinc-400 text-xs font-mono">Carregando Brand Studio...</div>}>
+      <BrandPageContent />
+    </React.Suspense>
   );
 }

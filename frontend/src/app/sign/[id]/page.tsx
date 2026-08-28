@@ -386,7 +386,7 @@ function SignDocumentContent() {
 
             {/* Simulated Document Sheet */}
             <div className="bg-zinc-950 border border-zinc-800 p-6 rounded-xl space-y-4 font-serif text-xs text-zinc-300 leading-relaxed max-h-60 overflow-y-auto">
-              <p className="font-sans text-[10px] text-zinc-500 font-mono">HASH SHA-256 DO DOCUMENTO: {docInfo.hashOriginal}</p>
+              <p className="text-[10px] text-zinc-500 font-mono">HASH SHA-256 DO DOCUMENTO: {docInfo.hashOriginal}</p>
               <h3 className="font-sans font-bold text-zinc-100 text-sm border-b border-zinc-800 pb-2">CLÁUSULAS DO CONTRATO</h3>
               <p>
                 Pelo presente instrumento particular, de um lado o contratante qualificado e de outro o escritório advocatício emissor, pactuam as obrigações e condições pactuadas.

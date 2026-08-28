@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.middleware import TenantMiddleware
 from app.core.database import engine, Base
+import app.models
 from app.api.v1.router import api_router
 
 app = FastAPI(

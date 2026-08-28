@@ -34,10 +34,10 @@ export function LoginModal() {
     setIsLoginModalOpen(false);
   };
 
-  const handleDirectLogin = (e: React.FormEvent) => {
+  const handleDirectLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    const success = login(inputEmail || selectedUser.email);
-    if (success) {
+    const res = await login(inputEmail || selectedUser.email, inputPassword);
+    if (res.success) {
       setIsLoginModalOpen(false);
     }
   };

@@ -17,7 +17,7 @@ class DashboardMetric(Base):
     contratos_change = Column(String, nullable=False)
     faturamento = Column(Float, nullable=False)
     faturamento_change = Column(String, nullable=False)
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 class CriticalTask(Base):
     __tablename__ = "critical_tasks"
@@ -29,4 +29,4 @@ class CriticalTask(Base):
     deadline = Column(String, nullable=False)
     priority = Column(String, nullable=False) # Alta, Média, Normal
     color = Column(String, nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

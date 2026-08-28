@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,29 +14,41 @@ class UserRegister(BaseModel):
     full_name: str
     email: EmailStr
     password: str
-    tenant_name: str
-    oab_number: str = None
-    oab_uf: str = None
+    role: Optional[str] = "lawyer" # admin, socio, associado, estagiario, secretaria
+    tenant_name: Optional[str] = "Demo Law Advocacia Enterprise"
+    oab_number: Optional[str] = None
+    oab_uf: Optional[str] = None
 
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     tenant_id: str
+    user_id: str
     user_name: str
+    email: str
+    role: str
+    oab_number: Optional[str] = None
+    oab_uf: Optional[str] = None
 
 @router.post("/register", response_model=TokenResponse)
 async def register(user_in: UserRegister, db: AsyncSession = Depends(get_db)):
     # Check if user already exists
     result = await db.execute(select(User).where(User.email == user_in.email))
     if result.scalars().first():
-        raise HTTPException(status_code=400, detail="E-mail ja cadastrado no sistema.")
+        raise HTTPException(status_code=400, detail="E-mail já cadastrado no sistema.")
 
-    # Create new tenant
-    tenant_slug = user_in.tenant_name.lower().replace(" ", "-")
-    tenant = Tenant(name=user_in.tenant_name, slug=tenant_slug)
-    db.add(tenant)
-    await db.commit()
-    await db.refresh(tenant)
+    # Get or create tenant
+    tenant_name = user_in.tenant_name or "Demo Law Advocacia Enterprise"
+    tenant_slug = tenant_name.lower().replace(" ", "-")
+    
+    tenant_res = await db.execute(select(Tenant).where(Tenant.slug == tenant_slug))
+    tenant = tenant_res.scalars().first()
+    
+    if not tenant:
+        tenant = Tenant(name=tenant_name, slug=tenant_slug)
+        db.add(tenant)
+        await db.commit()
+        await db.refresh(tenant)
 
     # Create user
     user = User(
@@ -43,7 +56,7 @@ async def register(user_in: UserRegister, db: AsyncSession = Depends(get_db)):
         full_name=user_in.full_name,
         email=user_in.email,
         hashed_password=get_password_hash(user_in.password),
-        role="admin",
+        role=user_in.role or "lawyer",
         oab_number=user_in.oab_number,
         oab_uf=user_in.oab_uf
     )
@@ -55,7 +68,12 @@ async def register(user_in: UserRegister, db: AsyncSession = Depends(get_db)):
     return TokenResponse(
         access_token=token,
         tenant_id=tenant.id,
-        user_name=user.full_name
+        user_id=user.id,
+        user_name=user.full_name,
+        email=user.email,
+        role=user.role,
+        oab_number=user.oab_number,
+        oab_uf=user.oab_uf
     )
 
 class UserLogin(BaseModel):
@@ -67,11 +85,17 @@ async def login(login_in: UserLogin, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == login_in.email))
     user = result.scalars().first()
     if not user or not verify_password(login_in.password, user.hashed_password):
-        raise HTTPException(status_code=401, detail="Credenciais invalidas.")
+        raise HTTPException(status_code=401, detail="Credenciais inválidas.")
 
     token = create_access_token(subject=user.id, tenant_id=user.tenant_id)
     return TokenResponse(
         access_token=token,
         tenant_id=user.tenant_id,
-        user_name=user.full_name
+        user_id=user.id,
+        user_name=user.full_name,
+        email=user.email,
+        role=user.role,
+        oab_number=user.oab_number,
+        oab_uf=user.oab_uf
     )
+

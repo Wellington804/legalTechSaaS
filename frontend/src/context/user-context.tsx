@@ -10,6 +10,7 @@ export interface UserProfile {
   oabNumber: string;
   role: UserRole;
   email: string;
+  password?: string;
   officeName: string;
   avatarInitials: string;
   status: "ACTIVE" | "INACTIVE";
@@ -23,6 +24,7 @@ export const defaultUsers: UserProfile[] = [
     oabNumber: "OAB/SP 00.001-MASTER",
     role: "SUPER_ADMIN",
     email: "super.admin@lexflow.law",
+    password: "lawyer123",
     officeName: "LEXFLOW ENTERPRISE MASTER HQ",
     avatarInitials: "WS",
     status: "ACTIVE",
@@ -33,7 +35,8 @@ export const defaultUsers: UserProfile[] = [
     name: "Dra. Carolina Silva",
     oabNumber: "OAB/DF 12.345",
     role: "SOCIO",
-    email: "carolina@silvaeassociados.adv.br",
+    email: "carolina.silva@lexflow.law",
+    password: "lawyer123",
     officeName: "SILVA & ASSOCIADOS ADVOCACIA",
     avatarInitials: "CS",
     status: "ACTIVE",
@@ -44,7 +47,8 @@ export const defaultUsers: UserProfile[] = [
     name: "Dr. Alexandre Rossi",
     oabNumber: "OAB/SP 458.912",
     role: "ASSOCIADO",
-    email: "alexandre@rossi.adv.br",
+    email: "alexandre.rossi@lexflow.law",
+    password: "lawyer123",
     officeName: "ROSSI & ASSOCIADOS ADVOCACIA",
     avatarInitials: "AR",
     status: "ACTIVE",
@@ -55,7 +59,8 @@ export const defaultUsers: UserProfile[] = [
     name: "Lucas Mendes (Estagiário)",
     oabNumber: "OAB/DF 99.111-E",
     role: "ESTAGIARIO",
-    email: "lucas.estagio@silvaeassociados.adv.br",
+    email: "lucas.mendes@lexflow.law",
+    password: "lawyer123",
     officeName: "SILVA & ASSOCIADOS ADVOCACIA",
     avatarInitials: "LM",
     status: "ACTIVE",
@@ -66,7 +71,8 @@ export const defaultUsers: UserProfile[] = [
     name: "Mariana Costa (Secretaria)",
     oabNumber: "SEC-9082",
     role: "SECRETARIA",
-    email: "atendimento@silvaeassociados.adv.br",
+    email: "mariana.costa@lexflow.law",
+    password: "lawyer123",
     officeName: "SILVA & ASSOCIADOS ADVOCACIA",
     avatarInitials: "MC",
     status: "ACTIVE",
@@ -85,7 +91,8 @@ interface UserContextType {
   updateUserRole: (userId: string, newRole: UserRole) => void;
   toggleUserStatus: (userId: string) => void;
   deleteUser: (userId: string) => void;
-  login: (email: string) => boolean;
+  login: (email: string, password?: string) => Promise<{ success: boolean; message?: string }>;
+  registerUser: (data: { name: string; email: string; password: string; role?: string; oabNumber?: string; officeName?: string }) => Promise<{ success: boolean; message?: string }>;
   logout: () => void;
   isLoginModalOpen: boolean;
   setIsLoginModalOpen: (open: boolean) => void;
@@ -197,23 +204,170 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     saveUsersList(updatedList);
   };
 
-  const login = (email: string) => {
+  const login = async (email: string, password?: string): Promise<{ success: boolean; message?: string }> => {
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+      const res = await fetch(`${apiUrl}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password: password || "lawyer123" }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const roleMap: Record<string, UserRole> = {
+          super_admin: "SUPER_ADMIN",
+          admin: "SUPER_ADMIN",
+          socio: "SOCIO",
+          associado: "ASSOCIADO",
+          estagiario: "ESTAGIARIO",
+          secretaria: "SECRETARIA",
+        };
+        const initials = data.user_name
+          ? data.user_name.split(" ").filter(Boolean).slice(0, 2).map((n: string) => n[0].toUpperCase()).join("")
+          : "ADV";
+
+        const loggedUser: UserProfile = {
+          id: data.user_id || `user-${Date.now()}`,
+          name: data.user_name,
+          email: data.email,
+          role: roleMap[data.role?.toLowerCase()] || "ASSOCIADO",
+          oabNumber: data.oab_number ? `OAB/${data.oab_uf || 'SP'} ${data.oab_number}` : "OAB Registrada",
+          officeName: "SILVA & ASSOCIADOS ADVOCACIA",
+          avatarInitials: initials,
+          status: "ACTIVE",
+          createdAt: new Date().toLocaleDateString("pt-BR"),
+        };
+
+        setUser(loggedUser);
+        if (typeof window !== "undefined") {
+          localStorage.setItem("lexflow_jwt_token", data.access_token);
+        }
+        return { success: true };
+      }
+    } catch (err) {
+      console.warn("Backend API offline ou inacessível, utilizando validação local:", err);
+    }
+
+    // Validação local de fallback
     const found = usersList.find((u) => u.email.toLowerCase() === email.toLowerCase());
     if (found) {
+      if (password && found.password && found.password !== password) {
+        return { success: false, message: "Senha de acesso incorreta." };
+      }
       setUser(found);
-      return true;
+      return { success: true };
     }
-    // Se não encontrar, entra como Super Usuário Master por padrão
-    setUser(defaultUsers[0]);
-    return true;
+
+    return { success: false, message: "Usuário não encontrado. Verifique o e-mail digitado." };
+  };
+
+  const registerUser = async (data: {
+    name: string;
+    email: string;
+    password: string;
+    role?: string;
+    oabNumber?: string;
+    officeName?: string;
+  }): Promise<{ success: boolean; message?: string }> => {
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+      const res = await fetch(`${apiUrl}/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          full_name: data.name,
+          email: data.email,
+          password: data.password,
+          role: data.role || "associado",
+          tenant_name: data.officeName || "Novo Escritório Advocacia",
+          oab_number: data.oabNumber || "",
+          oab_uf: "SP",
+        }),
+      });
+
+      if (res.ok) {
+        const resData = await res.json();
+        const roleMap: Record<string, UserRole> = {
+          super_admin: "SUPER_ADMIN",
+          admin: "SUPER_ADMIN",
+          socio: "SOCIO",
+          associado: "ASSOCIADO",
+          estagiario: "ESTAGIARIO",
+          secretaria: "SECRETARIA",
+        };
+        const initials = data.name
+          .split(" ")
+          .filter(Boolean)
+          .slice(0, 2)
+          .map((n) => n[0].toUpperCase())
+          .join("");
+
+        const newUser: UserProfile = {
+          id: resData.user_id || `user-${Date.now()}`,
+          name: data.name,
+          email: data.email,
+          password: data.password,
+          role: roleMap[(data.role || "associado").toLowerCase()] || "ASSOCIADO",
+          oabNumber: data.oabNumber ? `OAB/SP ${data.oabNumber}` : "OAB/SP Em análise",
+          officeName: data.officeName || "Escritório Cadastrado",
+          avatarInitials: initials || "ADV",
+          status: "ACTIVE",
+          createdAt: new Date().toLocaleDateString("pt-BR"),
+        };
+
+        const updatedList = [newUser, ...usersList];
+        saveUsersList(updatedList);
+        setUser(newUser);
+        return { success: true };
+      } else {
+        const errData = await res.json();
+        return { success: false, message: errData.detail || "Erro ao efetuar cadastro." };
+      }
+    } catch (e) {
+      // Fallback local
+      const initials = data.name
+        .split(" ")
+        .filter(Boolean)
+        .slice(0, 2)
+        .map((n) => n[0].toUpperCase())
+        .join("");
+
+      const roleMap: Record<string, UserRole> = {
+        super_admin: "SUPER_ADMIN",
+        socio: "SOCIO",
+        associado: "ASSOCIADO",
+        estagiario: "ESTAGIARIO",
+        secretaria: "SECRETARIA",
+      };
+
+      const newUser: UserProfile = {
+        id: `user-${Date.now()}`,
+        name: data.name,
+        email: data.email,
+        password: data.password,
+        role: roleMap[(data.role || "associado").toLowerCase()] || "ASSOCIADO",
+        oabNumber: data.oabNumber ? `OAB/SP ${data.oabNumber}` : "OAB/SP Pendente",
+        officeName: data.officeName || "Novo Escritório Advocacia",
+        avatarInitials: initials || "ADV",
+        status: "ACTIVE",
+        createdAt: new Date().toLocaleDateString("pt-BR"),
+      };
+
+      const updatedList = [newUser, ...usersList];
+      saveUsersList(updatedList);
+      setUser(newUser);
+      return { success: true };
+    }
   };
 
   const logout = () => {
     setIsLoggedIn(false);
     if (typeof window !== "undefined") {
       localStorage.setItem("lexflow_is_logged_in", "false");
+      localStorage.removeItem("lexflow_jwt_token");
+      window.location.href = "/login";
     }
-    setIsLoginModalOpen(true);
   };
 
   return (
@@ -230,6 +384,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         toggleUserStatus,
         deleteUser,
         login,
+        registerUser,
         logout,
         isLoginModalOpen,
         setIsLoginModalOpen,

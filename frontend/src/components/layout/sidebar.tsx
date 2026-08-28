@@ -82,16 +82,18 @@ const navigationItems: NavItem[] = [
     href: "/dashboard/brand",
     icon: Palette,
     subItems: [
-      { name: "Identidade & Timbrado", href: "/dashboard/brand", icon: Palette },
-      { name: "WhatsApp do Escritório", href: "/dashboard/brand", icon: MessageSquare },
+      { name: "Identidade & Timbrado", href: "/dashboard/brand?tab=TIMBRADO", icon: Palette },
+      { name: "WhatsApp do Escritório", href: "/dashboard/brand?tab=whatsapp", icon: MessageSquare },
     ]
   },
   { name: "Portal do Cliente (White-Label)", href: "/portal", icon: Bot },
 ];
 
+import { LogOut } from "lucide-react";
+
 export function Sidebar() {
   const pathname = usePathname();
-  const { user } = useUser();
+  const { user, logout } = useUser();
 
   return (
     <aside className="w-64 border-r border-zinc-800 bg-zinc-950 flex flex-col h-screen sticky top-0 shrink-0">
@@ -176,14 +178,31 @@ export function Sidebar() {
         })}
       </nav>
 
-      {/* Footer */}
-      <div className="p-3 border-t border-zinc-800 bg-zinc-950/50">
-        <div className="flex items-center space-x-3 px-2 py-1.5 rounded-lg bg-zinc-900/60 border border-zinc-800/80">
-          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          <div className="truncate">
-            <p className="text-[11px] font-medium text-zinc-300 truncate">Servidor Conectado</p>
-            <p className="text-[9px] text-zinc-500 font-mono">PostgreSQL + pgvector</p>
+      {/* Footer User Profile & Logout */}
+      <div className="p-3 border-t border-zinc-800 bg-zinc-950/80 space-y-2">
+        <div className="flex items-center justify-between p-2 rounded-xl bg-zinc-900/80 border border-zinc-800">
+          <div className="flex items-center space-x-2.5 truncate">
+            <div className="w-7 h-7 rounded-lg bg-blue-600/30 text-blue-400 border border-blue-500/40 flex items-center justify-center font-bold text-xs shrink-0">
+              {user.avatarInitials || "ADV"}
+            </div>
+            <div className="truncate">
+              <p className="text-[11px] font-bold text-zinc-100 truncate">{user.name}</p>
+              <p className="text-[9px] text-zinc-400 font-mono truncate">{user.oabNumber}</p>
+            </div>
           </div>
+
+          <button
+            onClick={logout}
+            title="Sair do sistema (Logout)"
+            className="p-1.5 hover:bg-red-950/60 hover:text-red-400 text-zinc-400 rounded-lg transition-colors shrink-0 ml-1"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="flex items-center space-x-2 px-2 py-1 rounded-lg bg-emerald-950/30 border border-emerald-800/40">
+          <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+          <p className="text-[9px] text-emerald-400 font-mono truncate">Supabase DB Conectado</p>
         </div>
       </div>
     </aside>

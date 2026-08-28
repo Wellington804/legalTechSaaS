@@ -3,8 +3,13 @@
 @tailwind utilities;
 
 @layer base {
-  body {
+  html.dark body {
     @apply bg-[#09090b] text-[#f4f4f5] antialiased selection:bg-blue-600 selection:text-white;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  html.light body {
+    @apply bg-[#f8fafc] text-[#0f172a] antialiased selection:bg-blue-600 selection:text-white;
     font-feature-settings: "rlig" 1, "calt" 1;
   }
 }
@@ -37,6 +42,15 @@
 
 .paper-shadow-3d {
   box-shadow: 0 20px 50px -12px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.05);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-in {
+  animation: fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 /* High Definition A4 Print & PDF Export Styles (Isolates only the A4 Canvas) */

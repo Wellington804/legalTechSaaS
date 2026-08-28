@@ -16,10 +16,10 @@ class OABApplication(Base):
     status = Column(String, default="EM_ANDAMENTO") # EM_ANDAMENTO, PENDENTE_DOCUMENTOS, PROTOCOLADO, CARTEIRA_EMITIDA
     fgv_exam_number = Column(String, nullable=True)
     protocol_number = Column(String, nullable=True)
-    biometric_scheduled_at = Column(DateTime, nullable=True)
-    delivery_ceremony_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    biometric_scheduled_at = Column(DateTime(timezone=True), nullable=True)
+    delivery_ceremony_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 class OABChecklist(Base):
     __tablename__ = "oab_checklists"
@@ -31,7 +31,7 @@ class OABChecklist(Base):
     is_completed = Column(Boolean, default=False)
     file_url = Column(String, nullable=True)
     verification_notes = Column(Text, nullable=True)
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 class OABFeeStructure(Base):
     __tablename__ = "oab_fee_structures"
@@ -43,7 +43,7 @@ class OABFeeStructure(Base):
     anuidade_full = Column(Float, nullable=False, default=950.00)
     jovem_advogado_discount_pct = Column(Float, nullable=False, default=50.0) # 50% discount for first 5 years
     sua_discount_pct = Column(Float, nullable=False, default=25.0) # up to 25% discount for SUA registration
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 class OABDeclaration(Base):
     __tablename__ = "oab_declarations"
@@ -56,4 +56,4 @@ class OABDeclaration(Base):
     content_text = Column(Text, nullable=False)
     signed_digitally = Column(Boolean, default=False)
     signature_hash = Column(String, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

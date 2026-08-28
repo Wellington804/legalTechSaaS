@@ -15,4 +15,4 @@ class ConflictCheck(Base):
     risk_score = Column(Float, default=0.0) # 0.0 to 1.0
     matched_records = Column(JSON, nullable=True)
     checked_by_user_id = Column(String, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
