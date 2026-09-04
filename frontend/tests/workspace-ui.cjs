@@ -170,9 +170,14 @@ function fixtureApi() {
     if (method === "GET" && path === "/api/v1/engagement/channels") return json(route, 200, {
       whatsapp: state.whatsapp,
     });
-    if (method === "GET" && path === "/api/v1/engagement/inbox") return json(route, 200, { items: [] });
-    if (method === "GET" && path === "/api/v1/engagement/inbox/email-address") return json(route, 200, { configured: false, provider_ready: true });
+    if (method === "GET" && path === "/api/v1/engagement/inbox") return json(route, 200, list([]));
+    if (method === "GET" && path === "/api/v1/engagement/inbox/email-address") return json(route, 200, {
+      configured: false, provider_ready: false,
+    });
     if (method === "GET" && path === "/api/v1/engagement/cases/case-a/document-intelligence") return json(route, 200, []);
+    if (method === "GET" && path === "/api/v1/integrations/calendar-feed") return json(route, 200, {
+      enabled: false, created_at: null,
+    });
     if (method === "POST" && path === "/api/v1/engagement/whatsapp/connect") {
       state.whatsapp = { status: "pending", connected: false, number: null, last_checked_at: new Date().toISOString() };
       return json(route, 200, { whatsapp: state.whatsapp, qr_code: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" });
@@ -198,6 +203,7 @@ function fixtureApi() {
       review_required: true, saved: false, conversation_id: "conversation-a",
       conversation: { id: "conversation-a", title: "Conversa", context_kind: "global", retention_days: 90, message_count: 2, updated_at: new Date().toISOString() },
     });
+    if (method === "GET" && path === "/api/v1/engagement/cases/case-a/document-intelligence") return json(route, 200, []);
     if (method === "POST" && path === "/api/v1/engagement/cases/case-a/evidence-matrix") return json(route, 200, {
       matrix: {
         facts: [{ id: "F1", statement: "O documento registra o inadimplemento.", status: "supported", source_ids: ["D1-N1"], review_note: "Conferir o original.", human_review_required: true }],
@@ -245,6 +251,8 @@ function fixtureApi() {
       "/api/v1/controladoria/workflow-templates", "/api/v1/controladoria/workflows", "/api/v1/operations/intakes",
       "/api/v1/operations/fee-contracts", "/api/v1/operations/invoices", "/api/v1/operations/time-entries",
       "/api/v1/operations/provider-credentials", "/api/v1/operations/signature-providers",
+      "/api/v1/operations/provider-costs/prices", "/api/v1/operations/provider-costs/usage",
+      "/api/v1/operations/signature-envelopes",
     ].includes(path)) return json(route, 200, list([]));
     if (method === "GET" && path === "/api/v1/operations/intake-config") return json(route, 404, { detail: "Formulário ainda não configurado." });
     if (method === "GET" && path === "/api/v1/integrations/status") return json(route, 200, {
@@ -483,8 +491,8 @@ if (require.main === module) (async () => {
     assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "system");
 
     await page.goto(`${baseUrl}/dashboard/communications`);
-    await page.getByRole("heading", { name: "Comunicações e portal", exact: true }).waitFor();
-    await page.getByText("Status: Desconectado", { exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Comunicações", exact: true }).waitFor();
+    await page.getByText("Desconectado", { exact: true }).waitFor();
     assert.equal(await page.getByText(/Chave da API|Token de webhook|ID da instância/i).count(), 0);
     await page.getByRole("button", { name: "Conectar WhatsApp", exact: true }).click();
     await page.getByRole("img", { name: "QR Code para conectar o WhatsApp do escritório", exact: true }).waitFor();
@@ -493,13 +501,14 @@ if (require.main === module) (async () => {
       status: "connected", connected: true, number: "+5511999999999", last_checked_at: new Date().toISOString(),
     };
     await page.reload();
-    await page.getByText("Status: Conectado", { exact: true }).waitFor();
+    await page.getByText("Conectado", { exact: true }).waitFor();
     await page.getByText("(11) 99999-9999", { exact: true }).waitFor();
+    await page.getByText("Gerenciar conexão", { exact: true }).click();
     await page.getByRole("button", { name: "Reconectar", exact: true }).waitFor();
     await page.getByRole("button", { name: "Desconectar", exact: true }).waitFor();
     await page.locator("select").first().selectOption("case-a");
     await page.getByLabel("Mensagem", { exact: true }).fill("Mensagem contratual de teste.");
-    await page.getByRole("button", { name: "Registrar ou enviar mensagem", exact: true }).click();
+    await page.getByRole("button", { name: "Enviar mensagem", exact: true }).click();
     const messageBody = (await recordedCall(api.state, (call) => (
       call.method === "POST" && call.path === "/api/v1/engagement/cases/case-a/messages"
     ), "send case message")).body;

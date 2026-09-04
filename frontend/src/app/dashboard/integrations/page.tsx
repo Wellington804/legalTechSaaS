@@ -1,3 +1,3 @@
-import { redirect } from "next/navigation";
+import { OperationsSettings } from "@/components/workspace/operations";
 
-export default function IntegrationsPage() { redirect("/dashboard/communications"); }
+export default function IntegrationsPage() { return <OperationsSettings />; }

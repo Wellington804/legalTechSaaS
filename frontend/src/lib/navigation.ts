@@ -33,6 +33,7 @@ export const workspaceNavigation: NavigationItem[] = [
   { name: "Honorários e despesas", shortName: "Honorários", href: "/dashboard/financeiro", icon: "wallet", group: "office", admin: true },
   { name: "Modelos de documentos", shortName: "Modelos", href: "/dashboard/templates", icon: "file", group: "office" },
   { name: "Identidade documental", shortName: "Identidade", href: "/dashboard/brand", icon: "palette", group: "office" },
+  { name: "Configurações de serviços", shortName: "Serviços", href: "/dashboard/integrations", icon: "settings", group: "office", admin: true },
   { name: "Equipe e permissões", shortName: "Equipe", href: "/dashboard/admin/users", icon: "team", group: "office", admin: true },
   { name: "Conta e escritório", shortName: "Conta", href: "/dashboard/account", icon: "settings", group: "office" },
 ];

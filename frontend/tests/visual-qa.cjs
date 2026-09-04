@@ -16,6 +16,8 @@ const screens = [
   ["agenda", "/dashboard/tasks"],
   ["processos", "/dashboard/tracker"],
   ["comunicacoes", "/dashboard/communications"],
+  ["atendimento", "/dashboard/operacoes"],
+  ["servicos", "/dashboard/integrations"],
   ["conta", "/dashboard/account"],
   ["auditoria", "/dashboard/audit"],
 ];
@@ -26,9 +28,9 @@ const screens = [
   const browser = await chromium.launch({ headless: true });
   const errors = [];
   try {
-    for (const [device, viewport] of [["desktop", { width: 1440, height: 960 }], ["mobile", { width: 375, height: 812 }]]) {
+    for (const [theme, colorScheme] of [["claro", "light"], ["escuro", "dark"]]) for (const [device, viewport] of [["desktop", { width: 1440, height: 960 }], ["mobile", { width: 375, height: 812 }]]) {
       const api = fixtureApi();
-      const context = await browser.newContext({ viewport, colorScheme: "light" });
+      const context = await browser.newContext({ viewport, colorScheme });
       await context.route("**/*", route => [baseOrigin, apiOrigin].includes(new URL(route.request().url()).origin) ? route.fallback() : route.abort("blockedbyclient"));
       await context.route(`${apiOrigin}/api/v1/**`, api.handler);
       const page = await context.newPage();
@@ -37,7 +39,7 @@ const screens = [
       for (const [name, pathname] of screens) {
         await page.goto(new URL(pathname, baseUrl).href);
         await page.locator("main h1").first().waitFor();
-        await page.screenshot({ path: path.join(output, `${device}-${name}.png`), fullPage: true });
+        await page.screenshot({ path: path.join(output, `${theme}-${device}-${name}.png`), fullPage: true });
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `${device}-${name} has horizontal overflow`);
       }
       await page.goto(new URL("/dashboard/tracker", baseUrl).href);
@@ -49,12 +51,12 @@ const screens = [
       assert.ok(box, `${device} quick-client dialog is visible`);
       if (device === "mobile") assert.ok(box.width >= 360 && box.height >= 760, `mobile quick-client dialog uses nearly the full screen: ${JSON.stringify(box)}`);
       else assert.ok(box.width <= 600 && box.height <= 600, "desktop quick-client dialog remains centered and bounded");
-      await page.screenshot({ path: path.join(output, `${device}-novo-cliente.png`) });
-      assert.deepEqual(api.state.unhandled, [], `${device} visual fixtures are incomplete`);
+      await page.screenshot({ path: path.join(output, `${theme}-${device}-novo-cliente.png`) });
+      assert.deepEqual(api.state.unhandled, [], `${theme}-${device} visual fixtures are incomplete`);
       await context.close();
     }
     assert.deepEqual(errors, [], "visual pages must not throw browser errors");
-    console.log(`PASS: 14 responsive screenshots written to ${output}`);
+    console.log(`PASS: responsive light/dark screenshots written to ${output}`);
   } finally {
     await browser.close();
   }

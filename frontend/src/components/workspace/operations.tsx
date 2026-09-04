@@ -36,6 +36,7 @@ type Invoice = {
 type TimeEntry = { id: string; description: string; duration_minutes: number; amount: string; status: "draft" | "approved" | "invoiced" | "void"; occurred_at: string };
 type Provider = { id: string; purpose: "signature" | "payment"; provider: string; account_reference: string; enabled: boolean; api_token_configured: boolean; revision: number };
 type IntakeConfig = { id: string; enabled: boolean; form_title: string; notice_version: string; consent_version: string; notice_url: string | null; allowed_origin: string | null; revision: number };
+type JudicialSource = { source_kind: string; label: string; configured: boolean; homologation_required: boolean; detail: string };
 type Envelope = {
   id: string;
   document_id: string;
@@ -173,16 +174,16 @@ function IntakeConfiguration() {
     catch { setError("Não foi possível copiar automaticamente. Selecione o link e copie manualmente."); }
   }
 
-  return <Panel title="Link público de atendimento" collapsibleOnMobile>
-    <p className="text-sm text-zinc-400">Receba solicitações sem expor a chave de acesso nos registros do servidor. O segredo fica depois de <strong>#</strong> e é removido da tela assim que o formulário abre.</p>
+  return <Panel title="Formulário público de atendimento" description="Defina como novos clientes podem iniciar um atendimento." collapsibleOnMobile>
+    <p className="text-sm text-zinc-400">O link é privado e deve ser compartilhado apenas nos canais oficiais do escritório.</p>
     <State loading={loading} error={error} />
     {!loading && <form key={config?.revision || "new"} onSubmit={save} className="space-y-3"><fieldset disabled={busy} className="grid min-w-0 gap-3 sm:grid-cols-2">
       <Field label="Título do formulário"><input className={control} name="form_title" required minLength={2} maxLength={120} defaultValue={config?.form_title || "Fale com o escritório"} /></Field>
-      <Field label="Aviso de privacidade"><input className={control} name="notice_url" type="url" inputMode="url" placeholder="https://seusite.com/privacidade" required defaultValue={config?.notice_url || ""} /></Field>
-      <Field label="Versão do aviso"><input className={control} name="notice_version" required maxLength={64} placeholder="privacidade-2026-01" defaultValue={config?.notice_version || ""} /></Field>
-      <Field label="Versão do consentimento"><input className={control} name="consent_version" required maxLength={64} placeholder="consentimento-2026-01" defaultValue={config?.consent_version || ""} /></Field>
+      <Field label="Página do aviso de privacidade"><input className={control} name="notice_url" type="url" inputMode="url" placeholder="https://seusite.com/privacidade" required defaultValue={config?.notice_url || ""} /></Field>
+      <Field label="Identificação do aviso"><input className={control} name="notice_version" required maxLength={64} placeholder="Ex.: privacidade 2026" defaultValue={config?.notice_version || ""} /></Field>
+      <Field label="Identificação do consentimento"><input className={control} name="consent_version" required maxLength={64} placeholder="Ex.: atendimento 2026" defaultValue={config?.consent_version || ""} /></Field>
       <label className="flex min-h-11 items-center gap-3 text-sm text-zinc-300"><input name="enabled" type="checkbox" className="h-4 w-4" defaultChecked={config?.enabled ?? true} /> Aceitar novos atendimentos por este link</label>
-    </fieldset><button className={primary} disabled={busy}>{busy ? "Salvando…" : config ? "Salvar configuração" : "Criar formulário e link"}</button></form>}
+    </fieldset><p className="text-xs text-zinc-400">As identificações registram qual texto o cliente aceitou em cada atendimento.</p><button className={primary} disabled={busy}>{busy ? "Salvando…" : config ? "Salvar configuração" : "Criar formulário e link"}</button></form>}
     {config && <div className="flex flex-wrap items-center gap-3"><span className={`rounded-full px-3 py-1 text-xs ${config.enabled ? "bg-emerald-950 text-emerald-300" : "bg-zinc-800 text-zinc-300"}`}>{config.enabled ? "Recebimento ativo" : "Recebimento pausado"}</span><button type="button" className={button} disabled={busy} onClick={rotate}>Gerar novo link</button></div>}
     {link && <div className="space-y-2 rounded-lg border border-amber-800 bg-amber-950/10 p-3"><p className="text-sm text-amber-200">Este link dá acesso ao formulário. Não publique em locais indevidos.</p><input className={control} aria-label="Link público de atendimento" readOnly value={link} onFocus={event => event.currentTarget.select()} /><button type="button" className={button} onClick={copyLink}>Copiar link</button></div>}
     {notice && <p role="status" className="text-sm text-emerald-300">{notice}</p>}
@@ -234,8 +235,8 @@ function InvoiceFlow({ contract, onContractChange, onInvoiceChange }: { contract
       <div className="flex flex-wrap items-center justify-between gap-3"><button type="button" className={button} onClick={() => setItems(current => [...current, { due_on: today(), amount: "" }])}>Adicionar parcela</button><p className="font-medium">Total: {money(total)}</p></div>
       <button className={primary}>Revisar fatura</button>
     </form>}
-    {reviewing && !invoice && <section aria-label="Revisão da fatura" className="space-y-3 rounded-lg border border-amber-800 bg-amber-950/10 p-4"><h3 className="font-medium text-amber-200">Confira antes de criar</h3><p className="text-sm">{description} · {items.length} parcela{items.length === 1 ? "" : "s"} · {money(total)}</p><ul className="text-sm text-zinc-300">{items.map((item, index) => <li key={index}>Parcela {index + 1}: {dateText(item.due_on)} · {money(item.amount)}</li>)}</ul><div className="flex flex-wrap gap-2"><button type="button" className={primary} disabled={busy || Number(total) <= 0} onClick={createInvoice}>{busy ? "Criando…" : "Confirmar criação"}</button><button type="button" className={button} onClick={() => setReviewing(false)}>Voltar e corrigir</button></div></section>}
-    {invoice && <section aria-label="Fatura criada" className="space-y-3"><p className="text-sm font-medium text-emerald-300">Fatura criada: {money(invoice.total_amount)}</p><p className="text-xs text-zinc-400">{invoice.status === "draft" ? "Rascunho. A emissão só acontece após sua confirmação." : "Fatura emitida. O pagamento ainda depende do provedor ou da conferência financeira."}</p>{invoice.status === "draft" && <button type="button" className={primary} disabled={busy} onClick={issue}>{busy ? "Emitindo…" : "Emitir fatura revisada"}</button>}</section>}
+    {reviewing && !invoice && <section aria-label="Revisão da fatura" className="space-y-3 rounded-lg border border-amber-800 bg-amber-950/10 p-4"><h3 className="font-medium text-amber-200">Confira antes de criar</h3><p className="text-sm">{description} · {items.length} parcela{items.length === 1 ? "" : "s"} · {money(total)}</p><ul className="text-sm text-amber-100">{items.map((item, index) => <li key={index}>Parcela {index + 1}: {dateText(item.due_on)} · {money(item.amount)}</li>)}</ul><div className="flex flex-wrap gap-2"><button type="button" className={primary} disabled={busy || Number(total) <= 0} onClick={createInvoice}>{busy ? "Criando…" : "Confirmar criação"}</button><button type="button" className={button} onClick={() => setReviewing(false)}>Voltar e corrigir</button></div></section>}
+    {invoice && <section aria-label="Fatura criada" className="space-y-3"><p className="text-sm font-medium text-emerald-300">Fatura criada: {money(invoice.total_amount)}</p><p className="text-xs text-zinc-400">{invoice.status === "draft" ? "Rascunho. A emissão só acontece após sua confirmação." : "Fatura emitida. O pagamento ainda depende do serviço escolhido ou da conferência financeira."}</p>{invoice.status === "draft" && <button type="button" className={primary} disabled={busy} onClick={issue}>{busy ? "Emitindo…" : "Emitir fatura revisada"}</button>}</section>}
     <State error={error} />
   </div>;
 }
@@ -246,7 +247,6 @@ function Fees() {
   const contracts = useResource<{ items: FeeContract[]; limit: number }>("/operations/fee-contracts?limit=200");
   const invoices = useResource<{ items: Invoice[]; limit: number }>("/operations/invoices?limit=200");
   const entries = useResource<{ items: TimeEntry[]; limit: number }>("/operations/time-entries?limit=200");
-  const providers = useResource<{ items: Provider[] }>("/operations/provider-credentials");
   const [clientId, setClientId] = useState("");
   const [contract, setContract] = useState<FeeContract | null>(null);
   const [busy, setBusy] = useState(false);
@@ -263,7 +263,7 @@ function Fees() {
   }
   return <Panel title="Contrato de honorários e fatura" collapsibleOnMobile>
     <p className="text-sm text-zinc-400">Crie o contrato em rascunho, revise, ative e somente depois prepare as parcelas.</p>
-    <State loading={clients.loading || cases.loading || contracts.loading || invoices.loading || entries.loading || providers.loading} error={clients.error || cases.error || contracts.error || invoices.error || entries.error || providers.error || error} />
+    <State loading={clients.loading || cases.loading || contracts.loading || invoices.loading || entries.loading} error={clients.error || cases.error || contracts.error || invoices.error || entries.error || error} />
     {!contract && <form onSubmit={submit} className="space-y-3"><fieldset disabled={busy} className="grid min-w-0 gap-3 sm:grid-cols-2">
       <Field label="Cliente"><select name="client_id" className={control} required value={clientId} onChange={event => setClientId(event.target.value)}><option value="">Selecione…</option>{clients.data?.items.map(client => <option key={client.id} value={client.id}>{client.name}</option>)}</select></Field>
       <Field label="Caso relacionado (opcional)"><select key={clientId} name="case_id" className={control} defaultValue=""><option value="">Sem caso específico</option>{clientCases.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select></Field>
@@ -273,7 +273,6 @@ function Fees() {
     <details className="border-t border-zinc-800 pt-3" open><summary className="min-h-11 cursor-pointer content-center font-medium text-zinc-100">Contratos salvos ({contracts.data?.items.length || 0})</summary><div className="mt-2 divide-y divide-zinc-800">{contracts.data?.items.map(item => <article key={item.id} className="flex flex-col justify-between gap-2 py-3 sm:flex-row sm:items-center"><div><p className="text-sm font-medium">{item.title}</p><p className="text-xs text-zinc-400">{item.status === "draft" ? "Rascunho" : item.status === "active" ? "Ativo" : item.status === "closed" ? "Encerrado" : "Cancelado"}</p></div>{["draft", "active"].includes(item.status) && <button type="button" className={button} onClick={() => setContract(item)}>Retomar</button>}</article>)}</div>{contracts.data && !contracts.data.items.length && <p className="mt-2 text-sm text-zinc-400">Nenhum contrato cadastrado.</p>}</details>
     <details className="border-t border-zinc-800 pt-3"><summary className="min-h-11 cursor-pointer content-center font-medium text-zinc-100">Faturas salvas ({invoices.data?.items.length || 0})</summary><div className="mt-2 divide-y divide-zinc-800">{invoices.data?.items.map(item => <article key={item.id} className="flex flex-col justify-between gap-2 py-3 sm:flex-row sm:items-center"><div><p className="text-sm font-medium">{item.description}</p><p className="text-xs text-zinc-400">{money(item.total_amount)} · {item.status === "draft" ? "Rascunho" : item.status === "issued" ? "Emitida" : item.status === "partially_paid" ? "Parcialmente paga" : item.status === "paid" ? "Paga" : item.status === "overdue" ? "Vencida" : "Cancelada"}{item.created_at ? ` · ${dateText(item.created_at)}` : ""}</p></div>{item.status === "draft" && <Action run={() => api.post(`/operations/invoices/${item.id}/issue`, { expected_revision: item.revision })} onDone={invoices.reload}>Emitir fatura revisada</Action>}</article>)}</div>{invoices.data && !invoices.data.items.length && <p className="mt-2 text-sm text-zinc-400">Nenhuma fatura cadastrada.</p>}</details>
     <details className="border-t border-zinc-800 pt-3"><summary className="min-h-11 cursor-pointer content-center font-medium text-zinc-100">Horas registradas ({entries.data?.items.length || 0})</summary><div className="mt-2 divide-y divide-zinc-800">{entries.data?.items.map(item => <article key={item.id} className="py-3"><div className="flex flex-wrap justify-between gap-2"><p className="text-sm font-medium">{item.description}</p><p className="text-sm">{money(item.amount)}</p></div><p className="text-xs text-zinc-400">{item.duration_minutes} min · {item.status === "draft" ? "Rascunho" : item.status === "approved" ? "Aprovado" : item.status === "invoiced" ? "Faturado" : "Cancelado"} · {dateText(item.occurred_at)}</p></article>)}</div>{entries.data && !entries.data.items.length && <p className="mt-2 text-sm text-zinc-400">Nenhum apontamento de horas.</p>}</details>
-    <details className="border-t border-zinc-800 pt-3"><summary className="min-h-11 cursor-pointer content-center font-medium text-zinc-100">Serviços financeiros e de assinatura ({providers.data?.items.length || 0})</summary><div className="mt-2 divide-y divide-zinc-800">{providers.data?.items.map(item => <article key={item.id} className="flex flex-wrap items-center justify-between gap-2 py-3"><div><p className="text-sm font-medium">{item.provider} · {item.purpose === "signature" ? "Assinatura" : "Pagamento"}</p><p className="text-xs text-zinc-400">Conta {item.account_reference} · {item.api_token_configured ? "Credencial cadastrada" : "Credencial pendente"}</p></div><span className={`rounded-full px-3 py-1 text-xs ${item.enabled ? "bg-emerald-950 text-emerald-300" : "bg-zinc-800 text-zinc-300"}`}>{item.enabled ? "Ativo" : "Desativado"}</span></article>)}</div>{providers.data && !providers.data.items.length && <p className="mt-2 text-sm text-zinc-400">Nenhum serviço configurado.</p>}</details>
   </Panel>;
 }
 
@@ -305,20 +304,20 @@ function SignatureConfiguration() {
     } catch (reason) { setError(errorText(reason)); }
     finally { setBusy(false); }
   }
-  return <Panel title="Configurar assinatura eletrônica" collapsibleOnMobile>
-    <p className="text-sm text-zinc-400">As credenciais ficam cifradas por escritório. Cadastre no provedor o endereço abaixo e copie o segredo HMAC gerado por ele.</p>
-    <div className="space-y-1.5"><p className="text-sm font-medium text-zinc-300">URL pública do webhook</p><div className="flex min-w-0 flex-col gap-2 sm:flex-row"><input className={control} aria-label="URL pública do webhook" readOnly value={webhookUrl} onFocus={event => event.target.select()} /><button className={button} type="button" onClick={() => navigator.clipboard.writeText(webhookUrl)} disabled={!webhookUrl}>Copiar URL</button></div></div>
+  return <Panel title="Assinatura eletrônica" description="Conecte o serviço usado pelo escritório para enviar documentos." collapsibleOnMobile>
+    <p className="text-sm text-zinc-400">Somente administradores podem alterar estes dados. As credenciais ficam protegidas por escritório.</p>
     <State loading={providers.loading} error={providers.error || error} />
     <form key={`${environment}:${configured?.revision || "new"}`} onSubmit={save} className="space-y-3">
       <fieldset disabled={busy} className="grid min-w-0 gap-3 sm:grid-cols-2">
-        <Field label="Provedor e ambiente"><select className={control} value={environment} onChange={event => setEnvironment(event.target.value as typeof environment)}><option value="clicksign-sandbox">Clicksign Sandbox</option><option value="clicksign">Clicksign Produção</option><option value="autentique">Autentique</option></select></Field>
-        <Field label={environment === "autentique" ? "ID da organização" : "Chave da conta"}><input className={control} name="account_reference" required minLength={2} maxLength={128} defaultValue={configured?.account_reference || ""} autoComplete="off" /></Field>
-        <Field label={configured?.api_token_configured ? "Access Token (deixe vazio para manter)" : "Access Token"}><input className={control} name="api_token" type="password" minLength={16} required={!configured?.api_token_configured} autoComplete="new-password" /></Field>
-        <Field label="HMAC SHA256 Secret do webhook"><input className={control} name="webhook_secret" type="password" minLength={16} required autoComplete="new-password" /></Field>
+        <Field label="Serviço e ambiente"><select className={control} value={environment} onChange={event => setEnvironment(event.target.value as typeof environment)}><option value="clicksign-sandbox">Clicksign · testes</option><option value="clicksign">Clicksign · produção</option><option value="autentique">Autentique</option></select></Field>
+        <Field label={environment === "autentique" ? "Identificação da organização" : "Identificação da conta"}><input className={control} name="account_reference" required minLength={2} maxLength={128} defaultValue={configured?.account_reference || ""} autoComplete="off" /></Field>
+        <Field label={configured?.api_token_configured ? "Token de acesso (vazio mantém o atual)" : "Token de acesso"}><input className={control} name="api_token" type="password" minLength={16} required={!configured?.api_token_configured} autoComplete="new-password" /></Field>
+        <Field label="Segredo de confirmação"><input className={control} name="webhook_secret" type="password" minLength={16} required autoComplete="new-password" /></Field>
         <label className="flex min-h-11 items-center gap-3 text-sm text-zinc-300"><input name="enabled" type="checkbox" className="h-4 w-4" defaultChecked={configured?.enabled ?? true} /> Integração ativa</label>
       </fieldset>
       <button className={primary} disabled={busy}>{busy ? "Salvando…" : "Salvar integração"}</button>
     </form>
+    <details className="border-t border-zinc-800 pt-3"><summary className="min-h-11 cursor-pointer content-center text-sm font-medium text-zinc-300">Configuração avançada</summary><div className="mt-2 space-y-1.5"><p className="text-sm text-zinc-400">Cadastre este endereço no serviço de assinatura para receber as confirmações.</p><div className="flex min-w-0 flex-col gap-2 sm:flex-row"><input className={control} aria-label="Endereço de confirmação do serviço" readOnly value={webhookUrl} onFocus={event => event.target.select()} /><button className={button} type="button" onClick={() => navigator.clipboard.writeText(webhookUrl)} disabled={!webhookUrl}>Copiar endereço</button></div></div></details>
     {notice && <p role="status" className="text-sm text-emerald-300">{notice}</p>}
   </Panel>;
 }
@@ -355,10 +354,10 @@ function Signatures() {
     catch (reason) { setError(errorText(reason)); }
     finally { setBusy(false); envelopes.reload(); }
   }
-  return <Panel title="Assinatura eletrônica" collapsibleOnMobile>
-    <p className="text-sm text-zinc-400">O LexFlow envia o PDF exato ao provedor escolhido e só libera o arquivo final após webhook autenticado. Na opção ICP-Brasil, certificado A1/A3 e PIN são usados na cerimônia segura do provedor e nunca passam pelo LexFlow.</p>
+  return <Panel title="Enviar para assinatura" description="Acompanhe a solicitação até o documento assinado ficar disponível." collapsibleOnMobile>
+    <p className="text-sm text-zinc-400">O arquivo original é preservado. Na opção ICP-Brasil, certificado A1/A3 e PIN são usados somente no ambiente seguro do serviço de assinatura.</p>
     <State loading={documents.loading || providers.loading || envelopes.loading} error={documents.error || providers.error || envelopes.error || error} empty={Boolean(documents.data) && !documents.data?.items.length} emptyText="Crie ou envie um documento antes de solicitar assinatura." />
-    {!providers.loading && providers.data && !providers.data.items.length && <p className="rounded-lg border border-amber-800 p-3 text-sm text-amber-300">Nenhum serviço de assinatura homologado está ativo. A aplicação não fará assinatura local nem simulará validade.</p>}
+    {!providers.loading && providers.data && !providers.data.items.length && <p className="rounded-lg bg-amber-950/25 p-3 text-sm text-amber-300">Nenhum serviço de assinatura está disponível. Peça a um administrador para ativá-lo em Configurações de serviços.</p>}
     {!envelope && Boolean(documents.data?.items.length) && Boolean(providers.data?.items.length) && <form onSubmit={submit} onChange={() => { if (error) { setRequestKey(crypto.randomUUID()); setError(""); } }} className="grid gap-3 sm:grid-cols-2">
       <Field label="Documento"><select className={control} name="document_id" required defaultValue=""><option value="">Selecione…</option>{documents.data?.items.map(item => <option key={item.id} value={item.id}>{item.title} · versão {item.current_version}</option>)}</select></Field>
       <Field label="Serviço de assinatura"><select className={control} name="provider_account" required defaultValue=""><option value="">Selecione…</option>{providers.data?.items.map(item => <option key={`${item.provider}:${item.account_reference}`} value={`${item.provider}\u001f${item.account_reference}`}>{item.provider} · conta {item.account_reference}</option>)}</select></Field>
@@ -366,22 +365,39 @@ function Signatures() {
       <Field label="E-mail do signatário"><input className={control} name="signer_email" type="email" required maxLength={320} autoComplete="email" /></Field>
       <Field label="CPF do signatário"><input className={control} name="signer_cpf" inputMode="numeric" required minLength={11} maxLength={18} placeholder="000.000.000-00" autoComplete="off" /></Field>
       <Field label="Confirmação de identidade"><select className={control} name="authentication" defaultValue="icp_brasil"><option value="icp_brasil">Certificado ICP-Brasil A1/A3</option><option value="email">Confirmação por e-mail</option></select></Field>
-      <div className="self-end sm:col-span-2"><button className={primary} disabled={busy}>{busy ? "Enviando ao provedor…" : "Enviar PDF para assinatura"}</button></div>
+      <div className="self-end sm:col-span-2"><button className={primary} disabled={busy}>{busy ? "Enviando ao serviço…" : "Enviar PDF para assinatura"}</button></div>
     </form>}
-    {envelope && <div role="status" className="space-y-3 rounded-lg border border-amber-800 bg-amber-950/10 p-4"><div><p className="font-medium text-amber-200">Solicitação enviada a {envelope.provider}</p><p className="mt-1 text-sm text-zinc-300">O signatário receberá o link por e-mail. O LexFlow aguardará o webhook autenticado e preservará o PDF assinado sem sobrescrever o original.</p><p className="mt-2 text-xs text-zinc-400">Envio: {envelope.dispatch_status === "submitted" ? "encaminhado ao serviço" : envelope.dispatch_status === "failed" ? "falhou" : "confirmação pendente"}</p></div><button type="button" className={button} onClick={() => { setEnvelope(null); setRequestKey(crypto.randomUUID()); }}>Nova solicitação</button></div>}
-    <details className="border-t border-zinc-800 pt-3" open><summary className="min-h-11 cursor-pointer content-center font-medium text-zinc-100">Solicitações recentes ({envelopes.data?.items.length || 0})</summary><div className="mt-2 divide-y divide-zinc-800">{envelopes.data?.items.map(item => <article key={item.id} className="flex flex-col justify-between gap-2 py-3 sm:flex-row sm:items-center"><div><p className="text-sm font-medium">{documents.data?.items.find(document => document.id === item.document_id)?.title || "Documento"}</p><p className="text-xs text-zinc-400">{item.provider} · {item.status === "signed" ? "Assinado" : item.status === "declined" ? "Recusado" : item.status === "expired" ? "Expirado" : item.dispatch_status === "submitted" ? "Aguardando assinatura" : item.dispatch_status === "failed" ? "Falha no envio" : "Envio incerto — não reenviar automaticamente"} · {dateText(item.created_at)}</p>{item.signed_validation_status === "valid_integrity" && <p className="mt-1 text-xs text-emerald-300">Integridade PAdES validada · {item.signed_signature_count || 0} assinatura{item.signed_signature_count === 1 ? "" : "s"}{item.signed_certificate_trust === "trusted" ? " · certificado confiável no validador local" : " · confiança e revogação da cadeia ICP-Brasil não confirmadas"}</p>}{item.signed_validation_status === "invalid" && <p className="mt-1 text-xs text-red-300">O PDF retornado não passou na validação PAdES e não foi promovido como assinado.</p>}{item.signed_validation_status === "unavailable" && <p className="mt-1 text-xs text-amber-300">Validação PAdES temporariamente indisponível; o PDF ainda não foi promovido.</p>}{item.signed_file_hash && <p className="mt-1 max-w-xl truncate font-mono text-[11px] text-zinc-500">SHA-256 {item.signed_file_hash}</p>}</div>{item.signed_file_available && <button type="button" className={button} onClick={() => download(`/operations/signature-envelopes/${item.id}/download`, item.signed_filename || `documento-assinado-${item.provider}.pdf`)}>Baixar PDF assinado</button>}</article>)}</div>{envelopes.data && !envelopes.data.items.length && <p className="mt-2 text-sm text-zinc-400">Nenhuma assinatura solicitada.</p>}</details>
+    {envelope && <div role="status" className="space-y-3 rounded-lg bg-amber-950/20 p-4"><div><p className="font-medium text-amber-200">Solicitação enviada a {envelope.provider}</p><p className="mt-1 text-sm text-amber-100">O signatário receberá o link por e-mail. O documento original continuará preservado.</p><p className="mt-2 text-xs text-amber-200">Envio: {envelope.dispatch_status === "submitted" ? "encaminhado ao serviço" : envelope.dispatch_status === "failed" ? "falhou" : "aguardando confirmação"}</p></div><button type="button" className={button} onClick={() => { setEnvelope(null); setRequestKey(crypto.randomUUID()); }}>Nova solicitação</button></div>}
+    <details className="border-t border-zinc-800 pt-3" open><summary className="min-h-11 cursor-pointer content-center font-medium text-zinc-100">Solicitações recentes ({envelopes.data?.items.length || 0})</summary><div className="mt-2 divide-y divide-zinc-800">{envelopes.data?.items.map(item => <article key={item.id} className="flex flex-col justify-between gap-2 py-3 sm:flex-row sm:items-center"><div><p className="text-sm font-medium">{documents.data?.items.find(document => document.id === item.document_id)?.title || "Documento"}</p><p className="text-xs text-zinc-400">{item.provider} · {item.status === "signed" ? "Assinado" : item.status === "declined" ? "Recusado" : item.status === "expired" ? "Expirado" : item.dispatch_status === "submitted" ? "Aguardando assinatura" : item.dispatch_status === "failed" ? "Falha no envio" : "Aguardando confirmação do envio"} · {dateText(item.created_at)}</p>{item.signed_validation_status === "valid_integrity" && <p className="mt-1 text-xs text-emerald-300">Arquivo assinado conferido · {item.signed_signature_count || 0} assinatura{item.signed_signature_count === 1 ? "" : "s"}{item.signed_certificate_trust === "trusted" ? " · certificado reconhecido" : " · confirme a validade do certificado antes de usar"}</p>}{item.signed_validation_status === "invalid" && <p className="mt-1 text-xs text-red-300">O arquivo recebido não passou na conferência e não foi liberado como assinado.</p>}{item.signed_validation_status === "unavailable" && <p className="mt-1 text-xs text-amber-300">A conferência está temporariamente indisponível; o arquivo ainda não foi liberado.</p>}</div>{item.signed_file_available && <button type="button" className={button} onClick={() => download(`/operations/signature-envelopes/${item.id}/download`, item.signed_filename || `documento-assinado-${item.provider}.pdf`)}>Baixar PDF assinado</button>}</article>)}</div>{envelopes.data && !envelopes.data.items.length && <p className="mt-2 text-sm text-zinc-400">Nenhuma assinatura solicitada.</p>}</details>
+  </Panel>;
+}
+
+function JudicialSourcesConfiguration() {
+  const sources = useResource<JudicialSource[]>("/controladoria/providers");
+  return <Panel title="Consultas processuais" description="Veja quais fontes podem ser usadas pelo escritório." collapsibleOnMobile>
+    <State loading={sources.loading} error={sources.error ? "Não foi possível consultar os serviços agora." : ""} />
+    <div className="divide-y divide-zinc-800">{sources.data?.map(source => <article key={source.source_kind} className="flex flex-col justify-between gap-2 py-3 sm:flex-row sm:items-start"><div><p className="text-sm font-medium text-zinc-100">{source.label}</p><p className="mt-1 max-w-[65ch] text-xs text-zinc-400">{source.detail}</p></div><span className={`self-start rounded-full px-2.5 py-1 text-xs font-medium ${source.configured ? "bg-emerald-950 text-emerald-300" : "bg-zinc-800 text-zinc-300"}`}>{source.configured ? "Disponível" : source.homologation_required ? "Aguardando liberação" : "Não configurada"}</span></article>)}</div>
+    {sources.data && !sources.data.length && <p className="text-sm text-zinc-400">Nenhuma fonte de consulta cadastrada.</p>}
   </Panel>;
 }
 
 export function Operations() {
   const { user } = useUser();
   if (user.role !== "ASSOCIADO" && !isOfficeAdminRole(user.role)) return <Page title="Atendimento e cobranças" subtitle="Esta área é restrita a advogados e administradores do escritório."><State error="Seu perfil não possui acesso a esta área." /></Page>;
-  return <Page title="Atendimento e cobranças" subtitle="Do primeiro contato à cobrança, com revisão humana antes de cada compromisso financeiro.">
-    {isOfficeAdminRole(user.role) && <IntakeConfiguration />}
+  return <Page title="Atendimento e honorários" subtitle="Acompanhe novos contatos, contratos, cobranças e assinaturas em um só fluxo.">
     <Intakes />
     {isOfficeAdminRole(user.role) && <Fees />}
-    {isOfficeAdminRole(user.role) && <SignatureConfiguration />}
-    {isOfficeAdminRole(user.role) && <ProviderCosts />}
     <Signatures />
+  </Page>;
+}
+
+export function OperationsSettings() {
+  const { user } = useUser();
+  if (!isOfficeAdminRole(user.role)) return <Page title="Configurações de serviços" subtitle="Esta área é restrita aos administradores do escritório."><State error="Seu perfil não possui acesso a estas configurações." /></Page>;
+  return <Page title="Configurações de serviços" subtitle="Gerencie formulário de atendimento, assinatura e consultas externas sem misturar configuração com o trabalho diário.">
+    <JudicialSourcesConfiguration />
+    <IntakeConfiguration />
+    <SignatureConfiguration />
+    <ProviderCosts />
   </Page>;
 }
