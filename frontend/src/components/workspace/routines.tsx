@@ -7,7 +7,7 @@ import { Action, DraftNotice, Field, Panel, State, button, control, dateText, er
 import { FileCenter } from "./file-center";
 
 type Reminder = { id: string; task_id: string; task_title: string; case_id: string | null; remind_at: string; status: string; push_status: string; acknowledged_at: string | null };
-const pushLabels: Record<string, string> = { not_requested: "Sem push solicitado", pending: "Push na fila", accepted: "Aceito pelo provedor; recebimento não confirmado", failed: "Falha no push", unknown: "Recebimento do push desconhecido", unavailable: "Push indisponível" };
+const pushLabels: Record<string, string> = { not_requested: "Sem notificação", pending: "Notificação na fila", accepted: "Notificação enviada; recebimento não confirmado", failed: "Falha na notificação", unknown: "Recebimento não confirmado", unavailable: "Notificação indisponível" };
 export function RoutineAttention() {
   const resource = useResource<{ cases_without_next_action: { id: string; title: string }[]; reminders: Reminder[]; limit: number }>("/routines/attention");
   return <Panel title="O que precisa de atenção">
@@ -33,7 +33,7 @@ export function TaskReminder({ task, onClose }: { task: Row; onClose: () => void
     {resource.data?.item && <div className="space-y-2"><p className="text-sm">{dateText(resource.data.item.remind_at)} · {resource.data.item.status === "scheduled" ? "Agendado" : resource.data.item.status === "due" ? "Horário atingido" : "Cancelado"}</p><p className="text-xs text-zinc-400">{pushLabels[resource.data.item.push_status] || resource.data.item.push_status}</p><Action run={() => api.delete(`/routines/tasks/${task.id}/reminder`)} onDone={resource.reload}>Cancelar lembrete</Action></div>}
     {!allowed ? <p className="text-sm text-amber-300">Salve uma tarefa ativa com data e horário conferidos antes de configurar o lembrete.</p> : <form className="space-y-3" onSubmit={async e => {
       e.preventDefault(); const value = String(new FormData(e.currentTarget).get("remind_at")); setBusy(true); setError(""); setNotice("");
-      try { await api.put(`/routines/tasks/${task.id}/reminder`, { remind_at: new Date(value).toISOString(), expected_revision: task.revision }); resource.reload(); setNotice("Lembrete salvo para você. O push depende da ativação deste dispositivo e do provedor."); } catch (err) { setError(errorText(err)); } finally { setBusy(false); }
+      try { await api.put(`/routines/tasks/${task.id}/reminder`, { remind_at: new Date(value).toISOString(), expected_revision: task.revision }); resource.reload(); setNotice("Lembrete salvo. Para recebê-lo, mantenha as notificações ativas neste dispositivo."); } catch (err) { setError(errorText(err)); } finally { setBusy(false); }
     }}><Field label="Lembrar em (horário local)"><input name="remind_at" type="datetime-local" className={control} required disabled={busy} /></Field><p className="text-xs text-zinc-400">Escolha um horário futuro, até a data da tarefa: {dateText(task.due_at)}.</p><button className={primary} disabled={busy}>{busy ? "Salvando…" : "Salvar meu lembrete"}</button></form>}
     {notice && <p role="status" className="text-sm text-green-300">{notice}</p>}<button className={button} type="button" onClick={onClose}>Fechar lembrete</button>
   </Panel>;

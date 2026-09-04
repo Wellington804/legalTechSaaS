@@ -70,7 +70,7 @@ export function DocumentIntelligence({ caseId, documents }: { caseId: string; do
         {usable.map(document => <label key={document.id} className="flex min-h-11 items-center gap-3 text-sm"><input type="checkbox" checked={selected.includes(document.id)} onChange={event => setSelected(current => event.target.checked ? [...current, document.id].slice(0, 10) : current.filter(id => id !== document.id))} /> <span>{document.title}</span></label>)}
         {!usable.length && <p className="text-sm text-zinc-400">Envie ou processe ao menos um documento com texto antes de analisar.</p>}
       </fieldset>
-      <Field label="Confirmação"><input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} /> <span>Autorizo o envio destes documentos ao provedor de IA configurado.</span></Field>
+      <Field label="Confirmação"><input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} /> <span>Autorizo o envio destes documentos ao serviço de análise por IA.</span></Field>
       <Action className={primary} run={async () => {
         if (!selected.length || !consent) throw new Error("Selecione os documentos e confirme a autorização.");
         await api.post(`/engagement/cases/${caseId}/document-intelligence`, { request_id: crypto.randomUUID(), document_ids: selected, consent: true });

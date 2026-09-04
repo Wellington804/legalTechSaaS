@@ -35,7 +35,7 @@ export function Pilot() {
         <p className="text-sm">Acesso: {display(data.subscription.status)} · termina em {dateText(data.subscription.ends_at)}{data.subscription.days_remaining != null && ` · ${data.subscription.days_remaining} dias restantes`}</p>
         {!data.subscription.write_allowed && <p className="text-sm text-amber-300">Gravações indisponíveis neste período. Consulte o responsável pelo piloto para regularizar o acesso.</p>}
         <p className="text-xs text-zinc-400">Versão {data.release} · último relato {dateText(data.weekly.last_report_at)} · próxima revisão {dateText(data.weekly.next_review_at)}.</p>
-        {data.support_url ? <a href={data.support_url} target="_blank" rel="noopener noreferrer" className={button}>Abrir suporte</a> : <p className="text-xs text-amber-300">Canal de suporte não configurado. Registre o relato abaixo para o acompanhamento do piloto.</p>}
+        {data.support_url ? <a href={data.support_url} target="_blank" rel="noopener noreferrer" className={button}>Abrir suporte</a> : <p className="text-xs text-zinc-400">Registre o relato abaixo para receber acompanhamento durante o piloto.</p>}
       </Panel>
       <Panel title="Seu primeiro atendimento">
         <p className="text-xs text-zinc-400">Use um atendimento autorizado de ponta a ponta. Registre somente o necessário e confira fontes oficiais antes de agir.</p>

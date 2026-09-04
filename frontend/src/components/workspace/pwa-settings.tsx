@@ -96,7 +96,7 @@ export function PwaSettings() {
     {!loading && capabilities && <div className="space-y-3 border-t border-zinc-800 pt-4">
       <p className="text-sm">Receba alertas genéricos de tarefas atribuídas e atualizações do portal, mesmo com o app fechado. Nomes, processos e conteúdo de mensagens não aparecem na tela bloqueada.</p>
       <p className="text-xs text-zinc-400">O sistema pode pedir login ao abrir um alerta. Sair da conta desativa os alertas desta sessão. Notificações não substituem a conferência de prazos; a entrega depende da conexão e das permissões do aparelho.</p>
-      {!capabilities.enabled && <p className="text-sm text-amber-300">Web Push ainda não está habilitado neste ambiente. A equipe precisa configurar as chaves VAPID e o serviço de envio.</p>}
+      {!capabilities.enabled && <p className="text-sm text-amber-300">As notificações ainda não estão disponíveis. Tente novamente mais tarde.</p>}
       {!supportsPush && <p className="text-sm text-zinc-400">Este navegador não oferece Web Push. No iPhone/iPad, tente pelo aplicativo adicionado à Tela de Início.</p>}
       {permission === "denied" && <p className="text-sm text-amber-300">Notificações bloqueadas neste navegador. Libere a permissão nas configurações do site e recarregue esta página.</p>}
       {currentDevice ? <p className="text-sm text-green-300">Este dispositivo está ativo: {currentDevice.label}. Válido até {dateText(currentDevice.expires_at)}.</p>
