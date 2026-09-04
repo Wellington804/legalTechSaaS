@@ -113,7 +113,7 @@ export function AssistantWorkspace() {
   const active = conversations.find(item => item.id === conversationId);
 
   return <Page title="Copiloto jurídico" subtitle="Converse com contexto do escritório, analise documentos e transforme respostas em rascunhos ou tarefas sempre sob sua confirmação.">
-    <div className="grid h-[calc(100dvh-18rem)] min-h-[22rem] max-h-[56rem] overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/20 md:h-[calc(100dvh-15rem)] md:min-h-[28rem] lg:grid-cols-[18rem_minmax(0,1fr)]">
+    <div className="grid h-[calc(100dvh-19rem)] min-h-[22rem] max-h-[56rem] overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/20 md:h-[calc(100dvh-15rem)] md:min-h-[28rem] lg:grid-cols-[18rem_minmax(0,1fr)]">
       <aside className={`${historyOpen ? "fixed inset-0 z-50 flex" : "hidden"} min-h-0 flex-col border-r border-zinc-800 bg-zinc-950 lg:static lg:flex`} aria-label="Histórico pessoal">
         <div className="flex items-center justify-between gap-2 border-b border-zinc-800 p-3"><h2 className="font-semibold">Suas conversas</h2><button className="grid min-h-11 min-w-11 place-items-center lg:hidden" onClick={() => setHistoryOpen(false)} aria-label="Fechar histórico"><X size={18} /></button></div>
         <div className="space-y-2 p-3"><button type="button" className={`${button} w-full gap-2`} onClick={newConversation}><Plus size={16} />Nova conversa</button><label className="relative block"><Search className="absolute left-3 top-3.5 text-zinc-500" size={16} /><input className={`${control} pl-9`} value={search} onChange={event => { setSearch(event.target.value); void loadConversations(event.target.value); }} placeholder="Buscar conversas" aria-label="Buscar conversas" /></label></div>
