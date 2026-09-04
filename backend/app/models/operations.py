@@ -397,7 +397,11 @@ class SignatureEnvelope(Base):
 
     @property
     def signed_file_available(self) -> bool:
-        return bool(self.signed_file_hash and (self.signed_file_content is not None or self.signed_object_key))
+        return bool(
+            self.signed_validation_status == "valid_integrity"
+            and self.signed_file_hash
+            and (self.signed_file_content is not None or self.signed_object_key)
+        )
 
 
 class SignatureProviderEvent(Base):

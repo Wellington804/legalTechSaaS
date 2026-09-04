@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -12,27 +13,37 @@ from app.models.external_integrations import CalendarConnection, CalendarOAuthSt
 from app.models.workspace import WorkspaceTask
 from app.services.calendar_providers import CalendarProviderError, OAuthTokens, ProviderAccount, RemoteEvent
 from app.services.calendar_sync import (
+    _audit_calendar_change,
+    _link_audit_state,
     _pkce,
     _record_conflict,
     _serialize_remote,
+    _task_audit_state,
     complete_oauth,
     conflict_payload,
     digest,
+    disconnect_calendar,
     record_webhook,
     resolve_conflict,
+    select_tasks,
     unselect_task,
 )
 
 
 class FakeDB:
-    def __init__(self, scalars):
+    def __init__(self, scalars, scalar_rows=None):
         self.bind = None
         self._scalars = list(scalars)
+        self._scalar_rows = list(scalar_rows or [])
         self.added = []
         self.commits = 0
 
     async def scalar(self, _statement):
         return self._scalars.pop(0)
+
+    async def scalars(self, _statement):
+        rows = self._scalar_rows.pop(0)
+        return SimpleNamespace(all=lambda: rows)
 
     def add(self, value):
         self.added.append(value)
@@ -278,6 +289,133 @@ class CalendarOAuthTests(unittest.IsolatedAsyncioTestCase):
         ), patch("app.services.calendar_sync.CalendarClient", Client):
             await unselect_task(db, user, connection, "task-a")
         self.assertEqual(link.status, "delete_pending")
+        self.assertEqual(db.commits, 1)
+
+    async def test_tombstoned_link_can_be_reselected_and_is_audited(self):
+        user = SimpleNamespace(id="user-a", tenant_id="tenant-a")
+        connection = CalendarConnection(
+            id="connection-a",
+            tenant_id="tenant-a",
+            user_id="user-a",
+            provider="google",
+            status="active",
+            selected_calendar_id_encrypted=encrypt_mfa_secret("calendar-a"),
+        )
+        task = WorkspaceTask(
+            id="task-a",
+            tenant_id="tenant-a",
+            title="Audiência",
+            kind="deadline",
+            due_at=datetime(2026, 9, 10, 12, tzinfo=timezone.utc),
+            status="pending",
+            revision=3,
+        )
+        link = CalendarTaskLink(
+            id="link-a",
+            tenant_id="tenant-a",
+            connection_id="connection-a",
+            task_id="task-a",
+            status="tombstoned",
+        )
+        db = FakeDB([link])
+
+        with patch("app.services.calendar_sync.get_task", AsyncMock(return_value=task)), patch(
+            "app.services.calendar_sync.require_task_write"
+        ):
+            result = await select_tasks(db, user, connection, [task.id])
+
+        self.assertEqual(result, [link])
+        self.assertEqual(link.status, "active")
+        self.assertEqual(db.commits, 1)
+        audit = next(item for item in db.added if item.__class__.__name__ == "AuditLog")
+        self.assertEqual(audit.user_id, user.id)
+        self.assertEqual(audit.action, "CALENDAR_TASK_LINK_SELECTED")
+        self.assertEqual(audit.details["provider"], "google")
+        self.assertEqual(audit.details["origin"], "user_selection")
+        self.assertEqual(
+            audit.details["changes"]["status"],
+            {"before": "tombstoned", "after": "active"},
+        )
+
+    async def test_calendar_audit_records_safe_before_after_without_tokens_or_raw_notes(self):
+        connection = CalendarConnection(
+            id="connection-a",
+            tenant_id="tenant-a",
+            user_id="user-a",
+            provider="microsoft",
+            access_token_encrypted=encrypt_mfa_secret("do-not-log-token"),
+        )
+        task = WorkspaceTask(
+            id="task-a",
+            tenant_id="tenant-a",
+            title="Prazo atualizado",
+            kind="deadline",
+            due_at=datetime(2026, 9, 10, 12, tzinfo=timezone.utc),
+            notes="segredo do cliente",
+            status="pending",
+            revision=8,
+        )
+        before = _task_audit_state(task)
+        task.title = "Prazo confirmado"
+        task.notes = "outro segredo do cliente"
+        task.revision += 1
+        db = FakeDB([])
+
+        await _audit_calendar_change(
+            db,
+            connection=connection,
+            actor_user_id="user-a",
+            action="CALENDAR_TASK_REMOTE_APPLIED",
+            resource_type="workspace_tasks",
+            resource_id=task.id,
+            task_id=task.id,
+            origin="provider_sync",
+            before=before,
+            after=_task_audit_state(task),
+        )
+
+        audit = next(item for item in db.added if item.__class__.__name__ == "AuditLog")
+        serialized = json.dumps(audit.details)
+        self.assertEqual(audit.user_id, "user-a")
+        self.assertEqual(audit.details["provider"], "microsoft")
+        self.assertEqual(audit.details["origin"], "provider_sync")
+        self.assertIn("title", audit.details["changes"])
+        self.assertIn("notes", audit.details["changes"])
+        self.assertNotIn("do-not-log-token", serialized)
+        self.assertNotIn("segredo do cliente", serialized)
+        self.assertNotIn("outro segredo do cliente", serialized)
+        link_state = _link_audit_state(CalendarTaskLink(provider_etag='"sensitive-etag"'))
+        self.assertIn("provider_etag_hash", link_state)
+        self.assertNotIn("sensitive-etag", json.dumps(link_state))
+
+    async def test_disconnect_audits_links_before_cascade_delete(self):
+        connection = CalendarConnection(
+            id="connection-a",
+            tenant_id="tenant-a",
+            user_id="user-a",
+            provider="microsoft",
+            refresh_token_encrypted=encrypt_mfa_secret("refresh-secret"),
+        )
+        link = CalendarTaskLink(
+            id="link-a",
+            tenant_id="tenant-a",
+            connection_id="connection-a",
+            task_id="task-a",
+            status="active",
+        )
+        db = FakeDB([], scalar_rows=[[link]])
+
+        with patch("app.services.calendar_sync._access_token", AsyncMock(return_value="access")), patch(
+            "app.services.calendar_sync._set_tenant_context", AsyncMock()
+        ):
+            warning = await disconnect_calendar(db, connection)
+
+        self.assertIsNone(warning)
+        audit = next(item for item in db.added if item.__class__.__name__ == "AuditLog")
+        self.assertEqual(audit.user_id, "user-a")
+        self.assertEqual(audit.details["origin"], "user_disconnect")
+        self.assertEqual(audit.details["changes"]["exists"], {"before": True, "after": False})
+        self.assertIn(("deleted", connection), db.added)
         self.assertEqual(db.commits, 1)
 
     async def test_google_webhook_requires_the_registered_resource_id(self):

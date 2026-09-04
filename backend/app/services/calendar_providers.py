@@ -27,6 +27,8 @@ GOOGLE_SCOPES = (
 MICROSOFT_SCOPES = ("openid", "email", "offline_access", "User.Read", "Calendars.ReadWrite")
 MAX_SYNC_PAGES = 50
 MAX_SYNC_EVENTS = 5000
+MAX_CALENDAR_PAGES = 20
+MAX_CALENDAR_ITEMS = 1000
 
 
 class CalendarProviderError(RuntimeError):
@@ -305,21 +307,46 @@ class CalendarClient:
         return ProviderAccount(identifier, label if isinstance(label, str) else None)
 
     async def calendars(self) -> tuple[ProviderCalendar, ...]:
+        url = (
+            "https://www.googleapis.com/calendar/v3/users/me/calendarList"
+            if self.provider == "google"
+            else "https://graph.microsoft.com/v1.0/me/calendars?$select=id,name,canEdit,isDefaultCalendar"
+        )
+        rows: list[dict[str, Any]] = []
+        pages = 0
+        seen_urls: set[str] = set()
+        while url:
+            pages += 1
+            if pages > MAX_CALENDAR_PAGES or url in seen_urls:
+                raise CalendarProviderError("O provedor excedeu o limite de páginas das agendas.")
+            seen_urls.add(url)
+            current_url = url
+            payload = await self._request("GET", current_url)
+            page_rows = payload.get("items", []) if self.provider == "google" else payload.get("value", [])
+            if not isinstance(page_rows, list) or len(rows) + len(page_rows) > MAX_CALENDAR_ITEMS:
+                raise CalendarProviderError("O provedor excedeu o limite de agendas.")
+            rows.extend(row for row in page_rows if isinstance(row, dict))
+            next_value = payload.get("nextPageToken") if self.provider == "google" else payload.get("@odata.nextLink")
+            if next_value is not None and (not isinstance(next_value, str) or not next_value):
+                raise CalendarProviderError("O provedor retornou paginação de agendas inválida.")
+            if self.provider == "google" and next_value:
+                parsed = urlsplit(current_url)
+                query_items = [(key, value) for key, value in parse_qsl(parsed.query) if key != "pageToken"]
+                query_items.append(("pageToken", next_value))
+                url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query_items), ""))
+            else:
+                url = next_value
         if self.provider == "google":
-            payload = await self._request("GET", "https://www.googleapis.com/calendar/v3/users/me/calendarList")
-            rows = payload.get("items", [])
             return tuple(
                 # calendar.events.owned is intentionally narrower than the
                 # all-calendars scope, so writer access to someone else's
                 # calendar must not be presented as writable by LexFlow.
                 ProviderCalendar(str(row["id"]), str(row.get("summary") or row["id"]), bool(row.get("primary")), row.get("accessRole") == "owner")
-                for row in rows if isinstance(row, dict) and row.get("id")
+                for row in rows if row.get("id")
             )
-        payload = await self._request("GET", "https://graph.microsoft.com/v1.0/me/calendars?$select=id,name,canEdit,isDefaultCalendar")
-        rows = payload.get("value", [])
         return tuple(
             ProviderCalendar(str(row["id"]), str(row.get("name") or row["id"]), bool(row.get("isDefaultCalendar")), bool(row.get("canEdit", False)))
-            for row in rows if isinstance(row, dict) and row.get("id")
+            for row in rows if row.get("id")
         )
 
     async def create_event(self, calendar_id: str, task_id: str, body: dict[str, Any], connection_id: str) -> RemoteEvent:

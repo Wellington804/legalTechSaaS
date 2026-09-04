@@ -47,6 +47,19 @@ def upgrade() -> None:
         "signature_envelopes",
         "signed_signature_count IS NULL OR signed_signature_count >= 0",
     )
+    # Existing stored artifacts predate native PAdES validation.  Preserve the
+    # bytes and hash, but make their validation state explicitly fail closed;
+    # the application will not expose them until a fresh provider download is
+    # validated successfully.
+    op.execute(
+        """
+        UPDATE signature_envelopes
+        SET signed_validation_status = 'unavailable',
+            signed_certificate_trust = 'unavailable'
+        WHERE signed_file_hash IS NOT NULL
+          AND signed_validation_status IS NULL
+        """
+    )
     op.execute(
         """
         CREATE OR REPLACE FUNCTION autentique_signature_event_candidates(request_limit integer)
@@ -58,7 +71,10 @@ def upgrade() -> None:
           ON envelope.tenant_id = event.tenant_id AND envelope.id = event.envelope_id
         WHERE event.provider = 'autentique'
           AND event.event_type = 'envelope.signed'
-          AND envelope.signed_file_hash IS NULL
+          AND (
+              envelope.signed_file_hash IS NULL
+              OR envelope.signed_validation_status IS DISTINCT FROM 'valid_integrity'
+          )
           AND envelope.signed_validation_status IS DISTINCT FROM 'invalid'
         ORDER BY event.received_at, event.id
         LIMIT LEAST(GREATEST(request_limit, 1), 500)
@@ -69,6 +85,30 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    connection = op.get_bind()
+    validation_evidence = connection.execute(
+        sa.text(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM signature_envelopes
+                WHERE signature_authentication IS NOT NULL
+                   OR signed_validation_status IS NOT NULL
+                   OR signed_certificate_trust IS NOT NULL
+                   OR signed_validation_report_encrypted IS NOT NULL
+                   OR signed_validated_at IS NOT NULL
+                   OR signed_signature_count IS NOT NULL
+            )
+            """
+        )
+    ).scalar()
+    pending_deletions = connection.execute(
+        sa.text("SELECT EXISTS (SELECT 1 FROM calendar_task_links WHERE status = 'delete_pending')")
+    ).scalar()
+    if validation_evidence or pending_deletions:
+        raise RuntimeError(
+            "Downgrade 20260904_0030 bloqueado: preserve evidências de validação e remoções de calendário pendentes."
+        )
     op.execute(
         """
         CREATE OR REPLACE FUNCTION autentique_signature_event_candidates(request_limit integer)

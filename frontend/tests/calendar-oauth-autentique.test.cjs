@@ -18,6 +18,12 @@ test("calendar UI offers revocable Google and Microsoft OAuth plus explicit task
   assert.match(source, /Dados enviados ao provedor/);
   assert.match(source, /Versão no LexFlow/);
   assert.match(source, /Versão na agenda externa/);
+  assert.match(source, /reason instanceof ApiError && reason\.status === 409/);
+  assert.match(source, /setStale\(true\)/);
+  assert.match(source, /onReload\(\)/);
+  assert.match(source, /disabled=\{busy \|\| stale\}/);
+  assert.match(source, /removido, selecione para reativar/);
+  assert.match(source, />Reativar<\/Action>/);
   assert.doesNotMatch(source, /client_secret|icloud_password|caldav_password/i);
 });
 

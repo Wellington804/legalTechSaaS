@@ -4,20 +4,33 @@ import unittest
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+from fastapi import HTTPException
 from pydantic import ValidationError
 
-from app.schemas.operations import FeeRuleCreate, InvoiceCreate, PublicIntakeSubmit
+from app.api.v1.endpoints.operations import download_signed_envelope
+from app.core.security import encrypt_mfa_secret
 from app.models.operations import PaymentProviderEvent, PaymentReceipt, SignatureEnvelope, SignatureProviderEvent
+from app.schemas.operations import FeeRuleCreate, InvoiceCreate, PublicIntakeSubmit
+from app.services.clicksign_provider import ClicksignWebhook
 from app.services.operations import (
     FixedHostHttpClient,
+    apply_clicksign_event,
     document_version_digest,
     idempotency_digest,
     money,
     provider_reference_digest,
     verify_hmac_webhook,
 )
+
+
+class ScalarDB:
+    def __init__(self, values):
+        self.values = list(values)
+
+    async def scalar(self, _statement):
+        return self.values.pop(0)
 
 
 class OperationsContractsTests(unittest.TestCase):
@@ -91,6 +104,82 @@ class OperationsContractsTests(unittest.TestCase):
         self.assertEqual(client.host, "provider.example")
         with self.assertRaises(ValueError):
             FixedHostHttpClient("http://provider.example")
+
+
+class SignatureLegacyRevalidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_download_rejects_legacy_artifact_without_fresh_integrity_validation(self):
+        envelope = SignatureEnvelope(
+            id="env-legacy",
+            tenant_id="tenant-a",
+            document_id="doc-1",
+            document_version=1,
+            document_hash="a" * 64,
+            provider="autentique",
+            provider_account_reference="account-a",
+            signed_file_hash="b" * 64,
+            signed_file_content=b"%PDF-1.7\nlegacy",
+            signed_validation_status="unavailable",
+        )
+        user = SimpleNamespace(id="user-a", tenant_id="tenant-a", role="lawyer")
+        with patch(
+            "app.api.v1.endpoints.operations.get_signature_envelope",
+            AsyncMock(return_value=envelope),
+        ):
+            with self.assertRaises(HTTPException) as blocked:
+                await download_signed_envelope("env-legacy", SimpleNamespace(), user, SimpleNamespace())
+        self.assertEqual(blocked.exception.status_code, 409)
+
+    async def test_duplicate_clicksign_webhook_revalidates_legacy_artifact(self):
+        pdf = b"%PDF-1.7\nsigned"
+        envelope = SignatureEnvelope(
+            id="env-1",
+            tenant_id="tenant-a",
+            document_id="doc-1",
+            document_version=1,
+            document_hash="a" * 64,
+            provider="clicksign-sandbox",
+            provider_account_reference="account-a",
+            provider_document_hash=provider_reference_digest("clicksign-sandbox", "account-a", "doc-provider"),
+            provider_envelope_id_encrypted=encrypt_mfa_secret("envelope-provider"),
+            provider_document_id_encrypted=encrypt_mfa_secret("doc-provider"),
+            signed_file_hash=hashlib.sha256(pdf).hexdigest(),
+            signed_file_content=pdf,
+            signed_validation_status="unavailable",
+            status="signed",
+        )
+        identity = SimpleNamespace(
+            tenant_id="tenant-a",
+            credential=SimpleNamespace(
+                provider="clicksign-sandbox",
+                account_reference="account-a",
+                api_token_encrypted=encrypt_mfa_secret("provider-token"),
+            ),
+        )
+        event = ClicksignWebhook(
+            "account-a",
+            "event-1",
+            "document_closed",
+            "envelope.signed",
+            "env-1",
+            "doc-provider",
+        )
+
+        async def validate(_db, target, content):
+            self.assertEqual(content, pdf)
+            target.signed_validation_status = "valid_integrity"
+            return True
+
+        fetch = AsyncMock(return_value=pdf)
+        with patch("app.services.operations.fetch_clicksign_signed_pdf", fetch), patch(
+            "app.services.operations._store_signed_artifact", side_effect=validate
+        ), patch("app.services.operations._set_tenant_context", AsyncMock()):
+            result, duplicate = await apply_clicksign_event(
+                ScalarDB([envelope, "persisted-event", envelope]), identity, event, b"payload"
+            )
+        self.assertTrue(duplicate)
+        self.assertIs(result, envelope)
+        self.assertEqual(envelope.signed_validation_status, "valid_integrity")
+        fetch.assert_awaited_once()
 
 
 if __name__ == "__main__":

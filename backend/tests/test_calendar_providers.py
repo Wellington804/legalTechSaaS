@@ -73,6 +73,66 @@ class CalendarProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(calendars[0].can_write)
         self.assertFalse(calendars[1].can_write)
 
+    async def test_calendar_inventory_paginates_google_with_bounded_page_tokens(self):
+        urls = []
+
+        def handler(request: httpx.Request):
+            urls.append(str(request.url))
+            query = parse_qs(request.url.query.decode())
+            if "pageToken" not in query:
+                return httpx.Response(
+                    200,
+                    json={"items": [{"id": "first", "accessRole": "owner"}], "nextPageToken": "page-2"},
+                )
+            self.assertEqual(query["pageToken"], ["page-2"])
+            return httpx.Response(200, json={"items": [{"id": "second", "accessRole": "owner"}]})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            calendars = await CalendarClient("google", "access", http=http).calendars()
+        self.assertEqual([item.identifier for item in calendars], ["first", "second"])
+        self.assertEqual(len(urls), 2)
+
+    async def test_calendar_inventory_rejects_host_escape_and_item_overflow(self):
+        requests = 0
+
+        def hostile(request: httpx.Request):
+            nonlocal requests
+            requests += 1
+            return httpx.Response(200, json={"value": [], "@odata.nextLink": "https://attacker.example/steal"})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(hostile)) as http:
+            with self.assertRaises(CalendarProviderError):
+                await CalendarClient("microsoft", "access", http=http).calendars()
+        self.assertEqual(requests, 1)
+
+        def too_many(_request: httpx.Request):
+            return httpx.Response(200, json={"items": [{"id": "a"}, {"id": "b"}]})
+
+        with patch("app.services.calendar_providers.MAX_CALENDAR_ITEMS", 1):
+            async with httpx.AsyncClient(transport=httpx.MockTransport(too_many)) as http:
+                with self.assertRaises(CalendarProviderError):
+                    await CalendarClient("google", "access", http=http).calendars()
+
+    async def test_calendar_inventory_page_count_is_bounded(self):
+        requests = 0
+
+        def paginated(_request: httpx.Request):
+            nonlocal requests
+            requests += 1
+            return httpx.Response(
+                200,
+                json={
+                    "value": [],
+                    "@odata.nextLink": f"https://graph.microsoft.com/v1.0/me/calendars?$skiptoken={requests}",
+                },
+            )
+
+        with patch("app.services.calendar_providers.MAX_CALENDAR_PAGES", 1):
+            async with httpx.AsyncClient(transport=httpx.MockTransport(paginated)) as http:
+                with self.assertRaises(CalendarProviderError):
+                    await CalendarClient("microsoft", "access", http=http).calendars()
+        self.assertEqual(requests, 1)
+
     async def test_microsoft_calendar_without_can_edit_is_read_only(self):
         async def handler(_request: httpx.Request):
             return httpx.Response(200, json={"value": [{"id": "calendar-a", "name": "Agenda"}]})

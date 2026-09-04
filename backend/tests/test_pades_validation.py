@@ -80,6 +80,7 @@ Signature #1:
         self.assertFalse(stored)
         self.assertIsNone(envelope.signed_file_hash)
         self.assertEqual(envelope.signed_validation_status, "invalid")
+        self.assertFalse(envelope.signed_file_available)
         report = json.loads(decrypt_mfa_secret(envelope.signed_validation_report_encrypted))
         self.assertEqual(report["reason"], "no_signature")
 
@@ -106,6 +107,24 @@ Signature #1:
         self.assertEqual(envelope.signed_signature_count, 1)
         self.assertEqual(envelope.signed_certificate_trust, "unverified")
         self.assertEqual(len(envelope.signed_file_hash), 64)
+        self.assertTrue(envelope.signed_file_available)
+
+    def test_legacy_artifact_is_not_available_without_fresh_integrity_validation(self):
+        envelope = SignatureEnvelope(
+            id="legacy-env",
+            tenant_id="tenant-a",
+            document_id="doc-1",
+            document_version=1,
+            document_hash="a" * 64,
+            provider="autentique",
+            provider_account_reference="123",
+            signed_file_hash="b" * 64,
+            signed_file_content=b"%PDF-1.7\nlegacy",
+            signed_validation_status="unavailable",
+        )
+        self.assertFalse(envelope.signed_file_available)
+        envelope.signed_validation_status = "valid_integrity"
+        self.assertTrue(envelope.signed_file_available)
 
 
 if __name__ == "__main__":

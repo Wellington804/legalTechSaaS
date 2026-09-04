@@ -657,8 +657,11 @@ async def download_signed_envelope(
 ):
     require_role(user, FINANCE_ROLES | {"lawyer"})
     envelope = await get_signature_envelope(db, user, envelope_id)
-    if not envelope.signed_file_available:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Documento assinado ainda não está disponível.")
+    if envelope.signed_validation_status != "valid_integrity" or not envelope.signed_file_available:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Documento assinado ainda não possui validação PAdES íntegra.",
+        )
     filename = envelope.signed_filename or f"documento-assinado-{envelope.provider}.pdf"
     await audit(db, request, user.tenant_id, user.id, "SIGNED_DOCUMENT_DOWNLOADED", "signature_envelopes", envelope.id, {"sha256": envelope.signed_file_hash})
     await db.commit()

@@ -269,6 +269,27 @@ async def disconnect_calendar(db: AsyncSession, connection: CalendarConnection) 
     except (CalendarProviderError, RuntimeError) as exc:
         warning = str(exc)[:300]
     await _set_tenant_context(db, connection.tenant_id)
+    links = (
+        await db.scalars(
+            select(CalendarTaskLink).where(
+                CalendarTaskLink.tenant_id == connection.tenant_id,
+                CalendarTaskLink.connection_id == connection.id,
+            )
+        )
+    ).all()
+    for link in links:
+        await _audit_calendar_change(
+            db,
+            connection=connection,
+            actor_user_id=connection.user_id,
+            action="CALENDAR_TASK_LINK_DELETED",
+            resource_type="calendar_task_links",
+            resource_id=link.id,
+            task_id=link.task_id,
+            origin="user_disconnect",
+            before=_link_audit_state(link),
+            after=_link_audit_state(None),
+        )
     await db.delete(connection)
     await db.commit()
     return warning
@@ -341,10 +362,97 @@ def task_remote_hash(task: WorkspaceTask) -> str:
     ).canonical_hash()
 
 
+def _audit_timestamp(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    aware = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return aware.astimezone(timezone.utc).isoformat()
+
+
+def _audit_text(value: str | None) -> dict[str, str | int] | None:
+    if value is None:
+        return None
+    return {"sha256": digest(value), "length": len(value)}
+
+
+def _task_audit_state(task: WorkspaceTask | None) -> dict:
+    if task is None:
+        return {"exists": False}
+    return {
+        "exists": True,
+        "title": task.title,
+        "due_at": _audit_timestamp(task.due_at),
+        "location": task.location,
+        "notes": _audit_text(task.notes),
+        "status": task.status,
+        "manually_reviewed": bool(task.manually_reviewed),
+        "revision": task.revision,
+    }
+
+
+def _link_audit_state(link: CalendarTaskLink | None) -> dict:
+    if link is None:
+        return {"exists": False}
+    return {
+        "exists": True,
+        "status": link.status,
+        "provider_event_bound": bool(link.provider_event_id_encrypted),
+        "provider_event_hash": link.provider_event_hash,
+        "provider_etag_hash": digest(link.provider_etag) if link.provider_etag else None,
+        "last_local_hash": link.last_local_hash,
+        "last_remote_hash": link.last_remote_hash,
+        "last_synced_at": _audit_timestamp(link.last_synced_at),
+    }
+
+
+def _audit_changes(before: dict, after: dict) -> dict[str, dict]:
+    return {
+        field: {"before": before.get(field), "after": after.get(field)}
+        for field in sorted(before.keys() | after.keys())
+        if before.get(field) != after.get(field)
+    }
+
+
+async def _audit_calendar_change(
+    db: AsyncSession,
+    *,
+    connection: CalendarConnection,
+    actor_user_id: str,
+    action: str,
+    resource_type: str,
+    resource_id: str,
+    task_id: str,
+    origin: str,
+    before: dict,
+    after: dict,
+    extra: dict | None = None,
+) -> None:
+    changes = _audit_changes(before, after)
+    if not changes:
+        return
+    await AuditService.log_action(
+        db,
+        connection.tenant_id,
+        actor_user_id,
+        action,
+        resource_type,
+        resource_id,
+        {
+            "provider": connection.provider,
+            "origin": origin,
+            "connection_id": connection.id,
+            "task_id": task_id,
+            "changes": changes,
+            **(extra or {}),
+        },
+    )
+
+
 async def select_tasks(db: AsyncSession, user: User, connection: CalendarConnection, task_ids: list[str]) -> list[CalendarTaskLink]:
     if not connection.selected_calendar_id_encrypted:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Selecione uma agenda antes de adicionar compromissos.")
     links = []
+    audited: list[tuple[CalendarTaskLink, dict]] = []
     for task_id in task_ids:
         task = await get_task(db, user, task_id)
         require_task_write(user, task)
@@ -356,12 +464,33 @@ async def select_tasks(db: AsyncSession, user: User, connection: CalendarConnect
                 CalendarTaskLink.task_id == task.id,
             )
         )
+        before = _link_audit_state(link)
         if link is None:
             link = CalendarTaskLink(tenant_id=user.tenant_id, connection_id=connection.id, task_id=task.id)
             db.add(link)
-        elif link.status in {"tombstoned", "delete_pending"}:
+        elif link.status == "tombstoned":
             link.status = "active"
+        elif link.status == "delete_pending":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A remoção externa ainda está pendente; aguarde a confirmação antes de reativar.",
+            )
         links.append(link)
+        audited.append((link, before))
+    await db.flush()
+    for link, before in audited:
+        await _audit_calendar_change(
+            db,
+            connection=connection,
+            actor_user_id=user.id,
+            action="CALENDAR_TASK_LINK_SELECTED",
+            resource_type="calendar_task_links",
+            resource_id=link.id,
+            task_id=link.task_id,
+            origin="user_selection",
+            before=before,
+            after=_link_audit_state(link),
+        )
     await db.commit()
     return links
 
@@ -376,6 +505,7 @@ async def unselect_task(db: AsyncSession, user: User, connection: CalendarConnec
     )
     if not link:
         return
+    before = _link_audit_state(link)
     if link.provider_event_id_encrypted:
         if not connection.selected_calendar_id_encrypted:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agenda de destino indisponível.")
@@ -390,9 +520,33 @@ async def unselect_task(db: AsyncSession, user: User, connection: CalendarConnec
             await _set_tenant_context(db, user.tenant_id)
             link.status = "delete_pending"
             connection.last_error = "O provedor ainda não confirmou a remoção do compromisso. Uma nova tentativa será feita."
+            await _audit_calendar_change(
+                db,
+                connection=connection,
+                actor_user_id=user.id,
+                action="CALENDAR_TASK_LINK_REMOVAL_PENDING",
+                resource_type="calendar_task_links",
+                resource_id=link.id,
+                task_id=link.task_id,
+                origin="user_unselection",
+                before=before,
+                after=_link_audit_state(link),
+            )
             await db.commit()
             return
         await _set_tenant_context(db, user.tenant_id)
+    await _audit_calendar_change(
+        db,
+        connection=connection,
+        actor_user_id=user.id,
+        action="CALENDAR_TASK_LINK_DELETED",
+        resource_type="calendar_task_links",
+        resource_id=link.id,
+        task_id=link.task_id,
+        origin="user_unselection",
+        before=before,
+        after=_link_audit_state(None),
+    )
     await db.delete(link)
     await db.commit()
 
@@ -553,6 +707,8 @@ async def synchronize_connection(db: AsyncSession, tenant_id: str, connection_id
             # Permission may have been revoked after selection. The push phase
             # removes the external copy without reading legal task content.
             continue
+    link_before = {link.id: _link_audit_state(link) for link in links}
+    task_before = {task.id: _task_audit_state(task) for task in tasks.values()}
     pulled = pushed = conflicts = 0
     sync_error: str | None = None
     # Recover an external create that succeeded before the local transaction
@@ -728,6 +884,32 @@ async def synchronize_connection(db: AsyncSession, tenant_id: str, connection_id
                 if exc.reauthorization_required:
                     connection.status = "reauthorization_required"
                 break
+    for link in links:
+        await _audit_calendar_change(
+            db,
+            connection=connection,
+            actor_user_id=user.id,
+            action="CALENDAR_TASK_LINK_SYNC_CHANGED",
+            resource_type="calendar_task_links",
+            resource_id=link.id,
+            task_id=link.task_id,
+            origin="provider_sync",
+            before=link_before[link.id],
+            after=_link_audit_state(link),
+        )
+    for task in tasks.values():
+        await _audit_calendar_change(
+            db,
+            connection=connection,
+            actor_user_id=user.id,
+            action="CALENDAR_TASK_REMOTE_APPLIED",
+            resource_type="workspace_tasks",
+            resource_id=task.id,
+            task_id=task.id,
+            origin="provider_sync",
+            before=task_before[task.id],
+            after=_task_audit_state(task),
+        )
     connection.sync_cursor_encrypted = encrypt_mfa_secret(page.cursor)
     connection.last_sync_at = _utcnow()
     if connection.status == "active":
@@ -847,6 +1029,7 @@ async def resolve_conflict(
         # then show the exact new comparison instead of trapping the reviewer
         # on a stale encrypted snapshot.
         previous_remote_hash = current.remote_hash
+        link_before = _link_audit_state(link)
         if not secrets.compare_digest(previous_remote_hash, live_hash):
             replacement = await db.scalar(
                 select(CalendarSyncConflict)
@@ -871,6 +1054,19 @@ async def resolve_conflict(
         current.resolved_by_user_id = None
         current.resolved_at = None
         link.provider_etag = live_remote.etag
+        await _audit_calendar_change(
+            db,
+            connection=connection,
+            actor_user_id=user.id,
+            action="CALENDAR_CONFLICT_LINK_REFRESHED",
+            resource_type="calendar_task_links",
+            resource_id=link.id,
+            task_id=link.task_id,
+            origin="provider_revalidation",
+            before=link_before,
+            after=_link_audit_state(link),
+            extra={"conflict_id": current.id},
+        )
         await AuditService.log_action(
             db,
             user.tenant_id,
@@ -879,6 +1075,8 @@ async def resolve_conflict(
             "calendar_sync_conflicts",
             current.id,
             {
+                "provider": connection.provider,
+                "origin": "provider_revalidation",
                 "task_id": current.task_id,
                 "previous_remote_hash": previous_remote_hash,
                 "remote_hash": live_hash,
@@ -888,6 +1086,8 @@ async def resolve_conflict(
         await db.commit()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A agenda externa mudou após a abertura do conflito.")
 
+    task_before = _task_audit_state(locked_task)
+    link_before = _link_audit_state(link)
     if resolution == "accept_remote":
         if live_remote.deleted:
             locked_task.status = "cancelled"
@@ -915,6 +1115,33 @@ async def resolve_conflict(
         current.status = "kept_local"
     current.resolved_by_user_id = user.id
     current.resolved_at = _utcnow()
+    audit_extra = {"conflict_id": current.id, "resolution": resolution}
+    await _audit_calendar_change(
+        db,
+        connection=connection,
+        actor_user_id=user.id,
+        action="CALENDAR_CONFLICT_TASK_APPLIED",
+        resource_type="workspace_tasks",
+        resource_id=locked_task.id,
+        task_id=locked_task.id,
+        origin="human_conflict_resolution",
+        before=task_before,
+        after=_task_audit_state(locked_task),
+        extra=audit_extra,
+    )
+    await _audit_calendar_change(
+        db,
+        connection=connection,
+        actor_user_id=user.id,
+        action="CALENDAR_CONFLICT_LINK_APPLIED",
+        resource_type="calendar_task_links",
+        resource_id=link.id,
+        task_id=link.task_id,
+        origin="human_conflict_resolution",
+        before=link_before,
+        after=_link_audit_state(link),
+        extra=audit_extra,
+    )
     await db.flush()
     return current
 

@@ -907,7 +907,13 @@ async def apply_clicksign_event(
             ),
         )
     )
-    if duplicate:
+    revalidate_legacy = bool(
+        duplicate
+        and event.event_type == "envelope.signed"
+        and envelope.signed_file_hash
+        and envelope.signed_validation_status in {None, "unavailable"}
+    )
+    if duplicate and not revalidate_legacy:
         return envelope, True
     signed_pdf: bytes | None = None
     if event.event_type == "envelope.signed" and not envelope.signed_file_available:
@@ -932,21 +938,22 @@ async def apply_clicksign_event(
     envelope = await db.scalar(select(SignatureEnvelope).where(*base_filter).with_for_update())
     if not envelope:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Envelope não encontrado.")
-    event_row = SignatureProviderEvent(
-        tenant_id=identity.tenant_id,
-        envelope_id=envelope.id,
-        provider=identity.credential.provider,
-        account_reference=identity.credential.account_reference,
-        event_id=event.event_id,
-        event_digest=event_digest,
-        event_type=event.event_type or event.event_name,
-    )
-    try:
-        async with db.begin_nested():
-            db.add(event_row)
-            await db.flush()
-    except IntegrityError:
-        return envelope, True
+    if not duplicate:
+        event_row = SignatureProviderEvent(
+            tenant_id=identity.tenant_id,
+            envelope_id=envelope.id,
+            provider=identity.credential.provider,
+            account_reference=identity.credential.account_reference,
+            event_id=event.event_id,
+            event_digest=event_digest,
+            event_type=event.event_type or event.event_name,
+        )
+        try:
+            async with db.begin_nested():
+                db.add(event_row)
+                await db.flush()
+        except IntegrityError:
+            return envelope, True
     signed_pdf_valid = False
     if event.event_type == "envelope.signed" and signed_pdf is not None:
         signed_pdf_valid = await _store_signed_artifact(db, envelope, signed_pdf)
@@ -971,7 +978,7 @@ async def apply_clicksign_event(
         elif envelope.status == "declined":
             envelope.declined_at = now
         envelope.revision += 1
-    return envelope, False
+    return envelope, bool(duplicate)
 
 
 async def queue_autentique_event(
