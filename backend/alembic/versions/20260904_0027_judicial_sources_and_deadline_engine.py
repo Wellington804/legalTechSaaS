@@ -188,9 +188,13 @@ def upgrade() -> None:
     op.add_column("controladoria_deadline_reviews", sa.Column("first_approved_by_user_id", sa.String(), nullable=True))
     op.add_column("controladoria_deadline_reviews", sa.Column("first_approved_at", sa.DateTime(timezone=True), nullable=True))
     op.add_column("controladoria_deadline_reviews", sa.Column("first_approval_note", sa.Text(), nullable=True))
+    op.add_column("controladoria_deadline_reviews", sa.Column("first_approval_calculation_sha256", sa.String(length=64), nullable=True))
     op.add_column("controladoria_deadline_reviews", sa.Column("second_approved_by_user_id", sa.String(), nullable=True))
     op.add_column("controladoria_deadline_reviews", sa.Column("second_approved_at", sa.DateTime(timezone=True), nullable=True))
     op.add_column("controladoria_deadline_reviews", sa.Column("second_approval_note", sa.Text(), nullable=True))
+    op.add_column("controladoria_deadline_reviews", sa.Column("second_approval_calculation_sha256", sa.String(length=64), nullable=True))
+    op.add_column("controladoria_deadline_reviews", sa.Column("source_stale_at", sa.DateTime(timezone=True), nullable=True))
+    op.add_column("controladoria_deadline_reviews", sa.Column("source_stale_event_id", sa.String(), nullable=True))
     op.execute(
         "UPDATE controladoria_deadline_reviews SET approval_policy_version = 1 WHERE status = 'approved'"
     )
@@ -216,6 +220,14 @@ def upgrade() -> None:
         ["tenant_id", "second_approved_by_user_id"],
         ["tenant_id", "id"],
     )
+    op.create_foreign_key(
+        "fk_controladoria_deadline_reviews_stale_event_tenant",
+        "controladoria_deadline_reviews",
+        "controladoria_judicial_events",
+        ["tenant_id", "source_stale_event_id"],
+        ["tenant_id", "id"],
+        ondelete="RESTRICT",
+    )
     op.drop_constraint(
         "ck_controladoria_deadline_reviews_status", "controladoria_deadline_reviews", type_="check"
     )
@@ -238,21 +250,49 @@ def upgrade() -> None:
         "AND first_approved_by_user_id IS NULL AND second_approved_by_user_id IS NULL) OR "
         "(approval_policy_version = 2 AND status = 'first_approved' AND task_id IS NULL "
         "AND first_approved_by_user_id IS NOT NULL AND first_approved_at IS NOT NULL "
-        "AND first_approval_note IS NOT NULL AND second_approved_by_user_id IS NULL) OR "
+        "AND first_approval_note IS NOT NULL AND first_approval_calculation_sha256 IS NOT NULL "
+        "AND second_approved_by_user_id IS NULL) OR "
         "(approval_policy_version = 2 AND status = 'approved' AND task_id IS NOT NULL "
         "AND first_approved_by_user_id IS NOT NULL AND first_approved_at IS NOT NULL "
         "AND second_approved_by_user_id IS NOT NULL AND second_approved_at IS NOT NULL "
         "AND first_approval_note IS NOT NULL AND second_approval_note IS NOT NULL "
+        "AND first_approval_calculation_sha256 = second_approval_calculation_sha256 "
         "AND reviewed_by_user_id = second_approved_by_user_id AND reviewed_at IS NOT NULL "
         "AND first_approved_by_user_id <> second_approved_by_user_id) OR "
         "(approval_policy_version = 2 AND status = 'rejected' AND task_id IS NULL "
         "AND reviewed_by_user_id IS NOT NULL AND reviewed_at IS NOT NULL AND review_note IS NOT NULL)",
     )
+    op.create_check_constraint(
+        "ck_controladoria_deadline_reviews_stale_source",
+        "controladoria_deadline_reviews",
+        "(source_stale_at IS NULL) = (source_stale_event_id IS NULL)",
+    )
 
 
 def downgrade() -> None:
     op.execute(
-        "UPDATE controladoria_deadline_reviews SET status = 'suggested' WHERE status = 'first_approved'"
+        """
+        DO $$
+        BEGIN
+          IF EXISTS (SELECT 1 FROM controladoria_deadline_rules)
+             OR EXISTS (SELECT 1 FROM controladoria_calendar_exceptions)
+             OR EXISTS (
+               SELECT 1 FROM controladoria_monitoring_subscriptions
+               WHERE source_kind IN ('djen', 'domicilio', 'tribunal_api')
+             )
+             OR EXISTS (
+               SELECT 1 FROM controladoria_judicial_events
+               WHERE source_kind IN ('djen', 'domicilio', 'tribunal_api')
+             ) THEN
+            RAISE EXCEPTION '0027 downgrade blocked: export or remove judicial-source and deadline-engine data first';
+          END IF;
+        END $$;
+        """
+    )
+    op.drop_constraint(
+        "ck_controladoria_deadline_reviews_stale_source",
+        "controladoria_deadline_reviews",
+        type_="check",
     )
     op.drop_constraint(
         "ck_controladoria_deadline_reviews_human_approval",
@@ -261,6 +301,9 @@ def downgrade() -> None:
     )
     op.drop_constraint(
         "ck_controladoria_deadline_reviews_status", "controladoria_deadline_reviews", type_="check"
+    )
+    op.execute(
+        "UPDATE controladoria_deadline_reviews SET status = 'suggested' WHERE status = 'first_approved'"
     )
     op.create_check_constraint(
         "ck_controladoria_deadline_reviews_status",
@@ -274,14 +317,16 @@ def downgrade() -> None:
         "AND task_id IS NOT NULL) OR (status IN ('suggested', 'rejected') AND task_id IS NULL)",
     )
     for name in (
+        "fk_controladoria_deadline_reviews_stale_event_tenant",
         "fk_controladoria_deadline_reviews_second_approver_tenant",
         "fk_controladoria_deadline_reviews_first_approver_tenant",
         "fk_controladoria_deadline_reviews_rule_tenant",
     ):
         op.drop_constraint(name, "controladoria_deadline_reviews", type_="foreignkey")
     for column in (
-        "second_approval_note", "second_approved_at", "second_approved_by_user_id",
-        "first_approval_note", "first_approved_at", "first_approved_by_user_id",
+        "source_stale_event_id", "source_stale_at",
+        "second_approval_calculation_sha256", "second_approval_note", "second_approved_at", "second_approved_by_user_id",
+        "first_approval_calculation_sha256", "first_approval_note", "first_approved_at", "first_approved_by_user_id",
         "approval_policy_version", "calculation_revision", "calculation", "rule_version", "rule_id",
     ):
         op.drop_column("controladoria_deadline_reviews", column)

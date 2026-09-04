@@ -385,8 +385,10 @@ def _communication_event(
     item_number = _normalize_process_number(
         item.get("numero_processo") or item.get("numeroProcesso") or item.get("process_number")
     )
-    if item_number and item_number != process_number:
-        return None
+    if len(item_number) != 20:
+        raise JudicialProviderError("comunicacao judicial sem numero CNJ vinculante")
+    if item_number != process_number:
+        raise JudicialProviderError("comunicacao judicial nao corresponde ao processo consultado")
     content = str(
         item.get("texto") or item.get("conteudo") or item.get("content") or item.get("assunto") or ""
     ).strip()

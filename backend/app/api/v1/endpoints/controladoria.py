@@ -643,7 +643,13 @@ async def decide_deadline(
     _write: User = Depends(require_tenant_write),
 ):
     if payload.decision == "approved":
-        record, task = await approve_deadline_and_create_task(db, current_user, review_id, note=payload.note)
+        record, task = await approve_deadline_and_create_task(
+            db,
+            current_user,
+            review_id,
+            note=payload.note,
+            expected_calculation_revision=payload.expected_calculation_revision,
+        )
         await audit_and_commit(
             db,
             current_user,
@@ -657,7 +663,13 @@ async def decide_deadline(
             ),
         )
     else:
-        record = await reject_deadline_suggestion(db, current_user, review_id, note=payload.note)
+        record = await reject_deadline_suggestion(
+            db,
+            current_user,
+            review_id,
+            note=payload.note,
+            expected_calculation_revision=payload.expected_calculation_revision,
+        )
         await audit_and_commit(
             db,
             current_user,

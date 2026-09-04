@@ -197,6 +197,12 @@ class ControladoriaDeadlineReview(Base):
             ["users.tenant_id", "users.id"],
             name="fk_controladoria_deadline_reviews_second_approver_tenant",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "source_stale_event_id"],
+            ["controladoria_judicial_events.tenant_id", "controladoria_judicial_events.id"],
+            name="fk_controladoria_deadline_reviews_stale_event_tenant",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(
             "status IN ('suggested', 'first_approved', 'approved', 'rejected')",
             name="ck_controladoria_deadline_reviews_status",
@@ -208,16 +214,22 @@ class ControladoriaDeadlineReview(Base):
             "AND first_approved_by_user_id IS NULL AND second_approved_by_user_id IS NULL) OR "
             "(approval_policy_version = 2 AND status = 'first_approved' AND task_id IS NULL "
             "AND first_approved_by_user_id IS NOT NULL AND first_approved_at IS NOT NULL "
-            "AND first_approval_note IS NOT NULL AND second_approved_by_user_id IS NULL) OR "
+            "AND first_approval_note IS NOT NULL AND first_approval_calculation_sha256 IS NOT NULL "
+            "AND second_approved_by_user_id IS NULL) OR "
             "(approval_policy_version = 2 AND status = 'approved' AND task_id IS NOT NULL "
             "AND first_approved_by_user_id IS NOT NULL AND first_approved_at IS NOT NULL "
             "AND second_approved_by_user_id IS NOT NULL AND second_approved_at IS NOT NULL "
             "AND first_approval_note IS NOT NULL AND second_approval_note IS NOT NULL "
+            "AND first_approval_calculation_sha256 = second_approval_calculation_sha256 "
             "AND reviewed_by_user_id = second_approved_by_user_id AND reviewed_at IS NOT NULL "
             "AND first_approved_by_user_id <> second_approved_by_user_id) OR "
             "(approval_policy_version = 2 AND status = 'rejected' AND task_id IS NULL "
             "AND reviewed_by_user_id IS NOT NULL AND reviewed_at IS NOT NULL AND review_note IS NOT NULL)",
             name="ck_controladoria_deadline_reviews_human_approval",
+        ),
+        CheckConstraint(
+            "(source_stale_at IS NULL) = (source_stale_event_id IS NULL)",
+            name="ck_controladoria_deadline_reviews_stale_source",
         ),
     )
 
@@ -239,9 +251,13 @@ class ControladoriaDeadlineReview(Base):
     first_approved_by_user_id = Column(String, nullable=True)
     first_approved_at = Column(DateTime(timezone=True), nullable=True)
     first_approval_note = Column(Text, nullable=True)
+    first_approval_calculation_sha256 = Column(String(64), nullable=True)
     second_approved_by_user_id = Column(String, nullable=True)
     second_approved_at = Column(DateTime(timezone=True), nullable=True)
     second_approval_note = Column(Text, nullable=True)
+    second_approval_calculation_sha256 = Column(String(64), nullable=True)
+    source_stale_at = Column(DateTime(timezone=True), nullable=True)
+    source_stale_event_id = Column(String, nullable=True)
     reviewed_by_user_id = Column(String, nullable=True)
     reviewed_at = Column(DateTime(timezone=True), nullable=True)
     review_note = Column(Text, nullable=True)

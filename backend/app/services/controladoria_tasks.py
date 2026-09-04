@@ -26,6 +26,7 @@ from app.services.push_service import enqueue_user_push
 
 
 logger = logging.getLogger(__name__)
+MAX_DJEN_PAGES_PER_POLL = 100
 
 
 async def _fetch_with_backoff(provider, *, tribunal: str, process_number: str, cursor: str | None) -> ProviderFetchPage:
@@ -43,6 +44,38 @@ async def _fetch_with_backoff(provider, *, tribunal: str, process_number: str, c
             if attempt < 2:
                 await asyncio.sleep(2 ** attempt)
     raise JudicialProviderError("fonte judicial indisponivel apos novas tentativas") from last_error
+
+
+async def _fetch_subscription_snapshot(
+    provider,
+    *,
+    source_kind: str,
+    tribunal: str,
+    process_number: str,
+    cursor: str | None,
+) -> ProviderFetchPage:
+    if source_kind != "djen":
+        return await _fetch_with_backoff(
+            provider, tribunal=tribunal, process_number=process_number, cursor=cursor
+        )
+    events = []
+    next_cursor = None
+    seen_cursors: set[str] = set()
+    for _ in range(MAX_DJEN_PAGES_PER_POLL):
+        page = await _fetch_with_backoff(
+            provider,
+            tribunal=tribunal,
+            process_number=process_number,
+            cursor=next_cursor,
+        )
+        events.extend(page.events)
+        if page.next_cursor is None:
+            return ProviderFetchPage(events=events, next_cursor=None)
+        if page.next_cursor in seen_cursors:
+            raise JudicialProviderError("paginacao DJEN repetida")
+        seen_cursors.add(page.next_cursor)
+        next_cursor = page.next_cursor
+    raise JudicialProviderError("consulta DJEN excedeu o limite oficial de 10.000 resultados")
 
 
 async def _mark_failed(tenant_id: str, subscription_id: str, code: str) -> None:
@@ -99,8 +132,9 @@ async def _poll_subscription(tenant_id: str, subscription_id: str) -> dict:
                 return {"status": "ignored", "imported": 0}
             if not subscription.provider_subscription_id:
                 subscription.provider_subscription_id = provider_subscription_id
-    page = await _fetch_with_backoff(
+    page = await _fetch_subscription_snapshot(
         provider,
+        source_kind=snapshot["source_kind"],
         tribunal=snapshot["tribunal"],
         process_number=snapshot["process_number"],
         cursor=snapshot["provider_cursor"],

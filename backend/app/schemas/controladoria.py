@@ -177,6 +177,7 @@ class DeadlineSuggestionCreate(ControladoriaSchema):
 class DeadlineDecision(ControladoriaSchema):
     decision: Literal["approved", "rejected"]
     note: str = Field(min_length=3, max_length=5_000)
+    expected_calculation_revision: int = Field(ge=1)
 
 
 class DeadlineRuleSource(ControladoriaSchema):
@@ -314,9 +315,13 @@ class DeadlineReviewResponse(ControladoriaSchema):
     first_approved_by_user_id: str | None
     first_approved_at: datetime | None
     first_approval_note: str | None
+    first_approval_calculation_sha256: str | None
     second_approved_by_user_id: str | None
     second_approved_at: datetime | None
     second_approval_note: str | None
+    second_approval_calculation_sha256: str | None
+    source_stale_at: datetime | None
+    source_stale_event_id: str | None
     reviewed_by_user_id: str | None
     reviewed_at: datetime | None
     review_note: str | None

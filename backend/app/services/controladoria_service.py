@@ -6,13 +6,14 @@ human-confirmed trigger; only two approvals can create a workspace task.
 """
 
 import hashlib
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from typing import TypeVar
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, status
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -120,9 +121,19 @@ def infer_datajud_tribunal(process_number: str | None, court: str | None = None)
 def event_dedupe_key(case_id: str, payload: JudicialEventCreate) -> str:
     """Stable per-source-event identity, scoped by the bound case."""
     if payload.source_kind in {"djen", "domicilio", "tribunal_api"}:
-        # Publication ids are the authority. Corrections to title/content must
-        # not create a second inbox item for the same tenant-bound case.
-        material = "\x1f".join((case_id, payload.source_kind, payload.source_event_id))
+        revision = json.dumps(
+            {
+                "source_url": payload.source_url,
+                "title": payload.title,
+                "source_content": payload.source_content,
+                "source_metadata": payload.source_metadata,
+                "occurred_at": payload.occurred_at.isoformat() if payload.occurred_at else None,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        material = "\x1f".join((case_id, payload.source_kind, payload.source_event_id, revision))
     else:
         # Preserve the deployed identity for existing DataJud/Escavador rows.
         material = "\x1f".join(
@@ -135,6 +146,23 @@ def event_dedupe_key(case_id: str, payload: JudicialEventCreate) -> str:
             )
         )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def deadline_review_digest(review: ControladoriaDeadlineReview) -> str:
+    material = {
+        "id": review.id,
+        "title": review.title,
+        "suggested_due_at": review.suggested_due_at.isoformat(),
+        "suggested_basis": review.suggested_basis,
+        "assigned_user_id": review.assigned_user_id,
+        "rule_id": review.rule_id,
+        "rule_version": review.rule_version,
+        "calculation_revision": review.calculation_revision,
+        "calculation": review.calculation,
+    }
+    return hashlib.sha256(
+        json.dumps(material, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def case_scoped_statement(model: type[T], user: User):
@@ -354,6 +382,29 @@ async def record_judicial_event(
     )
     if existing:
         return existing, False
+    previous = None
+    if payload.source_kind in {"djen", "domicilio", "tribunal_api"}:
+        previous = await db.scalar(
+            select(ControladoriaJudicialEvent)
+            .where(
+                ControladoriaJudicialEvent.tenant_id == user.tenant_id,
+                ControladoriaJudicialEvent.case_id == case.id,
+                ControladoriaJudicialEvent.source_kind == payload.source_kind,
+                ControladoriaJudicialEvent.source_event_id == payload.source_event_id,
+            )
+            .order_by(ControladoriaJudicialEvent.created_at.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        if previous:
+            metadata = dict(payload.source_metadata)
+            metadata.update(
+                {
+                    "supersedes_event_id": previous.id,
+                    "source_revision_requires_review": True,
+                }
+            )
+            payload = payload.model_copy(update={"source_metadata": metadata})
     record = ControladoriaJudicialEvent(
         tenant_id=user.tenant_id,
         dedupe_key=dedupe_key,
@@ -374,6 +425,34 @@ async def record_judicial_event(
         if existing:
             return existing, False
         raise
+    if previous:
+        stale_at = datetime.now(timezone.utc)
+        reviews = (
+            await db.execute(
+                select(ControladoriaDeadlineReview)
+                .where(
+                    ControladoriaDeadlineReview.tenant_id == user.tenant_id,
+                    ControladoriaDeadlineReview.event_id == previous.id,
+                    ControladoriaDeadlineReview.source_stale_at.is_(None),
+                )
+                .with_for_update()
+            )
+        ).scalars().all()
+        for review in reviews:
+            review.source_stale_at = stale_at
+            review.source_stale_event_id = record.id
+            if review.task_id:
+                task = await db.scalar(
+                    select(WorkspaceTask).where(
+                        WorkspaceTask.tenant_id == user.tenant_id,
+                        WorkspaceTask.id == review.task_id,
+                    ).with_for_update()
+                )
+                if task:
+                    task.manually_reviewed = False
+                    marker = "Fonte judicial alterada; confira o novo evento antes de cumprir o prazo."
+                    if marker not in (task.notes or ""):
+                        task.notes = f"{task.notes or ''}\n\n{marker}".strip()
     return record, True
 
 
@@ -478,6 +557,10 @@ async def review_deadline_rule(
     rule.reviewed_at = now
     rule.review_note = note
     if decision == "approved":
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:rule_namespace, 0))"),
+            {"rule_namespace": f"{user.tenant_id}:{rule.rule_key}"},
+        )
         current_active = await db.scalar(
             select(ControladoriaDeadlineRule)
             .where(
@@ -648,6 +731,8 @@ async def calculate_deadline_suggestion(
     if existing and existing.status == "approved":
         raise _conflict("Prazo aprovado e tarefa criada nao podem ser recalculados.")
     if existing:
+        if existing.source_stale_at is not None:
+            raise _conflict("A fonte judicial foi alterada. Calcule o prazo a partir do novo evento.")
         existing.title = payload.title
         existing.suggested_due_at = calculation.due_at
         existing.suggested_basis = basis
@@ -662,9 +747,11 @@ async def calculate_deadline_suggestion(
         existing.first_approved_by_user_id = None
         existing.first_approved_at = None
         existing.first_approval_note = None
+        existing.first_approval_calculation_sha256 = None
         existing.second_approved_by_user_id = None
         existing.second_approved_at = None
         existing.second_approval_note = None
+        existing.second_approval_calculation_sha256 = None
         existing.reviewed_by_user_id = None
         existing.reviewed_at = None
         existing.review_note = None
@@ -691,12 +778,22 @@ async def calculate_deadline_suggestion(
 
 
 async def approve_deadline_and_create_task(
-    db: AsyncSession, user: User, review_id: str, *, note: str
+    db: AsyncSession,
+    user: User,
+    review_id: str,
+    *,
+    note: str,
+    expected_calculation_revision: int,
 ) -> tuple[ControladoriaDeadlineReview, WorkspaceTask | None]:
     """Record one approval; only the distinct second approver creates a task."""
     require_role(user, DEADLINE_APPROVAL_ROLES)
     review = await get_deadline_review(db, user, review_id, for_update=True)
-    await get_case(db, user, review.case_id)
+    case = await get_case(db, user, review.case_id)
+    require_case_write(user, case)
+    if review.calculation_revision != expected_calculation_revision:
+        raise _conflict("O prazo foi recalculado. Recarregue e confira a revisão atual.")
+    if review.source_stale_at is not None:
+        raise _conflict("A fonte judicial foi alterada. Revise o novo evento antes de aprovar.")
     if review.approval_policy_version != 2:
         raise _conflict("Registro legado nao pode receber uma nova aprovacao.")
     if review.status not in {"suggested", "first_approved"}:
@@ -704,15 +801,19 @@ async def approve_deadline_and_create_task(
     if review.assigned_user_id:
         await active_tenant_user(db, user.tenant_id, review.assigned_user_id)
     now = datetime.now(timezone.utc)
+    calculation_sha256 = deadline_review_digest(review)
     if review.status == "suggested":
         review.status = "first_approved"
         review.first_approved_by_user_id = user.id
         review.first_approved_at = now
         review.first_approval_note = note
+        review.first_approval_calculation_sha256 = calculation_sha256
         await db.flush()
         return review, None
     if review.first_approved_by_user_id == user.id:
         raise _conflict("A segunda aprovacao deve ser feita por outro usuario autorizado.")
+    if review.first_approval_calculation_sha256 != calculation_sha256:
+        raise _conflict("O conteúdo conferido na primeira aprovação foi alterado.")
     task = WorkspaceTask(
         tenant_id=user.tenant_id,
         case_id=review.case_id,
@@ -729,6 +830,7 @@ async def approve_deadline_and_create_task(
     review.second_approved_by_user_id = user.id
     review.second_approved_at = now
     review.second_approval_note = note
+    review.second_approval_calculation_sha256 = calculation_sha256
     review.review_note = note
     review.reviewed_by_user_id = user.id
     review.reviewed_at = now
@@ -738,11 +840,19 @@ async def approve_deadline_and_create_task(
 
 
 async def reject_deadline_suggestion(
-    db: AsyncSession, user: User, review_id: str, *, note: str
+    db: AsyncSession,
+    user: User,
+    review_id: str,
+    *,
+    note: str,
+    expected_calculation_revision: int,
 ) -> ControladoriaDeadlineReview:
     require_role(user, DEADLINE_APPROVAL_ROLES)
     review = await get_deadline_review(db, user, review_id, for_update=True)
-    await get_case(db, user, review.case_id)
+    case = await get_case(db, user, review.case_id)
+    require_case_write(user, case)
+    if review.calculation_revision != expected_calculation_revision:
+        raise _conflict("O prazo foi recalculado. Recarregue e confira a revisão atual.")
     if review.status not in {"suggested", "first_approved"}:
         raise _conflict("A revisao de prazo ja recebeu decisao humana.")
     review.status = "rejected"

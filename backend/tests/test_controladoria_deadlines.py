@@ -13,7 +13,7 @@ from app.services.controladoria_deadline_engine import (
     calculate_deadline,
 )
 from app.services.controladoria_provider import JudicialProviderError, ProviderFetchPage
-from app.services.controladoria_tasks import _fetch_with_backoff
+from app.services.controladoria_tasks import _fetch_subscription_snapshot, _fetch_with_backoff
 
 
 def rule(**changes):
@@ -83,6 +83,34 @@ class DeadlineEngineTests(unittest.TestCase):
         self.assertEqual(page.next_cursor, "cursor-ok")
         self.assertEqual([call.args[0] for call in sleep.await_args_list], [1, 2])
 
+    def test_djen_poll_restarts_at_page_one_and_finishes_snapshot(self):
+        class Provider:
+            def __init__(self):
+                self.cursors = []
+
+            async def fetch_page(self, **kwargs):
+                self.cursors.append(kwargs["cursor"])
+                return ProviderFetchPage(
+                    events=[kwargs["cursor"] or "page-1"],
+                    next_cursor="2" if kwargs["cursor"] is None else None,
+                )
+
+        async def run():
+            provider = Provider()
+            result = await _fetch_subscription_snapshot(
+                provider,
+                source_kind="djen",
+                tribunal="tjsp",
+                process_number="00000000000000000000",
+                cursor="stale-page-from-prior-cycle",
+            )
+            return provider, result
+
+        provider, result = asyncio.run(run())
+        self.assertEqual(provider.cursors, [None, "2"])
+        self.assertEqual(result.events, ["page-1", "2"])
+        self.assertIsNone(result.next_cursor)
+
     def test_business_days_exclude_weekend_holiday_and_suspension_in_rule_timezone(self):
         result = calculate_deadline(
             datetime(2026, 9, 4, 18, tzinfo=timezone.utc),
@@ -144,9 +172,16 @@ class DeadlineEngineTests(unittest.TestCase):
             suggested_due_at=datetime(2026, 9, 10, 18, tzinfo=timezone.utc),
             suggested_basis="Regra revisada.",
             assigned_user_id=None,
+            task_id=None,
             approval_policy_version=2,
             status="first_approved",
             first_approved_by_user_id="lawyer-a",
+            first_approval_calculation_sha256="unused-before-same-user-check",
+            rule_id="rule-a",
+            rule_version=1,
+            calculation_revision=1,
+            calculation={"due_date": "2026-09-10"},
+            source_stale_at=None,
         )
         case = SimpleNamespace(id="case-a", responsible_user_id="lawyer-a")
         user = SimpleNamespace(id="lawyer-a", tenant_id="tenant-a", role="lawyer")
@@ -157,12 +192,55 @@ class DeadlineEngineTests(unittest.TestCase):
                 patch.object(service, "get_case", AsyncMock(return_value=case)),
             ):
                 with self.assertRaises(HTTPException) as caught:
-                    await service.approve_deadline_and_create_task(SimpleNamespace(), user, review.id, note="Revisto")
+                    await service.approve_deadline_and_create_task(
+                        SimpleNamespace(), user, review.id, note="Revisto",
+                        expected_calculation_revision=1,
+                    )
             return caught.exception
 
         error = asyncio.run(run())
         self.assertEqual(error.status_code, 409)
         self.assertIn("outro usuario", error.detail)
+
+    def test_read_only_lawyer_cannot_approve_another_lawyers_deadline(self):
+        review = SimpleNamespace(id="review-a", case_id="case-a", calculation_revision=1)
+        case = SimpleNamespace(id="case-a", responsible_user_id="lawyer-a")
+        reader = SimpleNamespace(id="lawyer-b", tenant_id="tenant-a", role="lawyer")
+
+        async def run():
+            with (
+                patch.object(service, "get_deadline_review", AsyncMock(return_value=review)),
+                patch.object(service, "get_case", AsyncMock(return_value=case)),
+            ):
+                with self.assertRaises(HTTPException) as caught:
+                    await service.approve_deadline_and_create_task(
+                        SimpleNamespace(), reader, review.id, note="Conferido.",
+                        expected_calculation_revision=1,
+                    )
+            return caught.exception
+
+        self.assertEqual(asyncio.run(run()).status_code, 403)
+
+    def test_stale_screen_cannot_approve_a_newer_calculation(self):
+        review = SimpleNamespace(id="review-a", case_id="case-a", calculation_revision=2)
+        case = SimpleNamespace(id="case-a", responsible_user_id="lawyer-a")
+        user = SimpleNamespace(id="lawyer-a", tenant_id="tenant-a", role="lawyer")
+
+        async def run():
+            with (
+                patch.object(service, "get_deadline_review", AsyncMock(return_value=review)),
+                patch.object(service, "get_case", AsyncMock(return_value=case)),
+            ):
+                with self.assertRaises(HTTPException) as caught:
+                    await service.approve_deadline_and_create_task(
+                        SimpleNamespace(), user, review.id, note="Conferido.",
+                        expected_calculation_revision=1,
+                    )
+            return caught.exception
+
+        error = asyncio.run(run())
+        self.assertEqual(error.status_code, 409)
+        self.assertIn("recalculado", error.detail)
 
     def test_rule_author_cannot_self_approve_rule(self):
         record = SimpleNamespace(id="rule-a", status="draft", created_by_user_id="partner-a")
@@ -194,7 +272,7 @@ class DeadlineEngineTests(unittest.TestCase):
         user = SimpleNamespace(id="partner-b", tenant_id="tenant-a", role="partner")
 
         async def run():
-            db = SimpleNamespace(scalar=AsyncMock(return_value=active))
+            db = SimpleNamespace(scalar=AsyncMock(return_value=active), execute=AsyncMock())
             with patch.object(service, "get_deadline_rule", AsyncMock(return_value=draft)):
                 with self.assertRaises(HTTPException) as caught:
                     await service.review_deadline_rule(

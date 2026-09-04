@@ -109,6 +109,14 @@ class ControladoriaServiceTests(unittest.TestCase):
                 second_approved_by_user_id=None,
                 second_approved_at=None,
                 second_approval_note=None,
+                first_approval_calculation_sha256=None,
+                second_approval_calculation_sha256=None,
+                source_stale_at=None,
+                source_stale_event_id=None,
+                rule_id="rule-a",
+                rule_version=1,
+                calculation_revision=1,
+                calculation={"due_date": "2026-09-03"},
             )
             db = FakeDatabase()
             with (
@@ -116,11 +124,13 @@ class ControladoriaServiceTests(unittest.TestCase):
                 patch.object(service, "get_case", AsyncMock(return_value=self.case)),
             ):
                 first_result, first_task = await service.approve_deadline_and_create_task(
-                    db, self.user, "review-a", note="Conferido pelo responsavel."
+                    db, self.user, "review-a", note="Conferido pelo responsavel.",
+                    expected_calculation_revision=1,
                 )
-                second_user = SimpleNamespace(id="lawyer-b", tenant_id="tenant-a", role="lawyer")
+                second_user = SimpleNamespace(id="partner-b", tenant_id="tenant-a", role="partner")
                 result, task = await service.approve_deadline_and_create_task(
-                    db, second_user, "review-a", note="Segunda conferencia independente."
+                    db, second_user, "review-a", note="Segunda conferencia independente.",
+                    expected_calculation_revision=1,
                 )
             return db, first_result, first_task, result, task
 
@@ -128,7 +138,7 @@ class ControladoriaServiceTests(unittest.TestCase):
         self.assertIsNone(first_task)
         self.assertEqual(first_review.first_approved_by_user_id, "lawyer-a")
         self.assertEqual(review.status, "approved")
-        self.assertEqual(review.second_approved_by_user_id, "lawyer-b")
+        self.assertEqual(review.second_approved_by_user_id, "partner-b")
         self.assertEqual(review.task_id, "task-approved")
         self.assertEqual(len(db.added), 1)
         self.assertIs(db.added[0], task)
@@ -303,10 +313,83 @@ class ControladoriaServiceTests(unittest.TestCase):
             retrieved_at=first.events[0].retrieved_at,
         )
         corrected_payload = first_payload.model_copy(update={"title": "Texto corrigido pelo DJEN"})
-        self.assertEqual(
+        self.assertNotEqual(
             service.event_dedupe_key("case-a", first_payload),
             service.event_dedupe_key("case-a", corrected_payload),
         )
+
+    def test_automatic_source_revision_is_preserved_and_marks_deadline_stale(self):
+        previous = SimpleNamespace(
+            id="event-old", created_at=datetime(2026, 9, 3, tzinfo=timezone.utc)
+        )
+        review = SimpleNamespace(
+            id="review-a", task_id=None, source_stale_at=None, source_stale_event_id=None
+        )
+
+        class ScalarRows:
+            def scalars(self):
+                return self
+
+            def all(self):
+                return [review]
+
+        class Database(FakeDatabase):
+            def __init__(self):
+                super().__init__((None, previous))
+
+            async def execute(self, _statement):
+                return ScalarRows()
+
+            async def flush(self):
+                await super().flush()
+                for record in self.added:
+                    if record.__class__.__name__ == "ControladoriaJudicialEvent" and record.id is None:
+                        record.id = "event-new"
+
+        payload = JudicialEventCreate(
+            case_id="case-a",
+            subscription_id="subscription-a",
+            source_kind="djen",
+            source_event_id="publication-a",
+            source_url="https://comunica.pje.jus.br/publication-a",
+            title="Intimacao corrigida",
+            source_content="Novo conteudo oficial.",
+            source_metadata={"provider_payload_sha256": "b" * 64},
+        )
+
+        async def run():
+            db = Database()
+            subscription = SimpleNamespace(case_id="case-a", status="active")
+            with (
+                patch.object(service, "get_case", AsyncMock(return_value=self.case)),
+                patch.object(service, "get_subscription", AsyncMock(return_value=subscription)),
+            ):
+                event, created = await service.record_judicial_event(db, self.user, payload)
+            return event, created
+
+        event, created = asyncio.run(run())
+        self.assertTrue(created)
+        self.assertEqual(event.source_metadata["supersedes_event_id"], "event-old")
+        self.assertEqual(review.source_stale_event_id, "event-new")
+        self.assertIsNotNone(review.source_stale_at)
+
+    def test_djen_rejects_a_response_without_the_bound_process_number(self):
+        async def run():
+            transport = httpx.MockTransport(
+                lambda _request: httpx.Response(
+                    200,
+                    json={"items": [{"numeroComunicacao": 1, "texto": "Intimacao"}]},
+                )
+            )
+            provider = DjenMonitoringProvider(
+                client_factory=lambda **kwargs: httpx.AsyncClient(transport=transport, **kwargs)
+            )
+            return await provider.fetch_page(
+                tribunal="tjsp", process_number="00000000000000000000"
+            )
+
+        with self.assertRaises(JudicialProviderError):
+            asyncio.run(run())
 
     def test_credentialed_sources_fail_closed_until_endpoint_and_token_exist(self):
         config = SimpleNamespace()
@@ -358,7 +441,9 @@ class ControladoriaServiceTests(unittest.TestCase):
                 rule_id=None, rule_version=None, calculation=None, calculation_revision=1,
                 approval_policy_version=2, first_approved_by_user_id=None, first_approved_at=None,
                 first_approval_note=None, second_approved_by_user_id=None, second_approved_at=None,
-                second_approval_note=None,
+                second_approval_note=None, first_approval_calculation_sha256=None,
+                second_approval_calculation_sha256=None, source_stale_at=None,
+                source_stale_event_id=None,
             )
             event = SimpleNamespace(
                 id="event-a", case_id="case-a", subscription_id="subscription-a", source_kind="datajud",
