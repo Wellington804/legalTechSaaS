@@ -1,7 +1,7 @@
 """Case-bound communication and revocable client portal access."""
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, ForeignKeyConstraint, String, Text, UniqueConstraint, CheckConstraint
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, ForeignKeyConstraint, Integer, String, Text, UniqueConstraint, CheckConstraint
 from app.core.database import Base
 
 
@@ -14,9 +14,13 @@ class TenantChannel(Base):
     __table_args__ = (
         CheckConstraint("whatsapp_connection_state IN ('disconnected','pending','connected')", name="ck_tenant_channel_whatsapp_state"),
         UniqueConstraint("evolution_instance_id_hash", name="uq_tenant_channels_evolution_instance_id_hash"),
+        UniqueConstraint("email_inbound_token_hash", name="uq_tenant_channels_email_inbound_token_hash"),
     )
     tenant_id = Column(String, ForeignKey("tenants.id"), primary_key=True)
     email_enabled = Column(Boolean, nullable=False, default=False)
+    email_inbound_enabled = Column(Boolean, nullable=False, default=False)
+    email_inbound_token_encrypted = Column(Text, nullable=True)
+    email_inbound_token_hash = Column(String(64), nullable=True)
     whatsapp_enabled = Column(Boolean, nullable=False, default=False)
     ai_enabled = Column(Boolean, nullable=False, default=False)
     evolution_instance_id_encrypted = Column(Text, nullable=True)
@@ -37,6 +41,7 @@ class CaseMessage(Base):
         ForeignKeyConstraint(["tenant_id", "delivery_id"], ["notification_deliveries.tenant_id", "notification_deliveries.id"], name="fk_case_message_delivery_tenant"),
         ForeignKeyConstraint(["tenant_id", "created_by_user_id"], ["users.tenant_id", "users.id"]),
         UniqueConstraint("delivery_id", name="uq_case_message_delivery"),
+        UniqueConstraint("tenant_id", "id", name="uq_case_messages_tenant_id"),
         UniqueConstraint("tenant_id", "request_id", name="uq_case_message_request"),
         CheckConstraint("channel IN ('portal','email','whatsapp')", name="ck_case_message_channel"),
         CheckConstraint("direction IN ('inbound','outbound')", name="ck_case_message_direction"),
@@ -53,6 +58,63 @@ class CaseMessage(Base):
     created_by_user_id = Column(String, nullable=True)
     read_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class CommunicationInboxItem(Base):
+    """Authenticated provider input awaiting a deterministic case association."""
+
+    __tablename__ = "communication_inbox_items"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_communication_inbox_tenant_id"),
+        UniqueConstraint("provider", "event_digest", name="uq_communication_inbox_provider_event"),
+        CheckConstraint("channel IN ('email','whatsapp')", name="ck_communication_inbox_channel"),
+        CheckConstraint(
+            "status IN ('unmatched','ambiguous','linked','dismissed')",
+            name="ck_communication_inbox_status",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "matched_client_id"],
+            ["workspace_clients.tenant_id", "workspace_clients.id"],
+            name="fk_communication_inbox_client_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "linked_case_id"],
+            ["workspace_cases.tenant_id", "workspace_cases.id"],
+            name="fk_communication_inbox_case_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "linked_message_id"],
+            ["case_messages.tenant_id", "case_messages.id"],
+            name="fk_communication_inbox_message_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "reviewed_by_user_id"],
+            ["users.tenant_id", "users.id"],
+            name="fk_communication_inbox_reviewer_tenant",
+        ),
+    )
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String, ForeignKey("tenants.id"), nullable=False, index=True)
+    channel = Column(String(16), nullable=False, index=True)
+    provider = Column(String(16), nullable=False)
+    event_digest = Column(String(64), nullable=False)
+    provider_message_hash = Column(String(64), nullable=False)
+    sender_address = Column(String(320), nullable=False)
+    subject = Column(String(500), nullable=True)
+    body = Column(Text, nullable=False)
+    body_truncated = Column(Boolean, nullable=False, default=False)
+    has_attachments = Column(Boolean, nullable=False, default=False)
+    status = Column(String(16), nullable=False, default="unmatched", index=True)
+    matched_client_id = Column(String, nullable=True, index=True)
+    linked_case_id = Column(String, nullable=True, index=True)
+    linked_message_id = Column(String, nullable=True)
+    reviewed_by_user_id = Column(String, nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    received_at = Column(DateTime(timezone=True), nullable=False, default=utcnow, index=True)
+    revision = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
 
 
 class PortalGrant(Base):

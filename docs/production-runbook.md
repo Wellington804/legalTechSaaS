@@ -57,6 +57,8 @@ Para rollback, volte para uma imagem/release compatível com o schema já aplica
 
 Valide o domínio remetente no Resend e publique SPF/DKIM/DMARC pela Cloudflare. Em staging, configure o webhook HTTPS em `/api/v1/notifications/webhooks/resend`, confirme a assinatura Svix e exercite `sent`, `delivered`, `bounced` e replay do mesmo evento.
 
+Para a caixa omnichannel de entrada, crie no Resend um subdomínio separado com MX de recebimento, informe-o em `RESEND_INBOUND_DOMAIN` e habilite também o evento `email.received` no mesmo webhook. Cada escritório gera na interface um endereço opaco próprio. O backend busca o corpo pela Receiving API somente após validar a assinatura; remetentes sem correspondência única ficam na fila humana. Teste endereço inválido, replay, anexo, mensagem longa, dois clientes iguais e dois processos ativos antes de homologar.
+
 `UNBOUND_NOTIFICATION_DISPATCH_ENABLED` permanece **sempre** `false`. O envio de produção só é iniciado pela comunicação persistida e vinculada ao caso; a API não opera como relay arbitrário. A recuperação de `queued`/`processing`, a janela idempotente do Resend e a inbox de receipts hasheados estão documentadas em [Operação da VPS](operacao-vps.md#notificações-e-recuperação).
 
 ## 6. Evolution Go opcional

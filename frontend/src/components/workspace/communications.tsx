@@ -2,20 +2,58 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { api } from "@/lib/api-client";
 import { isOfficeAdminRole, useUser } from "@/context/user-context";
-import { Action, Field, Page, Panel, State, control, dateText, errorText, primary, useResource } from "./shared";
+import { Action, Field, Page, Panel, State, button, control, dateText, errorText, primary, useResource } from "./shared";
 import { display, type List, type Row } from "./records";
 import { formatBrazilianPhone } from "@/lib/phone";
 
 type WhatsAppStatus = { status: string; connected: boolean; number?: string; last_checked_at?: string; verification_unavailable?: boolean };
+type InboundAddress = { configured: boolean; address?: string; provider_ready: boolean };
+type InboxItem = Row & { channel: "email" | "whatsapp"; sender: string; subject?: string; body: string; body_truncated: boolean; has_attachments: boolean; status: string; received_at: string; revision: number };
 
 function verificationText(value?: string) {
   if (!value) return "Ainda não verificado";
   const date = new Date(value); if (Number.isNaN(date.valueOf())) return "Ainda não verificado";
   const today = new Date(); const sameDay = date.toDateString() === today.toDateString();
   return `${sameDay ? "hoje" : date.toLocaleDateString("pt-BR")}, ${date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+function InboxCard({ item, cases, onDone }: { item: InboxItem; cases: Row[]; onDone: () => void }) {
+  const [caseId, setCaseId] = useState(""); const [reason, setReason] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
+  async function link(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy(true); setError("");
+    try { await api.post(`/engagement/inbox/${item.id}/link`, { case_id: caseId, expected_revision: item.revision, reason }); onDone(); }
+    catch (cause) { setError(errorText(cause)); } finally { setBusy(false); }
+  }
+  async function dismiss() {
+    if (reason.trim().length < 3) { setError("Informe o motivo da revisão antes de descartar."); return; }
+    setBusy(true); setError("");
+    try { await api.post(`/engagement/inbox/${item.id}/dismiss`, { expected_revision: item.revision, reason }); onDone(); }
+    catch (cause) { setError(errorText(cause)); } finally { setBusy(false); }
+  }
+  return <article className="space-y-3 rounded-xl border border-zinc-800 p-4">
+    <div><p className="text-xs text-zinc-400">{display(item.channel)} · {item.sender} · {dateText(item.received_at)}</p>{item.subject && <p className="mt-1 text-sm font-medium">{item.subject}</p>}<p className="mt-2 whitespace-pre-wrap break-words text-sm">{item.body}</p>{item.body_truncated && <p className="mt-1 text-xs text-amber-300">Conteúdo extenso: apenas os primeiros 8.000 caracteres foram recebidos.</p>}{item.has_attachments && <p className="mt-1 text-xs text-amber-300">Há anexo no provedor. Confirme-o antes de vincular ao processo.</p>}</div>
+    <form onSubmit={link} className="grid gap-3 md:grid-cols-2"><Field label="Processo correto"><select className={control} value={caseId} onChange={event => setCaseId(event.target.value)} required><option value="">Selecione após conferir…</option>{cases.map(row => <option key={row.id} value={row.id}>{row.title}</option>)}</select></Field><Field label="Motivo da vinculação ou descarte"><input className={control} value={reason} onChange={event => setReason(event.target.value)} required minLength={3} maxLength={500} /></Field><div className="flex flex-wrap gap-2 md:col-span-2"><button className={primary} disabled={busy}>{busy ? "Revisando…" : "Vincular ao processo"}</button><button type="button" className={button} disabled={busy} onClick={() => void dismiss()}>Descartar</button></div></form>
+    {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
+  </article>;
+}
+
+function OmnichannelInbox({ cases, onNotice }: { cases: Row[]; onNotice: (value: string) => void }) {
+  const inbox = useResource<{ items: InboxItem[] }>("/engagement/inbox?status_filter=open");
+  const address = useResource<InboundAddress>("/engagement/inbox/email-address");
+  async function configure(rotate = false) {
+    if (rotate && !window.confirm("Trocar o endereço de entrada? O endereço anterior deixará de receber mensagens.")) return;
+    await api.post("/engagement/inbox/email-address", { rotate }); address.reload(); onNotice(rotate ? "Endereço de entrada trocado." : "Caixa de e-mail ativada.");
+  }
+  return <>
+    <Panel title="Caixa omnichannel" description="Entradas só são vinculadas automaticamente quando há um único cliente e um único processo compatível.">
+      <div className="space-y-2 rounded-xl border border-zinc-800 p-4"><p className="text-sm font-medium">Recebimento de e-mail</p><State loading={address.loading} error={address.error} />{address.data?.address && <Field label="Endereço exclusivo deste escritório"><input className={control} readOnly value={address.data.address} onFocus={event => event.currentTarget.select()} /></Field>}<div className="flex flex-wrap gap-2">{address.data?.configured ? <><button className={button} onClick={() => void navigator.clipboard.writeText(address.data?.address || "")}>Copiar endereço</button><Action run={() => configure(true)}>Trocar endereço</Action><Action run={async () => { if (!window.confirm("Desativar o recebimento de e-mail deste escritório?")) return; await api.delete("/engagement/inbox/email-address"); address.reload(); onNotice("Recebimento de e-mail desativado."); }}>Desativar</Action></> : <Action className={primary} run={() => configure(false)}>Ativar recebimento</Action>}</div>{address.data && !address.data.provider_ready && <p className="text-xs text-amber-300">A VPS ainda precisa do domínio de recebimento e das credenciais Resend.</p>}</div>
+      <State loading={inbox.loading} error={inbox.error} empty={!inbox.data?.items.length} emptyText="Nenhuma mensagem aguarda associação manual." />
+      <div className="space-y-3">{inbox.data?.items.map(item => <InboxCard key={item.id} item={item} cases={cases} onDone={inbox.reload} />)}</div>
+    </Panel>
+  </>;
 }
 
 export function Communications() {
@@ -44,7 +82,7 @@ export function Communications() {
     return () => window.clearInterval(timer);
   }, [admin, channels.reload, qrCode, whatsapp?.connected, whatsapp?.status]);
 
-  return <Page title="Comunicações e portal" subtitle="Selecione um processo para enviar, acompanhar recibos e controlar o acesso do cliente.">
+  return <Page title="Comunicações e portal" subtitle="Receba mensagens, vincule entradas ambíguas e acompanhe cada conversa no processo correto.">
     <Panel title="WhatsApp do escritório">
       <div className="space-y-5 rounded-xl border border-zinc-800 bg-zinc-900/30 p-4">
         <div><p className="font-medium">Status: {whatsapp?.connected ? "Conectado" : whatsapp?.status === "pending" ? qrCode ? "Aguardando leitura do QR Code" : "Conectando" : "Desconectado"}</p>
@@ -59,6 +97,7 @@ export function Communications() {
         {!whatsapp?.connected && <div className="border-t border-zinc-800 pt-4"><p className="text-sm font-medium">Como conectar:</p><ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-zinc-400"><li>Clique em conectar</li><li>Leia o QR Code com o WhatsApp</li><li>Aguarde a confirmação</li></ol></div>}
       </div><State loading={channels.loading} error={channels.error} />
     </Panel>
+    {admin && <OmnichannelInbox cases={cases.data?.items || []} onNotice={setMessage} />}
     <Panel title="Selecionar processo"><Field label="Processo"><select className={control} value={caseId} onChange={event => { setCaseId(event.target.value); setLink(""); setRequestId(crypto.randomUUID()); }}><option value="">Selecione…</option>{cases.data?.items.map(row => <option key={row.id} value={row.id}>{row.title}</option>)}</select></Field><State error={cases.error || error} />{message && <p role="status" className="text-sm text-green-300">{message}</p>}</Panel>
     {caseId && <>
       <Panel title="Enviar ao cliente"><form className="space-y-3" onSubmit={async event => {

@@ -86,7 +86,7 @@ async def connect(token: str) -> str | None:
         token,
         body={
             "webhookUrl": f"{settings.FRONTEND_URL.rstrip('/')}{settings.API_V1_STR}/notifications/webhooks/evolution",
-            "subscribe": ["READ_RECEIPT", "CONNECTION", "QRCODE"],
+            "subscribe": ["MESSAGE", "READ_RECEIPT", "CONNECTION", "QRCODE"],
             "rabbitmqEnable": "disabled",
             "websocketEnable": "disabled",
             "natsEnable": "disabled",

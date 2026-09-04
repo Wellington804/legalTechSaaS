@@ -51,7 +51,7 @@ class EvolutionManagerTests(unittest.TestCase):
         self.assertEqual(result, qr)
         self.assertEqual(FakeClient.calls[0][2]["apikey"], "tenant-token")
         self.assertEqual(FakeClient.calls[0][3]["webhookUrl"], "https://lexflow.example.com/api/v1/notifications/webhooks/evolution")
-        self.assertEqual(FakeClient.calls[0][3]["subscribe"], ["READ_RECEIPT", "CONNECTION", "QRCODE"])
+        self.assertEqual(FakeClient.calls[0][3]["subscribe"], ["MESSAGE", "READ_RECEIPT", "CONNECTION", "QRCODE"])
 
     def test_instance_creation_uses_only_global_key_and_generated_instance_token(self):
         FakeClient.responses = [httpx.Response(200, json={"data": {"id": "instance-a"}})]

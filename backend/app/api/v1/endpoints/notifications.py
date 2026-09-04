@@ -20,6 +20,14 @@ from app.services.notification_service import (
     get_tenant_delivery,
     verify_resend_signature,
 )
+from app.services.omnichannel import (
+    InboundProviderError,
+    extract_whatsapp_message,
+    fetch_resend_received_email,
+    ingest_inbound_message,
+    resend_recipient_token,
+    resolve_inbound_email_tenant,
+)
 from app.services.tasks import process_notification_task
 
 
@@ -111,11 +119,35 @@ async def resend_webhook(
     try:
         payload = json.loads(raw)
         event_type = payload["type"]
-        provider_message_id = payload["data"]["email_id"]
+        data = payload["data"]
+        provider_message_id = data["email_id"]
     except (KeyError, TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid webhook payload")
     if not isinstance(event_type, str) or not isinstance(provider_message_id, str):
         raise HTTPException(status_code=400, detail="Invalid webhook payload")
+
+    if event_type == "email.received":
+        token = resend_recipient_token(data.get("to"), settings.RESEND_INBOUND_DOMAIN)
+        if not token:
+            return {"received": True}
+        tenant_id = await resolve_inbound_email_tenant(db, token)
+        if not tenant_id:
+            return {"received": True}
+        await _set_tenant_context(db, tenant_id)
+        try:
+            message = await fetch_resend_received_email(provider_message_id)
+        except InboundProviderError:
+            raise HTTPException(status_code=503, detail="Inbound email provider unavailable")
+        await ingest_inbound_message(
+            db,
+            tenant_id=tenant_id,
+            channel="email",
+            provider="resend",
+            event_identity=svix_id,
+            message=message,
+        )
+        await db.commit()
+        return {"received": True}
 
     statuses = {
         "email.sent": "sent",
@@ -175,6 +207,22 @@ async def evolution_webhook(request: Request, db: AsyncSession = Depends(get_db)
         if previous != channel.whatsapp_connection_state and channel.whatsapp_connection_state in {"connected", "disconnected"}:
             action = "WHATSAPP_CONNECTED" if channel.whatsapp_connection_state == "connected" else "WHATSAPP_DISCONNECTED"
             await AuditService.log_action(db, tenant_id, None, action, "case_communication", tenant_id)
+        await db.commit()
+        return {"received": True}
+
+    if event == "Message":
+        message = extract_whatsapp_message(payload)
+        if not message:
+            return {"received": True}
+        await _set_tenant_context(db, tenant_id)
+        await ingest_inbound_message(
+            db,
+            tenant_id=tenant_id,
+            channel="whatsapp",
+            provider="evolution",
+            event_identity=f"{instance_id}:{message.provider_message_id}",
+            message=message,
+        )
         await db.commit()
         return {"received": True}
 

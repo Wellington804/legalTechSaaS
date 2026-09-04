@@ -19,7 +19,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.dependencies import CurrentUser, _set_tenant_context, ensure_tenant_write_access, require_trusted_origin
 from app.core.security import decrypt_mfa_secret, encrypt_mfa_secret, hash_account_token
-from app.models.engagement import CaseMessage, PortalChecklist, PortalFolderShare, PortalGrant, TenantChannel
+from app.models.engagement import CaseMessage, CommunicationInboxItem, PortalChecklist, PortalFolderShare, PortalGrant, TenantChannel
 from app.models.notification import NotificationDelivery
 from app.models.tenant import Tenant
 from app.models.workspace import WorkspaceCase, WorkspaceClient, WorkspaceDocument, WorkspaceDocumentFolder, WorkspaceDocumentUpload, WorkspaceDocumentVersion
@@ -31,6 +31,7 @@ from app.services.workspace_service import ALLOWED_UPLOAD_TYPES, MAX_UPLOAD_BYTE
 from app.services.document_storage import create_download_url, create_upload_url, enabled as r2_enabled, quarantine_key
 from app.services.document_tasks import process_upload
 from app.services import evolution_manager
+from app.services.omnichannel import create_linked_case_message
 from app.api.v1.endpoints.notifications import enforce_dispatch_rate_limit
 
 router = APIRouter()
@@ -74,11 +75,43 @@ class PortalUploadInput(StrictInput):
     sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
+class InboxLinkInput(StrictInput):
+    case_id: str = Field(min_length=1, max_length=64)
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class InboxReviewInput(StrictInput):
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class InboundEmailInput(StrictInput):
+    rotate: bool = False
+
+
 def message_json(message, delivery=None):
     return {"id": message.id, "case_id": message.case_id, "body": message.body, "channel": message.channel,
             "direction": message.direction, "created_at": message.created_at,
             "status": delivery.status if delivery else "recorded", "error_code": delivery.error_code if delivery else None,
             "read_at": getattr(message, "read_at", None)}
+
+
+def inbox_json(item: CommunicationInboxItem):
+    return {
+        "id": item.id,
+        "channel": item.channel,
+        "sender": item.sender_address,
+        "subject": item.subject,
+        "body": item.body,
+        "body_truncated": item.body_truncated,
+        "has_attachments": item.has_attachments,
+        "status": item.status,
+        "matched_client_id": item.matched_client_id,
+        "linked_case_id": item.linked_case_id,
+        "received_at": item.received_at,
+        "revision": item.revision,
+    }
 
 
 async def audit(db, user, action, resource_id):
@@ -157,6 +190,191 @@ async def channels(user: CurrentUser, db: AsyncSession = Depends(get_db)):
     row = await db.get(TenantChannel, user.tenant_id)
     verified = await _refresh_whatsapp(db, row) if row else False
     return {"whatsapp": {**whatsapp_json(row), "verification_unavailable": bool(row and row.evolution_instance_id_encrypted and not verified)}}
+
+
+def _inbound_email_address(row: TenantChannel | None) -> str | None:
+    domain = (settings.RESEND_INBOUND_DOMAIN or "").strip().casefold().lstrip("@")
+    if not domain or not row or not row.email_inbound_enabled or not row.email_inbound_token_encrypted:
+        return None
+    try:
+        token = decrypt_mfa_secret(row.email_inbound_token_encrypted)
+    except RuntimeError:
+        return None
+    return f"inbox+{token}@{domain}"
+
+
+@router.get("/inbox")
+async def list_inbox(
+    user: CurrentUser,
+    status_filter: Literal["open", "linked", "dismissed", "all"] = "open",
+    db: AsyncSession = Depends(get_db),
+):
+    require_role(user, {"admin", "partner"})
+    query = select(CommunicationInboxItem).where(
+        CommunicationInboxItem.tenant_id == user.tenant_id
+    )
+    if status_filter == "open":
+        query = query.where(CommunicationInboxItem.status.in_({"unmatched", "ambiguous"}))
+    elif status_filter != "all":
+        query = query.where(CommunicationInboxItem.status == status_filter)
+    rows = (
+        await db.scalars(query.order_by(CommunicationInboxItem.received_at.desc()).limit(100))
+    ).all()
+    return {"items": [inbox_json(item) for item in rows]}
+
+
+@router.get("/inbox/email-address")
+async def inbound_email_address(
+    response: Response, user: CurrentUser, db: AsyncSession = Depends(get_db)
+):
+    require_role(user, {"admin", "partner"})
+    row = await db.get(TenantChannel, user.tenant_id)
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "configured": bool(_inbound_email_address(row)),
+        "address": _inbound_email_address(row),
+        "provider_ready": bool(
+            settings.RESEND_ENABLED
+            and settings.RESEND_API_KEY
+            and settings.RESEND_WEBHOOK_SECRET
+            and settings.RESEND_INBOUND_DOMAIN
+            and not settings.NOTIFICATIONS_DRY_RUN
+        ),
+    }
+
+
+@router.post("/inbox/email-address")
+async def enable_inbound_email(
+    response: Response,
+    user: CurrentUser,
+    body: InboundEmailInput | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    require_role(user, {"admin", "partner"})
+    await ensure_tenant_write_access(db, user.tenant_id)
+    if not (
+        settings.RESEND_ENABLED
+        and settings.RESEND_API_KEY
+        and settings.RESEND_WEBHOOK_SECRET
+        and settings.RESEND_INBOUND_DOMAIN
+        and not settings.NOTIFICATIONS_DRY_RUN
+    ):
+        raise HTTPException(503, "Recebimento de e-mail ainda não está configurado na VPS.")
+    await db.scalar(select(Tenant).where(Tenant.id == user.tenant_id).with_for_update())
+    row = await db.get(TenantChannel, user.tenant_id)
+    if not row:
+        row = TenantChannel(tenant_id=user.tenant_id)
+        db.add(row)
+    rotate = bool(body and body.rotate)
+    if rotate or not row.email_inbound_token_encrypted or not row.email_inbound_token_hash:
+        token = secrets.token_urlsafe(24)
+        row.email_inbound_token_encrypted = encrypt_mfa_secret(token)
+        row.email_inbound_token_hash = hash_account_token(token)
+    row.email_inbound_enabled = True
+    await audit(db, user, "INBOUND_EMAIL_ADDRESS_ROTATED" if rotate else "INBOUND_EMAIL_ADDRESS_ENABLED", user.tenant_id)
+    await db.commit()
+    response.headers["Cache-Control"] = "no-store"
+    return {"configured": True, "address": _inbound_email_address(row), "provider_ready": True}
+
+
+@router.delete("/inbox/email-address", status_code=204)
+async def disable_inbound_email(user: CurrentUser, db: AsyncSession = Depends(get_db)):
+    require_role(user, {"admin", "partner"})
+    await ensure_tenant_write_access(db, user.tenant_id)
+    row = await db.scalar(
+        select(TenantChannel).where(TenantChannel.tenant_id == user.tenant_id).with_for_update()
+    )
+    if row:
+        row.email_inbound_enabled = False
+        row.email_inbound_token_encrypted = None
+        row.email_inbound_token_hash = None
+        await audit(db, user, "INBOUND_EMAIL_ADDRESS_DISABLED", user.tenant_id)
+        await db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/inbox/{item_id}/link")
+async def link_inbox_item(
+    item_id: str,
+    body: InboxLinkInput,
+    user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+):
+    require_role(user, {"admin", "partner"})
+    await ensure_tenant_write_access(db, user.tenant_id)
+    item = await db.scalar(
+        select(CommunicationInboxItem).where(
+            CommunicationInboxItem.id == item_id,
+            CommunicationInboxItem.tenant_id == user.tenant_id,
+        ).with_for_update()
+    )
+    if not item:
+        raise HTTPException(404, "Mensagem recebida não encontrada.")
+    if item.status not in {"unmatched", "ambiguous"}:
+        raise HTTPException(409, "Esta mensagem já foi revisada.")
+    if item.revision != body.expected_revision:
+        raise HTTPException(409, "A mensagem foi alterada. Atualize a caixa de entrada.")
+    case = await get_case(db, user, body.case_id)
+    if case.archived_at or case.status not in {"open", "paused"}:
+        raise HTTPException(409, "Selecione um processo ativo.")
+    message = create_linked_case_message(item, case.client_id, case.id)
+    db.add(message)
+    item.matched_client_id = case.client_id
+    item.linked_case_id = case.id
+    item.linked_message_id = message.id
+    item.status = "linked"
+    item.reviewed_by_user_id = user.id
+    item.reviewed_at = datetime.now(timezone.utc)
+    item.revision += 1
+    await AuditService.log_action(
+        db,
+        user.tenant_id,
+        user.id,
+        "INBOUND_COMMUNICATION_LINKED",
+        "communication_inbox",
+        item.id,
+        {"case_id": case.id, "reason": body.reason},
+    )
+    await db.commit()
+    return inbox_json(item)
+
+
+@router.post("/inbox/{item_id}/dismiss")
+async def dismiss_inbox_item(
+    item_id: str,
+    body: InboxReviewInput,
+    user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+):
+    require_role(user, {"admin", "partner"})
+    await ensure_tenant_write_access(db, user.tenant_id)
+    item = await db.scalar(
+        select(CommunicationInboxItem).where(
+            CommunicationInboxItem.id == item_id,
+            CommunicationInboxItem.tenant_id == user.tenant_id,
+        ).with_for_update()
+    )
+    if not item:
+        raise HTTPException(404, "Mensagem recebida não encontrada.")
+    if item.status not in {"unmatched", "ambiguous"}:
+        raise HTTPException(409, "Esta mensagem já foi revisada.")
+    if item.revision != body.expected_revision:
+        raise HTTPException(409, "A mensagem foi alterada. Atualize a caixa de entrada.")
+    item.status = "dismissed"
+    item.reviewed_by_user_id = user.id
+    item.reviewed_at = datetime.now(timezone.utc)
+    item.revision += 1
+    await AuditService.log_action(
+        db,
+        user.tenant_id,
+        user.id,
+        "INBOUND_COMMUNICATION_DISMISSED",
+        "communication_inbox",
+        item.id,
+        {"reason": body.reason},
+    )
+    await db.commit()
+    return inbox_json(item)
 
 
 @router.post("/whatsapp/connect")

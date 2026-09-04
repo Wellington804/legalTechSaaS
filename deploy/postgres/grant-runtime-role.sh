@@ -24,6 +24,7 @@ GRANT EXECUTE ON FUNCTION notification_recovery_candidates(integer, integer) TO 
 GRANT EXECUTE ON FUNCTION push_recovery_candidates(integer, integer) TO :"app_user";
 GRANT EXECUTE ON FUNCTION routine_reminder_candidates(integer) TO :"app_user";
 GRANT EXECUTE ON FUNCTION tenant_channel_webhook_identity(text) TO :"app_user";
+GRANT EXECUTE ON FUNCTION tenant_channel_email_inbound_identity(text) TO :"app_user";
 GRANT EXECUTE ON FUNCTION account_token_tenant_for_hash(text, text) TO :"app_user";
 GRANT EXECUTE ON FUNCTION team_invitation_tenant_for_hash(text) TO :"app_user";
 GRANT EXECUTE ON FUNCTION public_intake_tenant_for_token(text) TO :"app_user";

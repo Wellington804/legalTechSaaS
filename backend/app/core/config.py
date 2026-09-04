@@ -97,6 +97,7 @@ class Settings(BaseSettings):
     RESEND_API_KEY: str | None = None
     RESEND_FROM_EMAIL: str | None = None
     RESEND_WEBHOOK_SECRET: str | None = None
+    RESEND_INBOUND_DOMAIN: str | None = None
     EVOLUTION_ENABLED: bool = False
     EVOLUTION_GO_URL: str = "http://evolution-go:4000"
     EVOLUTION_API_KEY: str | None = None
@@ -216,6 +217,16 @@ class Settings(BaseSettings):
             [self.RESEND_API_KEY, self.RESEND_FROM_EMAIL, self.RESEND_WEBHOOK_SECRET]
         ):
             problems.append("Resend enabled without API key, sender and webhook secret")
+        if self.RESEND_INBOUND_DOMAIN:
+            import re
+
+            inbound_domain = self.RESEND_INBOUND_DOMAIN.casefold().lstrip("@")
+            if (
+                not self.RESEND_ENABLED
+                or not re.fullmatch(r"(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}", inbound_domain)
+                or inbound_domain.endswith((".example", ".invalid", ".localhost", ".test"))
+            ):
+                problems.append("Resend inbound domain requires enabled Resend and a real DNS domain")
         if self.EVOLUTION_ENABLED:
             evolution = urlsplit(self.EVOLUTION_GO_URL)
             if evolution.scheme not in {"http", "https"} or not evolution.hostname or evolution.username or evolution.password:
