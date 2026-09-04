@@ -67,6 +67,7 @@ class MonitoringSubscriptionResponse(ControladoriaSchema):
     id: str
     case_id: str
     source_kind: Literal["datajud", "escavador"]
+    provider_subscription_id: str | None
     tribunal: str
     process_number: str
     status: Literal["active", "paused", "disabled"]

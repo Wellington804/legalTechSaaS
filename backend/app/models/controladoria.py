@@ -64,6 +64,7 @@ class ControladoriaMonitoringSubscription(Base):
     tenant_id = Column(String, ForeignKey("tenants.id"), nullable=False, index=True)
     case_id = Column(String, nullable=False, index=True)
     source_kind = Column(String(16), nullable=False, default="datajud")
+    provider_subscription_id = Column(String(128), nullable=True)
     tribunal = Column(String(20), nullable=False)
     process_number = Column(String(20), nullable=False)
     status = Column(String(16), nullable=False, default="active", index=True)

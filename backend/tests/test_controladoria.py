@@ -1,4 +1,5 @@
 import asyncio
+import json
 import unittest
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -16,6 +17,8 @@ from app.services.controladoria_provider import (
     DataJudMonitoringProvider,
     EscavadorMonitoringProvider,
     JudicialProviderError,
+    parse_escavador_callback,
+    parse_escavador_movement,
 )
 
 
@@ -171,7 +174,73 @@ class ControladoriaServiceTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].source_event_id, "91")
         self.assertEqual(events[0].title, "Juntada de petição")
+        self.assertEqual(events[0].source_content, "Juntada de petição")
         self.assertEqual(events[0].source_metadata["court"], "TJSP")
+        self.assertEqual(events[0].source_metadata["ingestion_method"], "poll")
+        self.assertEqual(len(events[0].source_metadata["provider_payload_sha256"]), 64)
+
+    def test_escavador_monitor_is_created_with_bounded_fixed_contract(self):
+        async def run():
+            def handler(request: httpx.Request):
+                self.assertEqual(request.url, httpx.URL("https://api.escavador.com/api/v2/monitoramentos/processos"))
+                self.assertEqual(request.headers["Authorization"], "Bearer test-token")
+                self.assertEqual(json.loads(request.content), {
+                    "numero": "0000000-00.0000.0.00.0000",
+                    "tribunal": "TJSP",
+                    "frequencia": "DIARIA",
+                    "documentos_publicos": False,
+                })
+                return httpx.Response(201, json={"id": 1567024})
+
+            transport = httpx.MockTransport(handler)
+            provider = EscavadorMonitoringProvider(
+                "test-token",
+                client_factory=lambda **kwargs: httpx.AsyncClient(transport=transport, **kwargs),
+            )
+            return await provider.ensure_monitor(
+                tribunal="tjsp", process_number="00000000000000000000"
+            )
+
+        self.assertEqual(asyncio.run(run()), "1567024")
+
+    def test_escavador_poll_and_callback_share_event_identity_for_deduplication(self):
+        movement = {
+            "id": 23895909833,
+            "data": "2026-09-01",
+            "tipo": "PUBLICACAO",
+            "conteudo": "Intimação publicada",
+            "fonte": {"sigla": "TJSP", "grau_formatado": "Primeiro grau"},
+        }
+        callback = parse_escavador_callback({
+            "event": "nova_movimentacao",
+            "monitoramento": {"id": 1567024, "numero": "0000000-00.0000.0.00.0000"},
+            "movimentacao": movement,
+            "uuid": "callback-uuid-a",
+        })
+        polled = parse_escavador_movement(
+            movement,
+            process_number="00000000000000000000",
+            retrieved_at=datetime(2026, 9, 1, 12, tzinfo=timezone.utc),
+            ingestion_method="poll",
+        )
+        callback_payload = JudicialEventCreate(
+            case_id="case-a", subscription_id="subscription-a", source_kind="escavador",
+            source_event_id=callback.event.source_event_id, source_url=callback.event.source_url,
+            title=callback.event.title, source_content=callback.event.source_content,
+            source_metadata=callback.event.source_metadata, occurred_at=callback.event.occurred_at,
+            retrieved_at=callback.event.retrieved_at,
+        )
+        polled_payload = callback_payload.model_copy(update={
+            "source_metadata": polled.source_metadata,
+            "retrieved_at": polled.retrieved_at,
+        })
+        self.assertEqual(callback.provider_subscription_id, "1567024")
+        self.assertEqual(callback.event.source_metadata["provider_subscription_id"], "1567024")
+        self.assertEqual(callback.event.source_metadata["suggested_action"], "Revisar publicação e avaliar providência ou prazo")
+        self.assertEqual(
+            service.event_dedupe_key("case-a", callback_payload),
+            service.event_dedupe_key("case-a", polled_payload),
+        )
 
     def test_deadline_payload_carries_persisted_event_evidence_for_approval(self):
         async def run():

@@ -14,7 +14,12 @@ from app.models.user import User
 from app.models.workspace import WorkspaceCase
 from app.schemas.controladoria import JudicialEventCreate
 from app.services.audit_service import AuditService
-from app.services.controladoria_provider import JudicialProviderError, monitoring_provider
+from app.services.controladoria_provider import (
+    EscavadorMonitoringProvider,
+    JudicialProviderError,
+    monitoring_provider,
+    parse_escavador_callback,
+)
 from app.services.controladoria_service import record_judicial_event
 from app.services.push_service import enqueue_user_push
 
@@ -42,6 +47,7 @@ async def _poll_subscription(tenant_id: str, subscription_id: str) -> dict:
         snapshot = (await db.execute(
             select(
                 ControladoriaMonitoringSubscription.source_kind,
+                ControladoriaMonitoringSubscription.provider_subscription_id,
                 ControladoriaMonitoringSubscription.tribunal,
                 ControladoriaMonitoringSubscription.process_number,
                 WorkspaceCase.responsible_user_id,
@@ -59,6 +65,21 @@ async def _poll_subscription(tenant_id: str, subscription_id: str) -> dict:
         return {"status": "ignored", "imported": 0}
 
     provider = monitoring_provider(snapshot["source_kind"], settings)
+    if isinstance(provider, EscavadorMonitoringProvider) and not snapshot["provider_subscription_id"]:
+        provider_subscription_id = await provider.ensure_monitor(
+            tribunal=snapshot["tribunal"], process_number=snapshot["process_number"]
+        )
+        async with AsyncSessionLocal() as db, db.begin():
+            await _set_tenant_context(db, tenant_id)
+            subscription = await db.scalar(select(ControladoriaMonitoringSubscription).where(
+                ControladoriaMonitoringSubscription.id == subscription_id,
+                ControladoriaMonitoringSubscription.tenant_id == tenant_id,
+                ControladoriaMonitoringSubscription.status == "active",
+            ).with_for_update())
+            if not subscription:
+                return {"status": "ignored", "imported": 0}
+            if not subscription.provider_subscription_id:
+                subscription.provider_subscription_id = provider_subscription_id
     events = await provider.fetch(
         tribunal=snapshot["tribunal"], process_number=snapshot["process_number"]
     )
@@ -122,6 +143,97 @@ async def _poll_subscription(tenant_id: str, subscription_id: str) -> dict:
     return {"status": "ok", "imported": imported}
 
 
+async def _ingest_escavador_callback(payload: dict) -> dict:
+    delivery = parse_escavador_callback(payload)
+    async with AsyncSessionLocal() as db:
+        rows = (await db.execute(
+            text(
+                "SELECT * FROM controladoria_escavador_webhook_targets("
+                ":process_number, :provider_subscription_id)"
+            ),
+            {
+                "process_number": delivery.process_number,
+                "provider_subscription_id": delivery.provider_subscription_id,
+            },
+        )).all()
+
+    imported = 0
+    matched = 0
+    for row in rows:
+        async with AsyncSessionLocal() as db, db.begin():
+            await _set_tenant_context(db, row.tenant_id)
+            snapshot = (await db.execute(
+                select(
+                    ControladoriaMonitoringSubscription,
+                    WorkspaceCase.responsible_user_id,
+                ).join(
+                    WorkspaceCase,
+                    (WorkspaceCase.id == ControladoriaMonitoringSubscription.case_id)
+                    & (WorkspaceCase.tenant_id == ControladoriaMonitoringSubscription.tenant_id),
+                ).where(
+                    ControladoriaMonitoringSubscription.id == row.subscription_id,
+                    ControladoriaMonitoringSubscription.tenant_id == row.tenant_id,
+                    ControladoriaMonitoringSubscription.source_kind == "escavador",
+                    ControladoriaMonitoringSubscription.status == "active",
+                    ControladoriaMonitoringSubscription.process_number == delivery.process_number,
+                ).with_for_update()
+            )).one_or_none()
+            if not snapshot:
+                continue
+            subscription, responsible_user_id = snapshot
+            user = await db.scalar(select(User).where(
+                User.id == responsible_user_id,
+                User.tenant_id == row.tenant_id,
+                User.is_active.is_(True),
+            ))
+            if not user:
+                raise JudicialProviderError("assinatura sem responsavel ativo")
+            if not subscription.provider_subscription_id:
+                subscription.provider_subscription_id = delivery.provider_subscription_id
+
+            event, created = await record_judicial_event(
+                db,
+                user,
+                JudicialEventCreate(
+                    case_id=subscription.case_id,
+                    subscription_id=subscription.id,
+                    source_kind="escavador",
+                    source_event_id=delivery.event.source_event_id,
+                    source_url=delivery.event.source_url,
+                    title=delivery.event.title,
+                    source_content=delivery.event.source_content,
+                    source_metadata=delivery.event.source_metadata,
+                    occurred_at=delivery.event.occurred_at,
+                    retrieved_at=delivery.event.retrieved_at,
+                ),
+            )
+            matched += 1
+            now = datetime.now(timezone.utc)
+            subscription.last_checked_at = now
+            subscription.last_success_at = now
+            subscription.last_error_code = None
+            if created:
+                imported += 1
+                await enqueue_user_push(
+                    db,
+                    tenant_id=row.tenant_id,
+                    user_id=user.id,
+                    event_key=event.id,
+                    kind="judicial_movement",
+                    case_id=subscription.case_id,
+                )
+                await AuditService.log_action(
+                    db,
+                    row.tenant_id,
+                    user.id,
+                    "CONTROLADORIA_EVENTS_IMPORTED",
+                    "controladoria_monitoring_subscriptions",
+                    subscription.id,
+                    {"imported": 1, "ingestion_method": "callback"},
+                )
+    return {"status": "ok", "matched": matched, "imported": imported}
+
+
 async def _poll_subscription_safely(tenant_id: str, subscription_id: str) -> dict:
     try:
         return await _poll_subscription(tenant_id, subscription_id)
@@ -156,5 +268,20 @@ def poll_datajud():
 def poll_subscription(tenant_id: str, subscription_id: str):
     try:
         return asyncio.run(_poll_subscription_safely(tenant_id, subscription_id))
+    finally:
+        asyncio.run(engine.dispose())
+
+
+@celery_app.task(
+    name="controladoria.ingest_escavador_callback",
+    autoretry_for=(Exception,),
+    retry_backoff=5,
+    retry_kwargs={"max_retries": 5},
+    soft_time_limit=45,
+    time_limit=60,
+)
+def ingest_escavador_callback(payload: dict):
+    try:
+        return asyncio.run(_ingest_escavador_callback(payload))
     finally:
         asyncio.run(engine.dispose())

@@ -29,6 +29,7 @@ GRANT EXECUTE ON FUNCTION team_invitation_tenant_for_hash(text) TO :"app_user";
 GRANT EXECUTE ON FUNCTION public_intake_tenant_for_token(text) TO :"app_user";
 GRANT EXECUTE ON FUNCTION operation_webhook_identity(text, text, text) TO :"app_user";
 GRANT EXECUTE ON FUNCTION controladoria_monitoring_candidates(integer) TO :"app_user";
+GRANT EXECUTE ON FUNCTION controladoria_escavador_webhook_targets(text, text) TO :"app_user";
 GRANT EXECUTE ON FUNCTION document_lifecycle_candidates(integer) TO :"app_user";
 GRANT EXECUTE ON FUNCTION mark_document_object_deleted(text, text, text) TO :"app_user";
 SQL

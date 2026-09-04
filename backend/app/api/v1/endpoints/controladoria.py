@@ -4,7 +4,10 @@ Router registration is deliberately left to the integrating change. See the
 module exports below; no endpoint performs a tribunal request.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+import hmac
+import json
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,12 +63,69 @@ from app.services.controladoria_service import (
     approve_deadline_and_create_task,
     get_subscription,
 )
-from app.services.controladoria_provider import JudicialProviderError, monitoring_provider
+from app.services.controladoria_provider import (
+    JudicialProviderError,
+    monitoring_provider,
+    parse_escavador_callback,
+)
 from app.services.workspace_service import bounded_limit, get_case, require_role
 
 
 router = APIRouter()
+public_router = APIRouter()
 MANUAL_REFRESH_SECONDS = 300
+MAX_ESCAVADOR_CALLBACK_BYTES = 64_000
+
+
+def valid_escavador_callback_token(authorization: str | None) -> bool:
+    expected = getattr(settings, "ESCAVADOR_CALLBACK_TOKEN", None)
+    if not getattr(settings, "ESCAVADOR_ENABLED", False) or not expected or not authorization:
+        return False
+    scheme, separator, supplied = authorization.partition(" ")
+    return bool(
+        separator
+        and scheme.casefold() == "bearer"
+        and supplied
+        and hmac.compare_digest(supplied, expected)
+    )
+
+
+def enqueue_escavador_callback(payload: dict) -> None:
+    from app.services.controladoria_tasks import ingest_escavador_callback
+
+    ingest_escavador_callback.delay(payload)
+
+
+@public_router.post("/webhooks/escavador", status_code=status.HTTP_202_ACCEPTED)
+async def escavador_webhook(
+    request: Request,
+    authorization: str | None = Header(default=None, max_length=2048),
+):
+    if not valid_escavador_callback_token(authorization):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Callback nao autorizado.")
+    raw = await request.body()
+    if len(raw) > MAX_ESCAVADOR_CALLBACK_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="Callback muito grande.")
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Callback invalido.") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("event"), str):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Callback invalido.")
+    if payload["event"] != "nova_movimentacao":
+        return {"received": True, "queued": False, "reason": "event_not_actionable"}
+    try:
+        parse_escavador_callback(payload)
+    except JudicialProviderError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Callback invalido.") from exc
+    try:
+        enqueue_escavador_callback(payload)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Callback temporariamente indisponivel.",
+        ) from exc
+    return {"received": True, "queued": True}
 
 
 async def reserve_manual_refresh(tenant_id: str, subscription_id: str) -> str:
