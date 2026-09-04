@@ -77,6 +77,91 @@ def claims_for(draft: str, statuses: dict[str, tuple[str, list[dict]]] | None = 
 
 
 class AIQualityTests(unittest.TestCase):
+    def test_worker_requires_legal_role_and_current_tenant_write_access(self):
+        async def scenario():
+            paralegal = SimpleNamespace(id="u1", tenant_id="t1", role="paralegal")
+            db = SimpleNamespace(scalar=AsyncMock(return_value=paralegal))
+            with patch.object(document_tasks, "ensure_tenant_write_access", AsyncMock()) as ensure:
+                with self.assertRaises(AIProviderError):
+                    await document_tasks._authorized_ai_requester(db, "t1", "u1")
+                ensure.assert_not_awaited()
+
+            lawyer = SimpleNamespace(id="u2", tenant_id="t1", role="lawyer")
+            db.scalar = AsyncMock(return_value=lawyer)
+            with patch.object(document_tasks, "ensure_tenant_write_access", AsyncMock()) as ensure:
+                self.assertIs(await document_tasks._authorized_ai_requester(db, "t1", "u2"), lawyer)
+                ensure.assert_awaited_once_with(db, "t1")
+
+        asyncio.run(scenario())
+
+    def test_duplicate_running_or_processing_jobs_never_call_provider(self):
+        class FakeSession:
+            def __init__(self, row):
+                self.scalar = AsyncMock(return_value=row)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def begin(self):
+                return self
+
+        async def scenario():
+            evaluation = SimpleNamespace(status="running")
+            with (
+                patch.object(document_tasks, "AsyncSessionLocal", return_value=FakeSession(evaluation)),
+                patch.object(document_tasks, "_set_tenant_context", AsyncMock()),
+                patch.object(document_tasks, "generate_text", AsyncMock()) as provider,
+            ):
+                self.assertEqual(await document_tasks._run_evaluation_impl("r1", "t1"), "ignored")
+                provider.assert_not_awaited()
+            analysis = SimpleNamespace(status="processing")
+            with (
+                patch.object(document_tasks, "AsyncSessionLocal", return_value=FakeSession(analysis)),
+                patch.object(document_tasks, "_set_tenant_context", AsyncMock()),
+                patch.object(document_tasks, "generate_text", AsyncMock()) as provider,
+            ):
+                self.assertEqual(await document_tasks._run_document_intelligence_impl("a1", "t1"), "ignored")
+                provider.assert_not_awaited()
+
+        asyncio.run(scenario())
+
+    def test_read_only_tenant_blocks_queued_benchmark_before_provider(self):
+        class FakeSession:
+            def __init__(self, rows):
+                self.scalar = AsyncMock(side_effect=rows)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def begin(self):
+                return self
+
+        async def scenario():
+            queued = SimpleNamespace(status="queued", requested_by_user_id="u1")
+            requester = SimpleNamespace(id="u1", tenant_id="t1", role="lawyer")
+            with (
+                patch.object(document_tasks, "AsyncSessionLocal", return_value=FakeSession([queued, requester])),
+                patch.object(document_tasks, "_set_tenant_context", AsyncMock()),
+                patch.object(
+                    document_tasks,
+                    "ensure_tenant_write_access",
+                    AsyncMock(side_effect=RuntimeError("tenant is read only")),
+                ),
+                patch.object(document_tasks, "generate_text", AsyncMock()) as provider,
+            ):
+                with self.assertRaisesRegex(AIProviderError, "write access"):
+                    await document_tasks._run_evaluation_impl("r1", "t1")
+                self.assertEqual(queued.status, "queued")
+                provider.assert_not_awaited()
+
+        asyncio.run(scenario())
+
     def test_perfect_metrics_keep_separate_auditable_denominators(self):
         draft = "EXCELENTÍSSIMO SENHOR JUIZ. O pagamento foi comprovado. O contrato permanece vigente. " * 2
         g1 = literal("G1", "Pagamento recebido.")
@@ -162,16 +247,16 @@ class AIQualityTests(unittest.TestCase):
         snapshots = [DocumentSnapshot(document_id="doc-a", version=1, sha256="a" * 64)]
         sources = [EvidenceSource(
             id="D1-P1-N1", kind="document", document_id="doc-a", title="Recibo", version=1,
-            page=1, paragraph=1, locator="p. 1, § 1", excerpt="Pagamento em 2 de janeiro de 2026.",
+            page=1, paragraph=1, locator="p. 1, § 1", excerpt="Pagamento em 2026-01-02.",
         )]
         output = DocumentIntelligenceOutput.model_validate({
             "classifications": [{"document_id": "doc-a", "category": "financial", "confidence": 0.91, "source_ids": ["D1-P1-N1"], "evidence": [literal("D1-P1-N1", sources[0].excerpt, "Pagamento")], "review_required": True}],
             "events": [{
-                "id": "E1", "event_date": "2026-01-02", "description": "Pagamento documentado.",
+                "id": "E1", "event_date": "2026-01-02", "description": "Pagamento",
                 "parties": [], "amount": None, "source_ids": ["D1-P1-N1"],
                 "evidence": [
-                    {"field": "description", "value": "Pagamento documentado.", "evidence": literal("D1-P1-N1", sources[0].excerpt, "Pagamento")},
-                    {"field": "event_date", "value": "2026-01-02", "evidence": literal("D1-P1-N1", sources[0].excerpt, "2 de janeiro de 2026")},
+                    {"field": "description", "value": "Pagamento", "evidence": literal("D1-P1-N1", sources[0].excerpt, "Pagamento")},
+                    {"field": "event_date", "value": "2026-01-02", "evidence": literal("D1-P1-N1", sources[0].excerpt, "2026-01-02")},
                 ],
                 "confidence": 0.9, "review_required": True,
             }],
@@ -192,6 +277,26 @@ class AIQualityTests(unittest.TestCase):
         payload["claims"].pop()
         with self.assertRaises(LegalAIValidationError):
             score_evaluation(content, EvaluationOutput.model_validate(payload))
+
+        exact_content = gold_content()
+        exact_payload = exact_content.model_dump(mode="json")
+        exact_payload["sources"][0]["excerpt"] = "Pagamento  recebido."
+        exact_content = EvaluationCaseContent.model_validate(exact_payload)
+        draft = "EXCELENTÍSSIMO SENHOR JUIZ. O pagamento foi comprovado. " * 2
+        inexact = literal("G1", "Pagamento recebido.")
+        inexact["end"] = len("Pagamento  recebido.")
+        output = EvaluationOutput.model_validate({
+            "draft": draft,
+            "answers": [{
+                "question_id": "Q1", "status": "supported", "answer": "Sim.",
+                "source_ids": ["G1"], "draft_excerpt": "O pagamento foi comprovado.",
+                "evidence": [inexact],
+            }],
+            "claims": claims_for(draft), "limitations": ["Revisar."],
+            "human_review_required": True,
+        })
+        with self.assertRaises(LegalAIValidationError):
+            score_evaluation(exact_content, output)
         evidence = literal("G1", "Pagamento recebido.")
         evidence["start"] = 1
         payload["claims"] = claims_for(draft, {"pagamento foi comprovado": ("supported", [evidence])})
@@ -213,9 +318,9 @@ class AIQualityTests(unittest.TestCase):
                 {"document_id": "doc-b", "category": "financial", "confidence": 0.8, "source_ids": ["D2-P1-N1"], "evidence": [literal("D2-P1-N1", sources[1].excerpt, "R$ 20")], "review_required": True},
             ],
             "events": [{
-                "id": "E1", "event_date": None, "description": "Valor registrado.",
+                "id": "E1", "event_date": None, "description": "valor",
                 "parties": [], "amount": "R$ 10", "source_ids": ["D1-P1-N1"],
-                "evidence": [{"field": "description", "value": "Valor registrado.", "evidence": literal("D1-P1-N1", sources[0].excerpt, "valor")}],
+                "evidence": [{"field": "description", "value": "valor", "evidence": literal("D1-P1-N1", sources[0].excerpt, "valor")}],
                 "confidence": 0.8, "review_required": True,
             }],
             "contradiction_groups": [{
@@ -262,6 +367,11 @@ class AIQualityTests(unittest.TestCase):
         self.assertEqual(manifest[0]["extractor"], "ocrmypdf+tesseract")
         self.assertEqual(manifest[0]["ocr_status"], "complete")
         self.assertEqual(len(manifest[0]["text_sha256"]), 64)
+        version.sha256_hash = None
+        self.assertIsNone(document_provenance_manifest([document], [version])[0]["binary_sha256"])
+        version.sha256_hash = "a" * 64
+        version.storage_status = "deleted"
+        self.assertIsNone(document_provenance_manifest([document], [version])[0]["binary_sha256"])
 
     def test_prompt_budget_is_applied_after_real_json_serialization(self):
         payload = gold_content().model_dump(mode="json")
@@ -386,6 +496,72 @@ class AIQualityTests(unittest.TestCase):
         self.assertEqual(status, "failed")
         self.assertIn("original preservado", error)
 
+    def test_failed_or_partial_ocr_forces_partial_extracted_text_coverage(self):
+        coverage = document_tasks._analysis_coverage(
+            {"documents": 1, "source_characters": 20, "total_content_characters": 20, "truncated": False},
+            [SimpleNamespace(document_id="d1", ocr_status="failed")],
+        )
+        self.assertTrue(coverage["partial"])
+        self.assertEqual(coverage["scope"], "extracted_text_only")
+        self.assertEqual(coverage["ocr_incomplete_documents"], ["d1"])
+        limitations = document_tasks._coverage_limitations([], coverage)
+        self.assertEqual(limitations, [document_tasks.OCR_COVERAGE_LIMITATION])
+
+    def test_ocr_limitation_is_persisted_before_a_provider_failure(self):
+        class FakeSession:
+            def __init__(self, row):
+                self.scalar = AsyncMock(return_value=row)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def begin(self):
+                return self
+
+        async def scenario():
+            analysis = SimpleNamespace(
+                id="a1", status="queued", provider="provider", model="model",
+                coverage=None, limitations=None,
+            )
+            source_row = SimpleNamespace(document_id="d1", ocr_status="failed")
+            context = (
+                [source_row], [SimpleNamespace(id="d1")], SimpleNamespace(id="c1"), SimpleNamespace(id="u1"),
+            )
+            bundle = {
+                "sources": [SimpleNamespace(id="s1")], "snapshots": [],
+                "coverage": {
+                    "documents": 1, "source_characters": 20,
+                    "total_content_characters": 20, "truncated": False,
+                },
+            }
+            with (
+                patch.object(document_tasks, "AsyncSessionLocal", return_value=FakeSession(analysis)),
+                patch.object(document_tasks, "_set_tenant_context", AsyncMock()),
+                patch.object(document_tasks, "_validated_intelligence_context", AsyncMock(return_value=context)),
+                patch.object(document_tasks, "provider_name", return_value="provider"),
+                patch.object(document_tasks, "model_name", return_value="model"),
+                patch.object(document_tasks, "build_evidence_bundle", return_value=bundle),
+                patch.object(document_tasks, "document_intelligence_prompt", return_value="prompt"),
+                patch.object(document_tasks, "generate_text", AsyncMock(side_effect=AIProviderError("offline"))),
+            ):
+                with self.assertRaisesRegex(AIProviderError, "offline"):
+                    await document_tasks._run_document_intelligence_impl("a1", "t1")
+
+            self.assertTrue(analysis.coverage["partial"])
+            self.assertEqual(analysis.limitations, [document_tasks.OCR_COVERAGE_LIMITATION])
+
+        asyncio.run(scenario())
+
+    def test_review_ui_displays_evidence_offsets_locator_and_ocr_without_integrality_claim(self):
+        source = Path("frontend/src/components/workspace/document-intelligence.tsx").read_text("utf-8")
+        self.assertIn("offsets {evidence.start}–{evidence.end}", source)
+        self.assertIn("source?.locator", source)
+        self.assertIn("OCR:", source)
+        self.assertNotIn("conteúdo integral", source)
+
     def test_canonical_hash_detects_stale_content(self):
         original = gold_content().model_dump(mode="json")
         changed = gold_content().model_dump(mode="json")
@@ -398,9 +574,12 @@ class AIQualityTests(unittest.TestCase):
         self.assertIn("FORCE ROW LEVEL SECURITY", migration)
         self.assertIn("def downgrade()", migration)
         hardening = Path("backend/alembic/versions/20260904_0031_ai_quality_evidence_hardening.py").read_text("utf-8")
-        self.assertIn('down_revision = "20260904_0029"', hardening)
+        self.assertIn('down_revision = "20260904_0030"', hardening)
         self.assertIn("consent receipts are immutable", hardening)
         self.assertIn("uq_ai_evaluation_cases_approved_name", hardening)
+        self.assertIn("downgrade blocked: AI evidence or consent audit trail would be lost", hardening)
+        self.assertIn("v.storage_status = 'available'", hardening)
+        self.assertNotIn("COALESCE(d.sha256_hash, s.sha256)", hardening)
 
     def test_corpus_approval_requires_identified_lawyer_and_matching_hash(self):
         async def scenario():

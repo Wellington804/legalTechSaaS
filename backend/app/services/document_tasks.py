@@ -14,7 +14,7 @@ from sqlalchemy.orm import load_only
 from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal, engine
-from app.core.dependencies import _set_tenant_context
+from app.core.dependencies import _set_tenant_context, ensure_tenant_write_access
 from app.models.assistant import (
     AIEvaluationCase,
     AIEvaluationResult,
@@ -52,6 +52,54 @@ from app.services.document_text import TextExtractionError, extract_upload_text,
 from app.services.legal_ai import build_evidence_bundle
 from app.services.workspace_service import case_access_clause, reset_document_review, validate_upload_bytes
 from app.services.push_service import enqueue_user_push
+
+
+AI_WORKER_ROLES = {"admin", "partner", "lawyer"}
+OCR_COVERAGE_LIMITATION = (
+    "OCR falho, parcial ou não comprovado; a análise cobre somente o texto efetivamente extraído."
+)
+
+
+async def _authorized_ai_requester(db, tenant_id: str, user_id: str) -> User:
+    user = await db.scalar(select(User).where(
+        User.id == user_id,
+        User.tenant_id == tenant_id,
+        User.is_active.is_(True),
+    ))
+    if not user or user.role not in AI_WORKER_ROLES:
+        raise AIProviderError("requesting user is not authorized for legal AI")
+    try:
+        await ensure_tenant_write_access(db, tenant_id)
+    except Exception as exc:
+        raise AIProviderError("tenant write access is no longer available") from exc
+    return user
+
+
+def _claim_queued_job(row, next_status: str) -> bool:
+    if row.status != "queued":
+        return False
+    row.status = next_status
+    return True
+
+
+def _analysis_coverage(base: dict, source_rows: list[DocumentIntelligenceSource]) -> dict:
+    ocr_incomplete = [
+        row.document_id for row in source_rows
+        if row.ocr_status in {"failed", "partial", "processing", "unknown"}
+    ]
+    return {
+        **base,
+        "ocr_incomplete_documents": ocr_incomplete,
+        "partial": bool(base.get("truncated") or ocr_incomplete),
+        "scope": "extracted_text_only",
+    }
+
+
+def _coverage_limitations(limitations: list[str], coverage: dict) -> list[str]:
+    values = [item for item in limitations if item != OCR_COVERAGE_LIMITATION]
+    if coverage.get("ocr_incomplete_documents"):
+        return values[:19] + [OCR_COVERAGE_LIMITATION]
+    return values[:20]
 
 
 def _ocr(content_type: str, content: bytes) -> str | None:
@@ -288,8 +336,9 @@ async def _run_evaluation_impl(run_id: str, tenant_id: str) -> str:
         run = await db.scalar(select(AIEvaluationRun).where(
             AIEvaluationRun.id == run_id, AIEvaluationRun.tenant_id == tenant_id,
         ).with_for_update())
-        if not run or run.status not in {"queued", "running"}:
+        if not run or run.status != "queued":
             return "ignored"
+        requester = await _authorized_ai_requester(db, tenant_id, run.requested_by_user_id)
         if (
             not isinstance(run.case_ids, list) or not run.case_ids or len(run.case_ids) > 5
             or any(not isinstance(item, str) or not item for item in run.case_ids)
@@ -318,7 +367,8 @@ async def _run_evaluation_impl(run_id: str, tenant_id: str) -> str:
             run.error = "A rota de IA mudou depois do agendamento. Execute um novo benchmark."
             run.completed_at = now
             return "stale"
-        run.status = "running"
+        if not _claim_queued_job(run, "running"):
+            return "ignored"
         run.started_at = run.started_at or now
         completed_case_ids = set((await db.scalars(select(AIEvaluationResult.case_id).where(
             AIEvaluationResult.tenant_id == tenant_id,
@@ -329,10 +379,20 @@ async def _run_evaluation_impl(run_id: str, tenant_id: str) -> str:
             for case in sorted(cases, key=lambda item: item.id)
             if case.id not in completed_case_ids
         ]
-        provider, model, requested_by = run.provider, run.model, run.requested_by_user_id
+        provider, model, requested_by = run.provider, run.model, requester.id
 
     for case_id, case_version, case_hash, raw_content in payloads:
         try:
+            async with AsyncSessionLocal() as db, db.begin():
+                await _set_tenant_context(db, tenant_id)
+                current_run = await db.scalar(select(AIEvaluationRun).where(
+                    AIEvaluationRun.id == run_id,
+                    AIEvaluationRun.tenant_id == tenant_id,
+                    AIEvaluationRun.status == "running",
+                ))
+                if not current_run:
+                    raise AIProviderError("evaluation run is no longer active")
+                await _authorized_ai_requester(db, tenant_id, current_run.requested_by_user_id)
             content = EvaluationCaseContent.model_validate(raw_content)
             if canonical_hash(content.model_dump(mode="json")) != case_hash:
                 raise AIProviderError("stale evaluation case hash")
@@ -371,7 +431,7 @@ async def _run_evaluation_impl(run_id: str, tenant_id: str) -> str:
         run = await db.scalar(select(AIEvaluationRun).where(
             AIEvaluationRun.id == run_id, AIEvaluationRun.tenant_id == tenant_id,
         ).with_for_update())
-        if not run:
+        if not run or run.status != "running":
             return "ignored"
         completed_rows = (await db.execute(select(AIEvaluationResult).where(
             AIEvaluationResult.tenant_id == tenant_id,
@@ -401,7 +461,8 @@ async def _validated_intelligence_context(db, analysis: DocumentIntelligenceAnal
     versions = (await db.execute(select(WorkspaceDocumentVersion).options(load_only(
         WorkspaceDocumentVersion.document_id, WorkspaceDocumentVersion.version,
         WorkspaceDocumentVersion.sha256_hash, WorkspaceDocumentVersion.object_key,
-        WorkspaceDocumentVersion.filename, WorkspaceDocumentVersion.ocr_status,
+        WorkspaceDocumentVersion.filename, WorkspaceDocumentVersion.file_size,
+        WorkspaceDocumentVersion.storage_status, WorkspaceDocumentVersion.ocr_status,
         WorkspaceDocumentVersion.content_type,
     )).where(
         WorkspaceDocumentVersion.tenant_id == tenant_id,
@@ -418,13 +479,7 @@ async def _validated_intelligence_context(db, analysis: DocumentIntelligenceAnal
     } for row in source_rows]
     if len(documents) != len(source_rows) or manifest != persisted or canonical_hash(manifest) != analysis.snapshot_hash:
         raise AIProviderError("stale document provenance")
-    user = await db.scalar(select(User).where(
-        User.id == analysis.requested_by_user_id,
-        User.tenant_id == tenant_id,
-        User.is_active.is_(True),
-    ))
-    if not user:
-        raise AIProviderError("requesting user is no longer active")
+    user = await _authorized_ai_requester(db, tenant_id, analysis.requested_by_user_id)
     case = await db.scalar(select(WorkspaceCase).where(
         WorkspaceCase.id == analysis.case_id,
         WorkspaceCase.tenant_id == tenant_id,
@@ -467,13 +522,14 @@ async def _run_document_intelligence_impl(analysis_id: str, tenant_id: str) -> s
             DocumentIntelligenceAnalysis.id == analysis_id,
             DocumentIntelligenceAnalysis.tenant_id == tenant_id,
         ).with_for_update())
-        if not analysis or analysis.status not in {"queued", "processing"}:
+        if not analysis or analysis.status != "queued":
             return "ignored"
         source_rows, documents, case, user = await _validated_intelligence_context(db, analysis, tenant_id)
         if provider_name(settings) != analysis.provider or model_name(settings, "legal") != analysis.model:
             analysis.status, analysis.error = "stale", "A rota de IA mudou depois do agendamento."
             return "stale"
-        analysis.status = "processing"
+        if not _claim_queued_job(analysis, "processing"):
+            return "ignored"
         requested_by = user.id
 
     bundle = build_evidence_bundle(
@@ -482,7 +538,23 @@ async def _run_document_intelligence_impl(analysis_id: str, tenant_id: str) -> s
     )
     if not bundle["sources"]:
         raise AIProviderError("documents have no citable text")
+    coverage = _analysis_coverage(bundle["coverage"], source_rows)
     prompt = document_intelligence_prompt(case=case, sources=bundle["sources"], snapshots=bundle["snapshots"])
+
+    # Persist extraction coverage before the external call. If the provider fails,
+    # the failed record still explains exactly which OCR/text surface was analysed.
+    async with AsyncSessionLocal() as db, db.begin():
+        await _set_tenant_context(db, tenant_id)
+        analysis = await db.scalar(select(DocumentIntelligenceAnalysis).where(
+            DocumentIntelligenceAnalysis.id == analysis_id,
+            DocumentIntelligenceAnalysis.tenant_id == tenant_id,
+        ).with_for_update())
+        if not analysis or analysis.status != "processing":
+            return "ignored"
+        await _validated_intelligence_context(db, analysis, tenant_id)
+        analysis.coverage = coverage
+        analysis.limitations = _coverage_limitations([], coverage)
+
     raw = await generate_text(
         system_prompt=DOCUMENT_INTELLIGENCE_SYSTEM_PROMPT,
         user_prompt=prompt,
@@ -507,8 +579,8 @@ async def _run_document_intelligence_impl(analysis_id: str, tenant_id: str) -> s
             output.events, key=lambda item: (item.event_date is None, item.event_date.isoformat() if item.event_date else "", item.id),
         )]
         analysis.contradiction_groups = [item.model_dump(mode="json") for item in sorted(output.contradiction_groups, key=lambda item: item.id)]
-        analysis.limitations = output.limitations
-        analysis.coverage = bundle["coverage"]
+        analysis.limitations = _coverage_limitations(list(output.limitations), coverage)
+        analysis.coverage = coverage
         analysis.result_hash = canonical_hash({
             "evidence_sources": analysis.evidence_sources,
             "classifications": analysis.classifications,

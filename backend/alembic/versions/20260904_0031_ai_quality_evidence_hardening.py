@@ -1,7 +1,7 @@
 """Harden AI evidence, consent receipts and corpus review.
 
 Revision ID: 20260904_0031
-Revises: 20260904_0029
+Revises: 20260904_0030
 """
 
 from alembic import op
@@ -9,7 +9,7 @@ import sqlalchemy as sa
 
 
 revision = "20260904_0031"
-down_revision = "20260904_0029"
+down_revision = "20260904_0030"
 branch_labels = None
 depends_on = None
 
@@ -80,11 +80,16 @@ def upgrade() -> None:
         op.add_column("document_intelligence_sources", sa.Column(name, type_, nullable=True))
     op.execute(
         "UPDATE document_intelligence_sources s SET "
-        "text_sha256 = s.sha256, "
-        "binary_sha256 = COALESCE(d.sha256_hash, s.sha256), "
-        "extractor = 'legacy-unrecorded', ocr_status = 'unknown' "
-        "FROM workspace_documents d "
-        "WHERE d.tenant_id = s.tenant_id AND d.id = s.document_id"
+        "text_sha256 = s.sha256, binary_sha256 = NULL, "
+        "extractor = 'legacy-unrecorded', ocr_status = 'unknown'"
+    )
+    op.execute(
+        "UPDATE document_intelligence_sources s SET binary_sha256 = v.sha256_hash "
+        "FROM workspace_document_versions v "
+        "WHERE v.tenant_id = s.tenant_id AND v.document_id = s.document_id "
+        "AND v.version = s.document_version AND v.sha256_hash IS NOT NULL "
+        "AND v.storage_status = 'available' "
+        "AND (v.object_key IS NOT NULL OR v.file_content IS NOT NULL)"
     )
     for name in ("text_sha256", "extractor", "ocr_status"):
         op.alter_column("document_intelligence_sources", name, nullable=False)
@@ -141,6 +146,28 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    for table in (
+        "ai_evaluation_cases",
+        "ai_evaluation_results",
+        "document_intelligence_analyses",
+        "document_intelligence_sources",
+        "document_intelligence_consent_receipts",
+    ):
+        op.execute(f'ALTER TABLE "{table}" NO FORCE ROW LEVEL SECURITY')
+        op.execute(f'ALTER TABLE "{table}" DISABLE ROW LEVEL SECURITY')
+    op.execute(
+        "DO $$ BEGIN "
+        "IF EXISTS (SELECT 1 FROM document_intelligence_consent_receipts) "
+        "OR EXISTS (SELECT 1 FROM document_intelligence_analyses "
+        "WHERE coverage IS NOT NULL OR request_fingerprint <> snapshot_hash) "
+        "OR EXISTS (SELECT 1 FROM document_intelligence_sources "
+        "WHERE binary_sha256 IS NOT NULL OR text_sha256 <> sha256 "
+        "OR extractor <> 'legacy-unrecorded' OR ocr_status <> 'unknown') "
+        "OR EXISTS (SELECT 1 FROM ai_evaluation_results "
+        "WHERE output IS NOT NULL AND output::jsonb ? 'claims') "
+        "THEN RAISE EXCEPTION 'downgrade blocked: AI evidence or consent audit trail would be lost'; "
+        "END IF; END $$"
+    )
     op.execute("DROP TRIGGER IF EXISTS document_intelligence_consent_immutable ON document_intelligence_consent_receipts")
     op.execute("DROP FUNCTION IF EXISTS prevent_document_intelligence_consent_mutation()")
     op.drop_table("document_intelligence_consent_receipts")
@@ -150,3 +177,11 @@ def downgrade() -> None:
     op.drop_column("document_intelligence_analyses", "request_fingerprint")
     op.drop_index("uq_ai_evaluation_cases_approved_name", table_name="ai_evaluation_cases")
     op.drop_constraint("ck_ai_evaluation_cases_independent_review", "ai_evaluation_cases", type_="check")
+    for table in (
+        "ai_evaluation_cases",
+        "ai_evaluation_results",
+        "document_intelligence_analyses",
+        "document_intelligence_sources",
+    ):
+        op.execute(f'ALTER TABLE "{table}" ENABLE ROW LEVEL SECURITY')
+        op.execute(f'ALTER TABLE "{table}" FORCE ROW LEVEL SECURITY')

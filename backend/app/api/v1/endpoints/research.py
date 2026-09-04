@@ -1123,7 +1123,8 @@ async def _document_provenance(db: AsyncSession, tenant_id: str, documents: list
     versions = (await db.execute(select(WorkspaceDocumentVersion).options(load_only(
         WorkspaceDocumentVersion.document_id, WorkspaceDocumentVersion.version,
         WorkspaceDocumentVersion.sha256_hash, WorkspaceDocumentVersion.object_key,
-        WorkspaceDocumentVersion.filename, WorkspaceDocumentVersion.ocr_status,
+        WorkspaceDocumentVersion.filename, WorkspaceDocumentVersion.file_size,
+        WorkspaceDocumentVersion.storage_status, WorkspaceDocumentVersion.ocr_status,
         WorkspaceDocumentVersion.content_type,
     )).where(
         WorkspaceDocumentVersion.tenant_id == tenant_id,
@@ -1281,7 +1282,9 @@ async def review_document_intelligence(case_id: str, analysis_id: str, body: Doc
         analysis.status, analysis.error, analysis.revision = "stale", "Documentos alterados depois da análise.", analysis.revision + 1
         await db.commit()
         raise HTTPException(409, "Um documento mudou desde a análise. Execute uma nova análise.")
-    if body.decision == "approve" and analysis.coverage and analysis.coverage.get("truncated") and not body.acknowledge_partial:
+    if body.decision == "approve" and analysis.coverage and (
+        analysis.coverage.get("partial") or analysis.coverage.get("truncated")
+    ) and not body.acknowledge_partial:
         raise HTTPException(422, "A análise usou apenas parte do conteúdo. Confirme explicitamente a ressalva de cobertura.")
     analysis.status = "approved" if body.decision == "approve" else "rejected"
     analysis.reviewed_by_user_id = user.id
