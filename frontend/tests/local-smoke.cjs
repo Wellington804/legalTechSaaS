@@ -67,11 +67,11 @@ function totp(secret, offsetSeconds = 0) {
     await page.reload(); await page.getByText(label, { exact: true }).waitFor();
 
     await page.goto(`${base}/dashboard/tracker`);
-    await page.getByRole('button', { name: 'Cadastrar caso', exact: true }).click();
+    await page.getByRole('button', { name: 'Novo processo', exact: true }).click();
     await page.getByLabel('Cliente', { exact: true }).selectOption(client.id);
-    await page.getByLabel('Título do caso').fill(`${label} — caso`);
+    await page.getByLabel('Assunto do processo').fill(`${label} — caso`);
     const caseSaved = page.waitForResponse(response => response.url().endsWith('/workspace/cases') && response.request().method() === 'POST');
-    await page.getByRole('button', { name: 'Cadastrar caso', exact: true }).last().click();
+    await page.getByRole('button', { name: 'Salvar processo', exact: true }).click();
     const caseResponse = await caseSaved;
     assert.equal(caseResponse.status(), 201, await caseResponse.text());
     const caseRecord = await caseResponse.json();
@@ -80,7 +80,7 @@ function totp(secret, offsetSeconds = 0) {
 
     await page.goto(`${base}/dashboard/petitions/editor`);
     await page.getByRole('button', { name: 'Começar em branco', exact: true }).click();
-    await page.getByLabel('Caso', { exact: true }).selectOption(caseRecord.id);
+    await page.getByLabel('Processo', { exact: true }).selectOption(caseRecord.id);
     await page.getByLabel('Título', { exact: true }).fill(`${label} — documento`);
     await page.getByRole('textbox', { name: 'Texto do documento' }).fill('Texto de verificação persistido no banco.');
     const documentSaved = page.waitForResponse(response => response.url().endsWith('/workspace/documents') && response.request().method() === 'POST');
@@ -100,7 +100,8 @@ function totp(secret, offsetSeconds = 0) {
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `${path} overflows 375px`);
     }
     await page.goto(`${base}/dashboard/assinaturas`);
-    await page.waitForURL('**/dashboard');
+    await page.waitForURL('**/dashboard/operacoes');
+    await page.getByRole('heading', { name: 'Atendimento e cobranças', exact: true }).waitFor();
     assert.deepEqual(errors, []);
     const logout = await context.request.post(`${api}/auth/logout`, { headers: origin });
     assert.equal(logout.status(), 204);
