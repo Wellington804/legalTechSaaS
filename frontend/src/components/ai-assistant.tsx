@@ -11,7 +11,7 @@ import type { Row } from "@/components/workspace/records";
 
 type ContextKind = "global" | "client" | "case" | "document" | "library" | "branding";
 type ContextDetail = { contextKind?: ContextKind; clientId?: string; caseId?: string; documentId?: string; prompt?: string };
-type Answer = { text: string; sources: Array<{ kind: string; id: string; label: string; url?: string }>; limitations: string[]; review_required: true; saved: false; conversation_id?: string };
+type Answer = { text: string; sources: Array<{ kind: string; id: string; label: string; url?: string; citation_id?: string; locator?: string; excerpt?: string }>; limitations: string[]; review_required: true; saved: false; conversation_id?: string };
 type ChatMessage = { id: string; role: "user" | "assistant"; text: string };
 type List = { items: Row[] };
 export const OPEN_AI_EVENT = "lexflow:open-ai";
@@ -171,7 +171,7 @@ export function AiAssistant() {
           <div className="flex flex-wrap gap-2"><button type="button" className={button} onClick={() => navigator.clipboard.writeText(answer.text)}><Copy aria-hidden="true" size={16} />Copiar</button>{!savedDocument && <button type="button" className={button} disabled={saveBusy || draftTitle.trim().length < 2} onClick={saveDraft}><FilePlus2 aria-hidden="true" size={16} />{saveBusy ? "Salvando…" : "Salvar em Documentos"}</button>}</div>
           {!savedDocument && <Field label="Nome do rascunho"><input className={control} value={draftTitle} maxLength={300} onChange={event => setDraftTitle(event.target.value)} /></Field>}
           {savedDocument && <p role="status" className="text-sm text-emerald-200">Rascunho salvo. <Link className="underline" href={kind === "case" && context.caseId ? `/dashboard/cases/${context.caseId}` : "/dashboard/petitions/editor"} onClick={close}>Abrir documento</Link></p>}
-          {answer.sources.length > 0 && <details><summary className="min-h-11 cursor-pointer content-center text-sm">Fontes utilizadas ({answer.sources.length})</summary><ul className="space-y-1 text-xs text-zinc-400">{answer.sources.map(source => <li key={`${source.kind}:${source.id}`}>{source.label}</li>)}</ul></details>}
+          {answer.sources.length > 0 && <details><summary className="min-h-11 cursor-pointer content-center text-sm">Fontes utilizadas ({answer.sources.length})</summary><div className="space-y-2 text-xs text-zinc-400">{answer.sources.map(source => <article className="rounded-lg bg-zinc-950 p-2" key={`${source.kind}:${source.id}`}><strong>{source.label}</strong>{source.excerpt && <p className="mt-1 whitespace-pre-wrap">{source.excerpt}</p>}</article>)}</div></details>}
         </section>}
       </div>
 

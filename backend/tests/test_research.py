@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from app.api.v1.endpoints import research
 from app.core.config import Settings
+from app.services import legal_ai
 
 
 REAL_ASYNC_CLIENT = httpx.AsyncClient
@@ -301,7 +302,7 @@ class ResearchEndpointTests(unittest.TestCase):
                     200,
                     json={
                         "candidates": [
-                            {"content": {"parts": [{"text": "x" * 16001}]}}
+                            {"content": {"parts": [{"text": "[D1-N1] " + "x" * 16000}]}}
                         ]
                     },
                 )
@@ -424,6 +425,135 @@ class ResearchEndpointTests(unittest.TestCase):
             self.assertEqual(db.commits, 0)
 
         asyncio.run(run())
+
+    def test_evidence_matrix_is_source_bound_audited_and_never_saved(self):
+        async def run():
+            case = SimpleNamespace(id="case-a", title="Cobrança", number=self.valid_cnj, court="TJSP", status="open")
+            document = SimpleNamespace(
+                id="doc-a", case_id="case-a", title="Contrato", current_version=2,
+                content_text="O contrato foi assinado.\n\nA parcela de agosto não foi paga.",
+            )
+            source_id = legal_ai.build_evidence_bundle([document], "Analise a parcela não paga")["sources"][0].id
+            response = legal_ai.EvidenceMatrix(
+                facts=[legal_ai.MatrixItem(id="F1", statement="A parcela não foi paga.", status="supported", source_ids=[source_id], review_note="Conferir.", human_review_required=True)],
+                evidence=[], legal_bases=[],
+                requests=[legal_ai.MatrixItem(id="P1", statement="Avaliar cobrança.", status="supported", source_ids=[source_id], review_note="Definir pedido.", human_review_required=True)],
+                gaps=["Fonte jurídica oficial."], conflicts=[], limitations=["Análise documental."], human_review_required=True,
+            )
+            db, audit = ResearchDatabase(), AsyncMock()
+            with (
+                patch.object(research, "ensure_tenant_write_access", AsyncMock()),
+                patch.object(research, "get_case", AsyncMock(return_value=case)),
+                patch.object(research, "get_document", AsyncMock(return_value=document)),
+                patch.object(research, "ai_available", return_value=True),
+                patch.object(research, "reserve_request", AsyncMock()),
+                patch.object(research, "generate_text", AsyncMock(return_value=response.model_dump_json())) as generate,
+                patch.object(research, "_set_tenant_context", AsyncMock()),
+                patch.object(research.AuditService, "log_action", audit),
+            ):
+                result = await research.create_evidence_matrix(
+                    "case-a", research.EvidenceMatrixInput(
+                        document_ids=["doc-a"], instructions="Analise a parcela não paga", consent=True,
+                    ), self.user, db,
+                )
+            return result, db, audit, generate
+
+        result, db, audit, generate = asyncio.run(run())
+        self.assertFalse(result["saved"])
+        self.assertTrue(result["review_required"])
+        self.assertEqual(result["matrix"]["facts"][0]["source_ids"], [result["sources"][0]["id"]])
+        self.assertEqual(db.added, [])
+        self.assertEqual(db.commits, 2)
+        self.assertEqual(audit.await_count, 2)
+        self.assertEqual(generate.await_args.kwargs["purpose"], "legal")
+
+    def test_guided_draft_rejects_stale_snapshot_before_provider_call(self):
+        async def run():
+            case = SimpleNamespace(id="case-a", title="Cobrança", number=self.valid_cnj, court="TJSP", status="open")
+            document = SimpleNamespace(id="doc-a", case_id="case-a", title="Contrato", current_version=2, content_text="Texto atual.")
+            matrix = legal_ai.EvidenceMatrix(
+                facts=[legal_ai.MatrixItem(id="F1", statement="Fato.", status="supported", source_ids=["D1-N1"], review_note="Conferir.", human_review_required=True)],
+                evidence=[], legal_bases=[],
+                requests=[legal_ai.MatrixItem(id="P1", statement="Pedido.", status="supported", source_ids=["D1-N1"], review_note="Conferir.", human_review_required=True)],
+                gaps=[], conflicts=[], limitations=["Revisar."], human_review_required=True,
+            )
+            provider = AsyncMock()
+            with (
+                patch.object(research, "ensure_tenant_write_access", AsyncMock()),
+                patch.object(research, "get_case", AsyncMock(return_value=case)),
+                patch.object(research, "get_document", AsyncMock(return_value=document)),
+                patch.object(research, "ai_available", return_value=True),
+                patch.object(research, "generate_text", provider),
+            ):
+                with self.assertRaises(HTTPException) as caught:
+                    await research.create_guided_draft(
+                        "case-a", research.GuidedDraftInput(
+                            document_ids=["doc-a"],
+                            snapshots=[legal_ai.DocumentSnapshot(document_id="doc-a", version=1, sha256="0" * 64)],
+                            source_query="Analise o documento", matrix=matrix, approved_item_ids=["F1", "P1"],
+                            piece_type="initial_petition", addressing="Juízo competente", instructions="Prepare a minuta", consent=True,
+                        ), self.user, ResearchDatabase(),
+                    )
+            return caught.exception, provider
+
+        error, provider = asyncio.run(run())
+        self.assertEqual(error.status_code, 409)
+        provider.assert_not_awaited()
+
+    def test_guided_draft_runs_separate_verifier_and_returns_unsaved_draft(self):
+        async def run():
+            case = SimpleNamespace(id="case-a", title="Cobrança", number=self.valid_cnj, court="TJSP", status="open")
+            document = SimpleNamespace(
+                id="doc-a", case_id="case-a", title="Contrato", current_version=2,
+                content_text="A parcela de agosto não foi paga.",
+            )
+            bundle = legal_ai.build_evidence_bundle([document], "Analise o inadimplemento")
+            source_id = bundle["sources"][0].id
+            matrix = legal_ai.EvidenceMatrix(
+                facts=[legal_ai.MatrixItem(id="F1", statement="A parcela não foi paga.", status="supported", source_ids=[source_id], review_note="Conferir.", human_review_required=True)],
+                evidence=[], legal_bases=[],
+                requests=[legal_ai.MatrixItem(id="P1", statement="Avaliar cobrança.", status="supported", source_ids=[source_id], review_note="Definir pedido.", human_review_required=True)],
+                gaps=["Fundamento oficial."], conflicts=[], limitations=["Revisar."], human_review_required=True,
+            )
+            draft = legal_ai.GeneratedDraft(
+                title="Minuta de cobrança",
+                sections=[legal_ai.DraftSection(heading="Dos fatos", body="A parcela não foi paga.", status="supported", source_ids=[source_id])],
+                missing_information=["Fundamento jurídico oficial."], human_review_required=True,
+            )
+            verification = legal_ai.VerificationResult(
+                verdict="needs_review", issues=[], checked_source_ids=[source_id],
+                summary="Ainda exige revisão profissional.", human_review_required=True,
+            )
+            generate = AsyncMock(side_effect=[draft.model_dump_json(), verification.model_dump_json()])
+            db, audit = ResearchDatabase(), AsyncMock()
+            with (
+                patch.object(research, "ensure_tenant_write_access", AsyncMock()),
+                patch.object(research, "get_case", AsyncMock(return_value=case)),
+                patch.object(research, "get_document", AsyncMock(return_value=document)),
+                patch.object(research, "ai_available", return_value=True),
+                patch.object(research, "reserve_request", AsyncMock()),
+                patch.object(research, "generate_text", generate),
+                patch.object(research, "_set_tenant_context", AsyncMock()),
+                patch.object(research, "model_name", side_effect=lambda _settings, purpose="general": f"model-{purpose}"),
+                patch.object(research.AuditService, "log_action", audit),
+            ):
+                result = await research.create_guided_draft(
+                    "case-a", research.GuidedDraftInput(
+                        document_ids=["doc-a"], snapshots=bundle["snapshots"], source_query="Analise o inadimplemento",
+                        matrix=matrix, approved_item_ids=["F1", "P1"], piece_type="initial_petition",
+                        addressing="Juízo competente", instructions="Prepare uma minuta objetiva", consent=True,
+                    ), self.user, db,
+                )
+            return result, db, audit, generate
+
+        result, db, audit, generate = asyncio.run(run())
+        self.assertFalse(result["saved"])
+        self.assertTrue(result["model_independent"])
+        self.assertIn("RASCUNHO GERADO COM IA", result["content_markdown"])
+        self.assertEqual([entry.kwargs["purpose"] for entry in generate.await_args_list], ["legal", "deep"])
+        self.assertEqual(db.added, [])
+        self.assertEqual(db.commits, 2)
+        self.assertEqual(audit.await_count, 2)
 
 
 if __name__ == "__main__":

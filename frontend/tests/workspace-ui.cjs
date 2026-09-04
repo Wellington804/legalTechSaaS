@@ -110,6 +110,7 @@ function fixtureApi() {
       id: "task-a", case_id: "case-a", title: "Revisar processo", kind: "task", status: "pending",
       due_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(), manually_reviewed: true,
     }]));
+    if (method === "GET" && path === "/api/v1/workspace/publications") return json(route, 200, list([]));
     if (method === "PUT" && path === "/api/v1/workspace/tasks/task-a") {
       state.dailyTaskCompleted = body.status === "completed";
       return json(route, 200, { id: "task-a", revision: 2, ...body });
@@ -184,6 +185,29 @@ function fixtureApi() {
     if (method === "POST" && path === "/api/v1/engagement/assistant") return json(route, 200, {
       text: "Rascunho contextual para revisão.", sources: [],
       limitations: ["Resposta não salva."], review_required: true, saved: false,
+    });
+    if (method === "POST" && path === "/api/v1/engagement/assistant/chat") return json(route, 200, {
+      text: "Rascunho contextual para revisão.", sources: [], limitations: ["Resposta não salva."],
+      review_required: true, saved: false, conversation_id: "conversation-a",
+      conversation: { id: "conversation-a", title: "Conversa", context_kind: "global", retention_days: 90, message_count: 2, updated_at: new Date().toISOString() },
+    });
+    if (method === "POST" && path === "/api/v1/engagement/cases/case-a/evidence-matrix") return json(route, 200, {
+      matrix: {
+        facts: [{ id: "F1", statement: "O documento registra o inadimplemento.", status: "supported", source_ids: ["D1-N1"], review_note: "Conferir o original.", human_review_required: true }],
+        evidence: [], legal_bases: [{ id: "B1", statement: "Fundamento ainda não confirmado.", status: "unverified", source_ids: [], review_note: "Selecionar fonte oficial.", human_review_required: true }],
+        requests: [{ id: "P1", statement: "Avaliar o pedido de cobrança.", status: "supported", source_ids: ["D1-N1"], review_note: "Delimitar o pedido.", human_review_required: true }],
+        gaps: ["Fonte jurídica oficial."], conflicts: [], limitations: ["Somente os documentos selecionados."], human_review_required: true,
+      },
+      snapshots: [{ document_id: "doc-a", version: 4, sha256: "a".repeat(64) }],
+      sources: [{ id: "D1-N1", kind: "document", document_id: "doc-a", title: "Petição revista", version: 4, page: null, paragraph: 1, locator: "§ 1", excerpt: "Texto revisado." }],
+      coverage: { documents: 1, source_characters: 15, total_content_characters: 15, truncated: false },
+      source_query: body.instructions, provider: "openrouter", model: "legal-model", review_required: true, saved: false,
+    });
+    if (method === "POST" && path === "/api/v1/engagement/cases/case-a/guided-draft") return json(route, 200, {
+      title: "Minuta de cobrança", content_markdown: "# Minuta de cobrança\n\nTexto para revisão [D1-N1].",
+      verification: { verdict: "needs_review", issues: [], checked_source_ids: ["D1-N1"], summary: "Fontes conferidas automaticamente; revisão profissional pendente.", human_review_required: true },
+      sources: [], snapshots: body.snapshots, provider: "openrouter", generator_model: "legal-model", verifier_model: "deep-model",
+      model_independent: true, review_required: true, saved: false, stale: false,
     });
     if (method === "GET" && path === "/api/v1/engagement/cases/case-a/messages") return json(route, 200, list(state.messages));
     if (method === "POST" && path === "/api/v1/engagement/cases/case-a/messages") {
@@ -275,10 +299,9 @@ if (require.main === module) (async () => {
     assert.match(dailyCreate.body.request_id, /^[0-9a-f-]{36}$/i);
     await page.getByRole("button", { name: "Abrir Assistente LexFlow", exact: true }).click();
     await page.getByRole("dialog", { name: "Assistente LexFlow" }).waitFor();
-    const prepare = page.getByRole("button", { name: "Preparar rascunho", exact: true });
-    assert.equal(await prepare.isDisabled(), true, "IA contextual exige consentimento e pedido explícitos");
-    await page.getByLabel("O que você quer preparar?", { exact: true }).fill("Organize os próximos passos informados.");
-    await page.getByLabel(/Autorizo o envio da pergunta/).check();
+    const prepare = page.getByRole("button", { name: "Enviar mensagem", exact: true });
+    assert.equal(await prepare.isDisabled(), true, "IA contextual exige um pedido explícito");
+    await page.getByLabel("Mensagem para o assistente", { exact: true }).fill("Organize os próximos passos informados.");
     await prepare.click();
     await page.getByText("Rascunho contextual para revisão.", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Fechar assistente", exact: true }).click();
@@ -362,7 +385,7 @@ if (require.main === module) (async () => {
     assert.deepEqual((await recordedCall(api.state, (call) => (
       call.method === "POST" && call.path === "/api/v1/workspace/documents"
     ), "create document")).body, {
-      title: "Documento novo", case_id: "case-a", kind: "document", content_text: "Conteúdo novo.", content_format: "plain",
+      title: "Documento novo", case_id: "case-a", kind: "document", document_type: "general", content_text: "Conteúdo novo.", content_format: "plain",
     });
     await page.getByRole("button", { name: "Editar documento", exact: true }).first().click();
     await page.getByLabel("Título", { exact: true }).fill("Petição revista");
@@ -373,6 +396,24 @@ if (require.main === module) (async () => {
     ), "update document")).body, {
       title: "Petição revista", content_text: "Texto revisado.", content_format: "plain", expected_version: 3, expected_revision: 7,
     });
+    await page.getByRole("button", { name: "Analisar e preparar com IA", exact: true }).click();
+    await page.getByLabel("Processo", { exact: true }).selectOption("case-a");
+    await page.getByRole("checkbox", { name: /Petição revista/ }).check();
+    await page.getByLabel(/Autorizo o envio destes documentos/).check();
+    await page.getByRole("button", { name: "Gerar matriz para revisão", exact: true }).click();
+    await page.getByText("F1 · Com fonte", { exact: true }).waitFor();
+    await page.getByLabel("Aprovar F1", { exact: true }).check();
+    await page.getByLabel("Aprovar P1", { exact: true }).check();
+    await page.getByLabel(/Revisei os fatos e pedidos marcados/).check();
+    await page.getByRole("button", { name: "Gerar minuta e verificar", exact: true }).click();
+    await page.getByText("Verificação concluída — revisão humana pendente", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Salvar como rascunho", exact: true }).click();
+    await page.getByText("Minuta salva como rascunho. Ela ainda precisa passar por edição, revisão e aprovação humana.", { exact: true }).waitFor();
+    const guidedDraft = await recordedCall(api.state, call => call.method === "POST" && call.path === "/api/v1/engagement/cases/case-a/guided-draft", "generate verified draft");
+    assert.deepEqual(guidedDraft.body.approved_item_ids.sort(), ["F1", "P1"]);
+    const savedDraft = [...api.state.calls].reverse().find(call => call.method === "POST" && call.path === "/api/v1/workspace/documents");
+    assert.equal(savedDraft.body.document_type, "petition");
+    assert.equal(savedDraft.body.content_format, "markdown");
 
     await page.goto(`${baseUrl}/dashboard/account`);
     await page.getByRole("heading", { name: "Conta e escritório", exact: true }).waitFor();

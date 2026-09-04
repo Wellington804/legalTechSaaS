@@ -15,7 +15,7 @@ from app.core.dependencies import _set_tenant_context
 from app.models.workspace import WorkspaceCase, WorkspaceDocument, WorkspaceDocumentUpload, WorkspaceDocumentVersion
 from app.services.audit_service import AuditService
 from app.services.document_storage import DocumentStorageError, delete, object_key, promote, read, scan
-from app.services.document_text import TextExtractionError, extract_upload_text
+from app.services.document_text import TextExtractionError, extract_upload_text, mark_pdf_pages
 from app.services.workspace_service import reset_document_review, validate_upload_bytes
 from app.services.push_service import enqueue_user_push
 
@@ -33,7 +33,8 @@ def _ocr(content_type: str, content: bytes) -> str | None:
             output = root / "ignored.pdf"
             command = ["ocrmypdf", "--skip-text", "--deskew", "--rotate-pages", "--language", "por+eng", "--sidecar", str(sidecar), str(source), str(output)]
             subprocess.run(command, check=True, timeout=240, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return sidecar.read_text("utf-8", errors="replace")[:250_000].strip() or None
+            text = sidecar.read_text("utf-8", errors="replace")[:250_000].strip()
+            return mark_pdf_pages(text) or None
         result = subprocess.run(
             ["tesseract", str(source), "stdout", "-l", "por+eng"], check=True, timeout=180,
             capture_output=True, text=True, encoding="utf-8", errors="replace",
