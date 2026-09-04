@@ -5,6 +5,7 @@ import { api } from "@/lib/api-client";
 import { OPEN_AI_EVENT } from "@/components/ai-assistant";
 import { isOfficeAdminRole, useUser } from "@/context/user-context";
 import { Documents } from "./documents";
+import { DocumentIntelligence } from "./document-intelligence";
 import { CaseMonitoring } from "./controladoria";
 import { Ledger } from "./ledger";
 import { CaseRoutines } from "./routines";
@@ -35,7 +36,7 @@ export function CaseDetail({ id }: { id: string }) {
       </nav>
       {view === "routines" && <CaseRoutines key={id} caseId={id} />}
       {view === "tasks" && <Records key={id} kind="tasks" caseId={id} embedded />}
-      {view === "documents" && <Documents key={id} caseId={id} embedded />}
+      {view === "documents" && <><DocumentIntelligence caseId={id} documents={resource.data.documents || []} /><Documents key={id} caseId={id} embedded /></>}
       {view === "ledger" && <Ledger caseId={id} embedded />}
       {view === "publications" && <><Panel title="Consulta processual pública"><p className="text-xs text-zinc-400">Importa informações do processo público para conferência. Não consulta autos sigilosos nem calcula prazos. Informe a sigla do tribunal, como TJSP ou TRF1.</p><Field label="Tribunal"><input className={control} value={sync} onChange={e => setSync(e.target.value)} placeholder="TJSP" /></Field><Action run={async () => {
         const result = await api.post<{ imported: number }>(`/engagement/cases/${id}/sync`, { tribunal: sync }); setNotice(`Consulta concluída: ${result.imported} novos andamentos.`); setSyncRevision(value => value + 1);

@@ -7,6 +7,7 @@ import { useUser } from "@/context/user-context";
 import { api, apiClient } from "@/lib/api-client";
 import { button, control, errorText, Field, Page, State, useResource } from "@/components/workspace/shared";
 import type { List } from "@/components/workspace/records";
+import { AIQualityLab } from "@/components/ai-quality-lab";
 
 type ContextKind = "global" | "client" | "case" | "document" | "library" | "branding";
 type Source = { kind: string; id: string; label: string; url?: string; citation_id?: string; locator?: string; excerpt?: string };
@@ -144,5 +145,6 @@ export function AssistantWorkspace() {
         </footer>
       </section>
     </div>
+    {["SUPER_ADMIN", "SOCIO", "ASSOCIADO"].includes(user.role) && <AIQualityLab />}
   </Page>;
 }

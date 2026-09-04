@@ -135,6 +135,14 @@ def phone_from_jid(jid) -> str | None:
     return f"+{digits}" if 10 <= len(digits) <= 15 else None
 
 
+def verified_webhook_state(event: str, provider_state: dict) -> str:
+    if provider_state.get("connected") is True and provider_state.get("logged_in") is True:
+        return "connected"
+    if event in {"QRCode", "PairSuccess", "Connected", "OfflineSyncCompleted"}:
+        return "pending"
+    return "disconnected"
+
+
 async def reconnect(token: str) -> None:
     await _request("POST", "/instance/reconnect", token, body={})
 

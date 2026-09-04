@@ -23,7 +23,7 @@ from app.core.database import get_db
 from app.core.dependencies import CurrentUser, get_current_user, require_tenant_write
 from app.models.account import PrivacyRequest
 from app.models.controladoria import ControladoriaJudicialEvent
-from app.models.engagement import CaseMessage
+from app.models.engagement import CaseMessage, CommunicationInboxItem
 from app.models.notification import NotificationDelivery
 from app.models.tenant import Tenant
 from app.models.user import User
@@ -2654,12 +2654,14 @@ async def export_workspace(*, current_user: CurrentUser, db: AsyncSession = Depe
         ("library", select(WorkspaceLibraryEntry).where(WorkspaceLibraryEntry.tenant_id == current_user.tenant_id), WorkspaceLibraryEntry, LibraryEntryResponse.model_validate),
         ("publications", select(WorkspacePublication).where(WorkspacePublication.tenant_id == current_user.tenant_id), WorkspacePublication, PublicationResponse.model_validate),
         ("ledger", select(WorkspaceLedgerEntry).where(WorkspaceLedgerEntry.tenant_id == current_user.tenant_id), WorkspaceLedgerEntry, LedgerEntryResponse.model_validate),
+        ("case_messages", select(CaseMessage).where(CaseMessage.tenant_id == current_user.tenant_id), CaseMessage, lambda record: {"id": record.id, "case_id": record.case_id, "client_id": record.client_id, "channel": record.channel, "direction": record.direction, "body": record.body, "created_by_user_id": record.created_by_user_id, "read_at": record.read_at, "created_at": record.created_at}),
+        ("communication_inbox", select(CommunicationInboxItem).where(CommunicationInboxItem.tenant_id == current_user.tenant_id), CommunicationInboxItem, lambda record: {"id": record.id, "channel": record.channel, "provider": record.provider, "sender_address": record.sender_address, "subject": record.subject, "body": record.body, "body_truncated": record.body_truncated, "has_attachments": record.has_attachments, "status": record.status, "matched_client_id": record.matched_client_id, "linked_case_id": record.linked_case_id, "linked_message_id": record.linked_message_id, "reviewed_by_user_id": record.reviewed_by_user_id, "reviewed_at": record.reviewed_at, "received_at": record.received_at, "created_at": record.created_at}),
         ("privacy_requests", select(PrivacyRequest).where(PrivacyRequest.tenant_id == current_user.tenant_id), PrivacyRequest, lambda record: {"id": record.id, "requested_by_user_id": record.requested_by_user_id, "request_type": record.request_type, "scope": record.scope, "status": record.status, "reason": record.reason, "resolution_note": record.resolution_note, "created_at": record.created_at, "resolved_at": record.resolved_at}),
     )
 
     async def stream_export():
         header = {
-            "schema_version": 1,
+            "schema_version": 2,
             "generated_at": datetime.now(timezone.utc),
             "export_kind": "portable_data_export",
             "not_a_backup": True,

@@ -60,12 +60,16 @@ def event_digest(provider: str, event_identity: str) -> str:
     return hashlib.sha256(f"{provider}:{event_identity}".encode()).hexdigest()
 
 
-def match_status(client_count: int, case_count: int) -> str:
+def match_status(client_count: int, case_count: int, *, allow_auto_link: bool = False) -> str:
     if client_count == 1 and case_count == 1:
-        return "linked"
+        return "linked" if allow_auto_link else "ambiguous"
     if client_count > 1 or case_count > 1:
         return "ambiguous"
     return "unmatched"
+
+
+def can_auto_link(channel: str, message: InboundMessage) -> bool:
+    return channel == "whatsapp" and not message.has_attachments
 
 
 def resend_recipient_token(recipients: object, domain: str | None) -> str | None:
@@ -274,7 +278,13 @@ async def ingest_inbound_message(
         return existing, True
 
     clients, cases = await _matches(db, tenant_id, channel, message.sender)
-    status = match_status(len(clients), len(cases))
+    # A Resend webhook authenticates Resend, not the address in From. Media also
+    # needs a human until the binary is downloaded, scanned and persisted.
+    status = match_status(
+        len(clients),
+        len(cases),
+        allow_auto_link=can_auto_link(channel, message),
+    )
     item = CommunicationInboxItem(
         id=str(uuid.uuid4()),
         tenant_id=tenant_id,

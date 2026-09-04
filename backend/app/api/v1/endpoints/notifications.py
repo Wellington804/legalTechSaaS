@@ -11,6 +11,8 @@ from app.core.request_body import read_limited_body
 from app.core.redis_cache import cache_manager
 from app.models.user import User
 from app.models.engagement import TenantChannel
+from app.core.security import decrypt_mfa_secret
+from app.services import evolution_manager
 from app.services.audit_service import AuditService
 from app.schemas.notification import NotificationDeliveryResponse, NotificationDispatchRequest
 from app.services.notification_providers import provider_is_configured
@@ -184,25 +186,28 @@ async def evolution_webhook(request: Request, db: AsyncSession = Depends(get_db)
         raise HTTPException(status_code=401, detail="Invalid webhook credentials")
 
     event = payload.get("event")
-    if event in {"Connected", "PairSuccess", "Disconnected", "LoggedOut", "ConnectFailure", "QRTimeout", "QRCode"}:
+    if event in {"Connected", "PairSuccess", "OfflineSyncCompleted", "Disconnected", "LoggedOut", "ConnectFailure", "QRTimeout", "QRCode"}:
         from app.services.evolution_manager import phone_from_jid
 
         await _set_tenant_context(db, tenant_id)
         channel = await db.get(TenantChannel, tenant_id)
         if not channel:
             raise HTTPException(status_code=401, detail="Invalid webhook credentials")
+        if not channel.evolution_token_encrypted:
+            raise HTTPException(status_code=401, detail="Invalid webhook credentials")
         previous = channel.whatsapp_connection_state
         data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-        if event in {"Connected", "PairSuccess"}:
-            channel.whatsapp_connection_state = "connected"
+        try:
+            provider_state = await evolution_manager.status(decrypt_mfa_secret(channel.evolution_token_encrypted))
+        except (RuntimeError, evolution_manager.EvolutionProviderError):
+            raise HTTPException(status_code=503, detail="Evolution provider unavailable") from None
+        await _set_tenant_context(db, tenant_id)
+        channel.whatsapp_connection_state = evolution_manager.verified_webhook_state(event, provider_state)
+        if channel.whatsapp_connection_state == "connected":
             channel.whatsapp_enabled = True
             channel.whatsapp_number = phone_from_jid(data.get("jid")) or channel.whatsapp_number
-        elif event == "QRCode":
-            channel.whatsapp_connection_state = "pending"
-        else:
-            channel.whatsapp_connection_state = "disconnected"
-            if event == "LoggedOut":
-                channel.whatsapp_number = None
+        elif event == "LoggedOut":
+            channel.whatsapp_number = None
         channel.whatsapp_last_checked_at = datetime.now(timezone.utc)
         if previous != channel.whatsapp_connection_state and channel.whatsapp_connection_state in {"connected", "disconnected"}:
             action = "WHATSAPP_CONNECTED" if channel.whatsapp_connection_state == "connected" else "WHATSAPP_DISCONNECTED"

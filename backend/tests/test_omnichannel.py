@@ -2,6 +2,8 @@ import unittest
 
 from app.services.omnichannel import (
     MAX_INBOUND_BODY,
+    InboundMessage,
+    can_auto_link,
     extract_whatsapp_message,
     match_status,
     resend_recipient_token,
@@ -22,10 +24,16 @@ class OmnichannelInputTests(unittest.TestCase):
         self.assertIsNone(resend_sender("sem-endereco"))
 
     def test_auto_link_requires_exactly_one_client_and_case(self):
-        self.assertEqual(match_status(1, 1), "linked")
+        self.assertEqual(match_status(1, 1, allow_auto_link=True), "linked")
+        self.assertEqual(match_status(1, 1), "ambiguous")
         self.assertEqual(match_status(2, 1), "ambiguous")
         self.assertEqual(match_status(1, 2), "ambiguous")
         self.assertEqual(match_status(0, 0), "unmatched")
+        plain = InboundMessage("id", "+5511999999999", "texto")
+        media = InboundMessage("id", "+5511999999999", "anexo", has_attachments=True)
+        self.assertTrue(can_auto_link("whatsapp", plain))
+        self.assertFalse(can_auto_link("email", plain))
+        self.assertFalse(can_auto_link("whatsapp", media))
 
     def test_whatsapp_accepts_only_direct_inbound_messages(self):
         payload = {

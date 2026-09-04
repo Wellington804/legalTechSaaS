@@ -89,6 +89,7 @@ def upgrade() -> None:
     for column in ("tenant_id", "channel", "status", "matched_client_id", "linked_case_id", "received_at"):
         op.create_index(f"ix_communication_inbox_items_{column}", "communication_inbox_items", [column])
     op.execute("ALTER TABLE communication_inbox_items ENABLE ROW LEVEL SECURITY")
+    op.execute("ALTER TABLE communication_inbox_items FORCE ROW LEVEL SECURITY")
     op.execute(
         "CREATE POLICY communication_inbox_items_tenant_isolation ON communication_inbox_items "
         "USING (tenant_id = nullif(current_setting('app.current_tenant', true), '')) "

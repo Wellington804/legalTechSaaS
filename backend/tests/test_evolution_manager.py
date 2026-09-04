@@ -75,6 +75,13 @@ class EvolutionManagerTests(unittest.TestCase):
     def test_phone_number_is_extracted_without_device_suffix(self):
         self.assertEqual(evolution_manager.phone_from_jid("5511999999999:23@s.whatsapp.net"), "+5511999999999")
 
+    def test_connection_webhooks_never_override_provider_truth(self):
+        logged_in = {"connected": True, "logged_in": True}
+        offline = {"connected": False, "logged_in": False}
+        self.assertEqual(evolution_manager.verified_webhook_state("Disconnected", logged_in), "connected")
+        self.assertEqual(evolution_manager.verified_webhook_state("PairSuccess", offline), "pending")
+        self.assertEqual(evolution_manager.verified_webhook_state("LoggedOut", offline), "disconnected")
+
 
 if __name__ == "__main__":
     unittest.main()
