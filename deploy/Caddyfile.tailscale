@@ -1,0 +1,9 @@
+{
+	admin localhost:2019
+}
+
+# TLS terminates in Tailscale Serve. This listener is published only on
+# 127.0.0.1 by docker-compose.tailscale.yml.
+http://:80 {
+	import /etc/caddy/Caddyfile.routes
+}

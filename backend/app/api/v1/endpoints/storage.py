@@ -1,10 +1,11 @@
 import hashlib
 import os
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from pydantic import BaseModel
 from typing import Dict, Any
+from app.core.dependencies import get_current_user
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 class UploadResponse(BaseModel):
     filename: str

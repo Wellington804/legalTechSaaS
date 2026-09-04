@@ -1,0 +1,10 @@
+[Unit]
+Description=Check LegalTech PostgreSQL backup health hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=legaltech-backup-health.service
+
+[Install]
+WantedBy=timers.target

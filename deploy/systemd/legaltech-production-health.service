@@ -1,0 +1,12 @@
+[Unit]
+Description=LegalTech production operational gate
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/legaltech
+EnvironmentFile=/etc/legaltech/ops.env
+ExecStart=/bin/sh /opt/legaltech/deploy/production-health.sh
+NoNewPrivileges=yes
+PrivateTmp=yes

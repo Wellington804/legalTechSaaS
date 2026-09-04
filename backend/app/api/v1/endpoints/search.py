@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, Query
 from typing import List, Dict, Any
+from app.core.dependencies import CurrentUser
 
 router = APIRouter()
 
 @router.get("/", response_model=Dict[str, Any])
 async def universal_vector_search(
+    current_user: CurrentUser,
     q: str = Query(..., min_length=2, description="Termo ou vetor de busca semantica"),
-    tenant_id: str = Query("tenant_default", description="Identificador RLS do Tenant")
 ):
     """
     Realiza busca vetorial semantica universal em acervos de documentos, processos e guias OAB (pgvector).
@@ -37,7 +38,7 @@ async def universal_vector_search(
 
     return {
         "query": q,
-        "tenant_id": tenant_id,
+        "tenant_id": current_user.tenant_id,
         "total_matches": len(mock_results),
         "results": mock_results
     }

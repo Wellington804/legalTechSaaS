@@ -1,387 +1,255 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
-import Link from "next/link";
 import {
-  Award,
-  ShieldAlert,
-  Scale,
-  FileSignature,
-  DollarSign,
-  TrendingUp,
-  Users,
-  Clock,
-  ArrowUpRight,
-  ShieldCheck,
+  BellRing,
+  Bot,
+  BriefcaseBusiness,
+  CalendarCheck,
   CheckCircle2,
-  Calendar,
-  Grid,
-  Sparkles,
-  Plus,
-  QrCode,
-  FileText,
-  AlertTriangle,
-  Check,
+  FilePlus2,
+  FileWarning,
+  MessageSquareWarning,
+  UserPlus,
+  WalletCards,
 } from "lucide-react";
-import { OAB_SECCIONAIS, useOabStore } from "@/store/useOabStore";
-import { formatCurrency } from "@/lib/utils";
-import { StateSelectorModal } from "@/components/oab/state-selector-modal";
-import { getDashboardSummary, FALLBACK_PERIOD_DATA, KPIMetrics } from "@/lib/dashboardService";
+import Link from "next/link";
+import { useState, type FormEvent } from "react";
+import { OPEN_AI_EVENT } from "@/components/ai-assistant";
+import { useUser } from "@/context/user-context";
+import { api, ApiError } from "@/lib/api-client";
+import {
+  Field,
+  Page,
+  Panel,
+  State,
+  button,
+  control,
+  dateText,
+  errorText,
+  primary,
+  useResource,
+} from "@/components/workspace/shared";
+import { display, type List, type Row } from "@/components/workspace/records";
+import { RoutineAttention } from "@/components/workspace/routines";
 
-export default function DashboardPage() {
-  const { seccional, checklist } = useOabStore();
-  const [selectedPeriod, setSelectedPeriod] = useState<"Hoje" | "Semana" | "Mês" | "Ano">("Mês");
-  const [isStateModalOpen, setIsStateModalOpen] = useState(false);
-  const [currentKPI, setCurrentKPI] = useState<KPIMetrics>(FALLBACK_PERIOD_DATA["Mês"]);
-  const [isLoadingApi, setIsLoadingApi] = useState(false);
+type DailySource = "task" | "publication" | "judicial_event" | "communication" | "case_without_action";
+type DailySeverity = "critical" | "today" | "attention" | "planning" | "upcoming";
+type QuickEditor = { mode: "reschedule" | "create"; item: DailyItem; requestId: string };
 
-  // Metadados da Seccional Ativa
-  const currentSeccional =
-    OAB_SECCIONAIS.find((s) => s.code === seccional) || OAB_SECCIONAIS[24]; // SP por padrão
-
-  // Cálculo real do Checklist OAB
-  const completedCount = checklist.filter((i) => i.is_completed).length;
-  const totalChecklist = checklist.length;
-  const progressPct = Math.round((completedCount / totalChecklist) * 100);
-
-  // Carregar métricas dinâmicas da API (FastAPI / PostgreSQL)
-  useEffect(() => {
-    let isMounted = true;
-    setIsLoadingApi(true);
-    getDashboardSummary(selectedPeriod).then((kpiData) => {
-      if (isMounted) {
-        setCurrentKPI(kpiData);
-        setIsLoadingApi(false);
-      }
-    });
-    return () => {
-      isMounted = false;
-    };
-  }, [selectedPeriod]);
-
-  const auditLogs = [
-    { action: "OAB_SECCIONAL_SELECTED", detail: `Seccional alterada para ${currentSeccional.code}`, time: "Há 2 min", hash: "sha256-f89a12..." },
-    { action: "CHECKLIST_ITEM_VALIDATED", detail: `${completedCount} de ${totalChecklist} documentos aprovados`, time: "Há 12 min", hash: "sha256-a4f9e1..." },
-    { action: "PIX_PAYMENT_GENERATED", detail: `Guia OAB ${currentSeccional.code} emitida no Pix`, time: "Há 34 min", hash: "sha256-99b8c2..." },
-    { action: "CRM_LEAD_STAGE_UPDATED", detail: "Oportunidade movida para Contrato Fechado", time: "Há 1 hora", hash: "sha256-3c7d91..." },
-  ];
-
-  const criticalTasks = [
-    { title: "Protocolar Inscrição na CSA/OAB", dept: "Hub OAB", deadline: "Hoje, 17:00", priority: "Alta", color: "text-rose-400 border-rose-900/60 bg-rose-950/40" },
-    { title: "Acompanhar Proposta Parecer IBS/CBS", dept: "CRM", deadline: "Amanhã, 12:00", priority: "Média", color: "text-amber-400 border-amber-900/60 bg-amber-950/40" },
-    { title: "Validar Certidão Negativa Estadual", dept: "Checklist", deadline: "Em 3 dias", priority: "Normal", color: "text-blue-400 border-blue-900/60 bg-blue-950/40" },
-  ];
-
-  return (
-    <div className="space-y-6">
-      {/* Welcome Banner */}
-      <div className="bg-gradient-to-r from-blue-950/60 via-zinc-900 to-zinc-900 border border-blue-900/40 rounded-2xl p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-xl">
-        <div>
-          <div className="flex items-center space-x-2 text-xs text-blue-400 font-mono uppercase tracking-wider mb-1">
-            <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <span>Ambiente Multi-Tenant Certificado Tier 1</span>
-          </div>
-          <h1 className="text-xl font-extrabold text-zinc-100 tracking-tight">
-            Painel de Controle Jurídico & Governança
-          </h1>
-          <p className="text-xs text-zinc-400 mt-1 max-w-2xl">
-            Visão consolidada de inteligência jurídica, radar de conflitos éticos, pipeline comercial CRM e trâmite oficial da carteira OAB.
-          </p>
-        </div>
-
-        <div className="flex items-center space-x-2 shrink-0">
-          <Link
-            href="/dashboard/crm"
-            className="px-3.5 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-xl text-xs font-semibold transition-all flex items-center space-x-1.5 border border-zinc-700"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Novo Lead</span>
-          </Link>
-          <Link
-            href="/oab-hub"
-            className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold shadow-lg shadow-blue-950 transition-all flex items-center space-x-2"
-          >
-            <Award className="w-4 h-4" />
-            <span>Acessar Hub OAB</span>
-          </Link>
-        </div>
-      </div>
-
-      {/* KPI Controls Header & Period Selector */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-zinc-900/80 border border-zinc-800 p-3.5 rounded-2xl">
-        <span className="text-xs font-bold text-zinc-300 flex items-center gap-1.5">
-          <TrendingUp className="w-4 h-4 text-blue-400" />
-          Métricas de Desempenho Executivo
-        </span>
-
-        {/* Period Selector */}
-        <div className="flex bg-zinc-950 p-1 rounded-xl border border-zinc-800 w-full sm:w-auto">
-          {(["Hoje", "Semana", "Mês", "Ano"] as const).map((period) => (
-            <button
-              key={period}
-              onClick={() => setSelectedPeriod(period)}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
-                selectedPeriod === period
-                  ? "bg-blue-600 text-white shadow-sm"
-                  : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              {period}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* KPI Cards Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 hover:border-zinc-700 transition-all shadow-md">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-zinc-400">Processos Ativos</span>
-            <Scale className="w-4 h-4 text-blue-400" />
-          </div>
-          <div className="mt-3 flex items-baseline justify-between">
-            <span className="text-2xl font-black text-zinc-100 font-mono">{currentKPI.processos}</span>
-            <span className="text-[11px] font-medium text-emerald-400 font-mono">
-              {currentKPI.processosChange}
-            </span>
-          </div>
-        </div>
-
-        <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 hover:border-zinc-700 transition-all shadow-md">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-zinc-400">Conflitos Verificados</span>
-            <ShieldAlert className="w-4 h-4 text-emerald-400" />
-          </div>
-          <div className="mt-3 flex items-baseline justify-between">
-            <span className="text-2xl font-black text-zinc-100 font-mono">{currentKPI.conflitos}</span>
-            <span className="text-[11px] font-medium text-emerald-400 font-mono">
-              {currentKPI.conflitosChange}
-            </span>
-          </div>
-        </div>
-
-        <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 hover:border-zinc-700 transition-all shadow-md">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-zinc-400">Contratos Assinados ({selectedPeriod})</span>
-            <FileSignature className="w-4 h-4 text-purple-400" />
-          </div>
-          <div className="mt-3 flex items-baseline justify-between">
-            <span className="text-2xl font-black text-zinc-100 font-mono">{currentKPI.contratos}</span>
-            <span className="text-[11px] font-medium text-emerald-400 font-mono">
-              {currentKPI.contratosChange}
-            </span>
-          </div>
-        </div>
-
-        <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 hover:border-zinc-700 transition-all shadow-md">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-zinc-400">Faturamento Projetado</span>
-            <DollarSign className="w-4 h-4 text-amber-400" />
-          </div>
-          <div className="mt-3 flex items-baseline justify-between">
-            <span className="text-2xl font-black text-amber-400 font-mono">
-              {formatCurrency(currentKPI.faturamento)}
-            </span>
-            <span className="text-[11px] font-medium text-emerald-400 font-mono">
-              {currentKPI.faturamentoChange}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* Main Content Grid: OAB Status + CRM Pipeline + Audit Logs */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column (2 Cols): OAB Live Status & CRM Pipeline Summary */}
-        <div className="lg:col-span-2 space-y-6">
-          {/* OAB Live Status Card (Connected to Zustand Store) */}
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 space-y-4 shadow-xl">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-b border-zinc-800 pb-4 gap-3">
-              <div className="flex items-center space-x-3">
-                <div className="w-10 h-10 rounded-xl bg-blue-950 border border-blue-800/50 flex items-center justify-center text-blue-400 shrink-0">
-                  <Award className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-zinc-100">Status da Inscrição OAB (Módulo 12)</h3>
-                  <p className="text-xs text-zinc-400">Acompanhamento em tempo real do trâmite da carteira vermelha</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setIsStateModalOpen(true)}
-                className="px-3 py-1.5 bg-blue-950/80 hover:bg-blue-900/60 border border-blue-800/60 text-blue-300 rounded-xl text-xs font-semibold transition-all flex items-center space-x-1.5"
-              >
-                <Grid className="w-3.5 h-3.5" />
-                <span>Trocar UF ({currentSeccional.code})</span>
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-800/80">
-                <p className="text-[11px] font-medium text-zinc-400">Seccional Alvo</p>
-                <p className="text-sm font-extrabold text-zinc-100 mt-1 font-mono">
-                  {currentSeccional.code} ({currentSeccional.uf})
-                </p>
-                <span className="text-[10px] text-zinc-500 font-mono block mt-0.5">
-                  Região {currentSeccional.region}
-                </span>
-              </div>
-
-              <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-800/80">
-                <p className="text-[11px] font-medium text-zinc-400">Progresso do Checklist</p>
-                <p className="text-sm font-extrabold text-blue-400 mt-1 font-mono">
-                  {completedCount} de {totalChecklist} ({progressPct}%)
-                </p>
-                <div className="w-full bg-zinc-900 h-1.5 rounded-full mt-2 overflow-hidden">
-                  <div
-                    className="bg-blue-500 h-full transition-all duration-500"
-                    style={{ width: `${progressPct}%` }}
-                  />
-                </div>
-              </div>
-
-              <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-800/80">
-                <p className="text-[11px] font-medium text-zinc-400">Protocolo de Entrada</p>
-                <p className="text-sm font-extrabold text-zinc-200 mt-1 font-mono">PROT-OAB-89F2A1</p>
-                <span className="text-[10px] text-emerald-400 font-mono block mt-0.5">
-                  ✓ Documentação Homologada
-                </span>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between pt-2 border-t border-zinc-800/60">
-              <span className="text-[11px] text-zinc-400">
-                Anuidade Base {currentSeccional.code}: <strong className="text-zinc-200 font-mono">{formatCurrency(currentSeccional.baseAnuidade)}</strong>
-              </span>
-              <Link
-                href="/oab-hub/checklist"
-                className="text-xs font-bold text-blue-400 hover:text-blue-300 flex items-center space-x-1"
-              >
-                <span>Gerenciar Checklist Completo</span>
-                <ArrowUpRight className="w-3.5 h-3.5" />
-              </Link>
-            </div>
-          </div>
-
-          {/* Quick Launch Action Hub */}
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 space-y-3 shadow-xl">
-            <h3 className="text-xs font-bold text-zinc-200 uppercase tracking-wider flex items-center space-x-2">
-              <Sparkles className="w-4 h-4 text-amber-400" />
-              <span>Central de Ações Rápidas Executivas</span>
-            </h3>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              <Link
-                href="/dashboard/crm"
-                className="p-3.5 bg-zinc-950 border border-zinc-800/80 rounded-xl hover:border-blue-500/60 transition-all flex items-center space-x-3 group"
-              >
-                <div className="p-2 rounded-lg bg-blue-500/10 text-blue-400 group-hover:scale-105 transition-transform">
-                  <Users className="w-4 h-4" />
-                </div>
-                <div>
-                  <p className="text-xs font-bold text-zinc-200 group-hover:text-blue-400 transition-colors">Novo Lead CRM</p>
-                  <p className="text-[10px] text-zinc-500">Cadastrar cliente</p>
-                </div>
-              </Link>
-
-              <Link
-                href="/oab-hub/calculadora"
-                className="p-3.5 bg-zinc-950 border border-zinc-800/80 rounded-xl hover:border-emerald-500/60 transition-all flex items-center space-x-3 group"
-              >
-                <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 group-hover:scale-105 transition-transform">
-                  <QrCode className="w-4 h-4" />
-                </div>
-                <div>
-                  <p className="text-xs font-bold text-zinc-200 group-hover:text-emerald-400 transition-colors">Boleto/Pix OAB</p>
-                  <p className="text-[10px] text-zinc-500">Emitir guia oficial</p>
-                </div>
-              </Link>
-
-              <Link
-                href="/oab-hub/sua-guide"
-                className="p-3.5 bg-zinc-950 border border-zinc-800/80 rounded-xl hover:border-amber-500/60 transition-all flex items-center space-x-3 group"
-              >
-                <div className="p-2 rounded-lg bg-amber-500/10 text-amber-400 group-hover:scale-105 transition-transform">
-                  <DollarSign className="w-4 h-4" />
-                </div>
-                <div>
-                  <p className="text-xs font-bold text-zinc-200 group-hover:text-amber-400 transition-colors">Tabela Ética</p>
-                  <p className="text-[10px] text-zinc-500">Reajuste honorários</p>
-                </div>
-              </Link>
-
-              <Link
-                href="/oab-hub/declaracoes"
-                className="p-3.5 bg-zinc-950 border border-zinc-800/80 rounded-xl hover:border-purple-500/60 transition-all flex items-center space-x-3 group"
-              >
-                <div className="p-2 rounded-lg bg-purple-500/10 text-purple-400 group-hover:scale-105 transition-transform">
-                  <FileText className="w-4 h-4" />
-                </div>
-                <div>
-                  <p className="text-xs font-bold text-zinc-200 group-hover:text-purple-400 transition-colors">Emitir Declaração</p>
-                  <p className="text-[10px] text-zinc-500">Arts. 27-30 OAB</p>
-                </div>
-              </Link>
-            </div>
-          </div>
-        </div>
-
-        {/* Right Column (1 Col): Prazos & Audit Logs */}
-        <div className="space-y-6">
-          {/* Prazos Críticos */}
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 space-y-4 shadow-xl">
-            <h3 className="text-sm font-bold text-zinc-100 flex items-center justify-between">
-              <span>Agenda & Prazos Críticos</span>
-              <AlertTriangle className="w-4 h-4 text-amber-400" />
-            </h3>
-
-            <div className="space-y-3">
-              {criticalTasks.map((t, i) => (
-                <div key={i} className={`p-3 rounded-xl border ${t.color} space-y-1.5`}>
-                  <div className="flex justify-between items-start">
-                    <h4 className="text-xs font-bold text-zinc-200 leading-tight">{t.title}</h4>
-                    <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800">
-                      {t.priority}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center text-[10px] font-mono text-zinc-400">
-                    <span>{t.dept}</span>
-                    <span>{t.deadline}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Audit Logs Recentes */}
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 space-y-4 shadow-xl">
-            <h3 className="text-sm font-bold text-zinc-100 flex items-center justify-between">
-              <span>Audit Logs Recentes (LGPD)</span>
-              <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            </h3>
-            <div className="space-y-3">
-              {auditLogs.map((log, i) => (
-                <div key={i} className="p-3 rounded-xl bg-zinc-950 border border-zinc-800 text-xs space-y-1">
-                  <div className="flex justify-between items-center">
-                    <p className="font-bold text-zinc-200 font-mono text-[11px]">{log.action}</p>
-                    <span className="text-[10px] text-zinc-400 flex items-center font-mono">
-                      <Clock className="w-3 h-3 mr-1" />
-                      {log.time}
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-zinc-400 leading-snug">{log.detail}</p>
-                  <p className="text-[9px] text-zinc-500 font-mono pt-1 border-t border-zinc-900">{log.hash}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* State Selector Modal */}
-      <StateSelectorModal
-        isOpen={isStateModalOpen}
-        onClose={() => setIsStateModalOpen(false)}
-      />
-    </div>
-  );
+interface DailyItem {
+  id: string;
+  source: DailySource;
+  severity: DailySeverity;
+  title: string;
+  case_id: string | null;
+  case_title: string | null;
+  task_kind: string | null;
+  status: string;
+  relevant_at: string | null;
+  revision: number | null;
+  manually_reviewed: boolean | null;
+  detail: string | null;
+  href: string;
+  actions: string[];
 }
 
+interface DailySummary {
+  generated_at: string;
+  timezone: string;
+  cases: { total: number; active: number; waiting_action: number; restricted: number };
+  tasks: { due_today: number; overdue: number; upcoming: number; hearings_upcoming: number };
+  priorities: DailyItem[];
+  attention: { pending_judicial_movements: number; communication_failures: number; document_failures: number; financial_drafts: number | null };
+}
+
+const caseLabels: Record<string, string> = { open: "Abertos", paused: "Suspensos", closed: "Encerrados", archived: "Arquivados" };
+const severityStyle: Record<DailySeverity, string> = {
+  critical: "border-red-700 bg-red-950/30",
+  today: "border-amber-700 bg-amber-950/25",
+  attention: "border-violet-700 bg-violet-950/20",
+  planning: "border-blue-800 bg-blue-950/20",
+  upcoming: "border-zinc-700 bg-zinc-900/40",
+};
+const severityLabel: Record<DailySeverity, string> = {
+  critical: "Vencido",
+  today: "Hoje",
+  attention: "Atenção",
+  planning: "Planejar",
+  upcoming: "Próximo",
+};
+
+function mutationError(reason: unknown) {
+  if (!(reason instanceof ApiError)) return errorText(reason);
+  if (reason.status === 401) return "Sua sessão expirou. Entre novamente; os dados digitados permanecem nesta tela.";
+  if (reason.status === 403) return "Você não tem permissão para alterar este registro.";
+  if (reason.status === 409) return "Este registro mudou em outra sessão. A versão atual será carregada; confira antes de tentar novamente.";
+  if (reason.status === 422) return reason.message;
+  return reason.status >= 500 ? "O servidor não confirmou a operação. Nada será removido do painel; tente novamente." : reason.message;
+}
+
+function localDateTime(value: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf()) ? "" : new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
+function PriorityItem({
+  item,
+  busy,
+  onComplete,
+  onEdit,
+}: {
+  item: DailyItem;
+  busy: boolean;
+  onComplete: (item: DailyItem) => void;
+  onEdit: (mode: QuickEditor["mode"], item: DailyItem) => void;
+}) {
+  return <article className={`min-w-0 rounded-xl border p-4 ${severityStyle[item.severity]}`}>
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="min-w-0">
+        <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400">{severityLabel[item.severity]}</p>
+        <h3 className="mt-1 font-semibold text-zinc-100">{item.title}</h3>
+        {item.case_title && <p className="mt-1 text-sm text-zinc-300">{item.case_title}</p>}
+        <p className="mt-1 text-xs text-zinc-400">
+          {item.task_kind ? display(item.task_kind) : display(item.source)}
+          {item.relevant_at ? ` · ${dateText(item.relevant_at)}` : ""}
+          {item.task_kind === "deadline" && !item.manually_reviewed ? " · Data ainda não revisada" : ""}
+        </p>
+      </div>
+      <span className="shrink-0 rounded-full bg-zinc-950/60 px-2 py-1 text-xs text-zinc-300">{display(item.status)}</span>
+    </div>
+    <div className="mt-4 flex flex-wrap gap-2">
+      {item.actions.includes("complete") && <button type="button" className={`${primary} gap-2`} disabled={busy} onClick={() => onComplete(item)}><CheckCircle2 aria-hidden="true" size={17} /> Concluir</button>}
+      {item.actions.includes("reschedule") && <button type="button" className={button} disabled={busy} onClick={() => onEdit("reschedule", item)}>Reagendar</button>}
+      {item.actions.includes("create_next_action") && <button type="button" className={primary} disabled={busy} onClick={() => onEdit("create", item)}>Cadastrar próxima ação</button>}
+      <Link className={button} href={item.href}>Abrir contexto</Link>
+    </div>
+  </article>;
+}
+
+export default function DashboardPage() {
+  const { user } = useUser();
+  const summary = useResource<DailySummary>("/workspace/summary");
+  const analytics = useResource<Row>("/workspace/analytics");
+  const activity = useResource<List>("/workspace/activity");
+  const [editor, setEditor] = useState<QuickEditor | null>(null);
+  const members = useResource<List>(editor?.mode === "create" ? "/workspace/members" : null);
+  const [busyId, setBusyId] = useState("");
+  const [notice, setNotice] = useState("");
+  const [mutationFailure, setMutationFailure] = useState("");
+
+  const openEditor = (mode: QuickEditor["mode"], item: DailyItem) => {
+    setMutationFailure(""); setNotice("");
+    setEditor({ mode, item, requestId: crypto.randomUUID() });
+  };
+  const fail = (reason: unknown) => {
+    setMutationFailure(mutationError(reason));
+    if (reason instanceof ApiError && reason.status === 409) summary.reload();
+  };
+  const complete = async (item: DailyItem) => {
+    if (item.revision == null) return;
+    setBusyId(item.id); setMutationFailure(""); setNotice("");
+    try {
+      await api.put(`/workspace/tasks/${item.id}`, { status: "completed", expected_revision: item.revision });
+      setNotice("Ação concluída e registrada no histórico."); summary.reload();
+    } catch (reason) { fail(reason); } finally { setBusyId(""); }
+  };
+  const submitQuickAction = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!editor) return;
+    const data = new FormData(event.currentTarget);
+    const dueAt = new Date(String(data.get("due_at"))).toISOString();
+    setBusyId(editor.item.id); setMutationFailure(""); setNotice("");
+    try {
+      if (editor.mode === "reschedule") {
+        await api.put(`/workspace/tasks/${editor.item.id}`, {
+          due_at: dueAt,
+          manually_reviewed: true,
+          expected_revision: editor.item.revision,
+        });
+        setNotice("Ação reagendada e registrada no histórico.");
+      } else {
+        await api.post("/workspace/tasks", {
+          request_id: editor.requestId,
+          case_id: editor.item.case_id,
+          title: data.get("title"),
+          kind: data.get("kind"),
+          due_at: dueAt,
+          assigned_user_id: data.get("assigned_user_id") || null,
+          manually_reviewed: true,
+        });
+        setNotice("Próxima ação cadastrada e vinculada ao processo.");
+      }
+      setEditor(null); summary.reload();
+    } catch (reason) { fail(reason); } finally { setBusyId(""); }
+  };
+
+  const priorities = summary.data?.priorities || [];
+  const current = priorities[0];
+  const attentionItems = priorities.slice(1).filter(item => !["planning", "upcoming"].includes(item.severity));
+  const planningItems = priorities.slice(1).filter(item => ["planning", "upcoming"].includes(item.severity));
+  const caseTotal = Object.values(analytics.data?.cases_by_status || {}).reduce((sum: number, value) => sum + Number(value), 0) || 1;
+
+  return <Page title="Painel Diário" subtitle={`Olá, ${user.name}. Entenda o que exige atenção e comece a próxima ação.`}>
+    <State loading={summary.loading} error={summary.error} />
+    {(notice || mutationFailure) && <div aria-live="polite">{notice && <p role="status" className="rounded-lg border border-emerald-800 bg-emerald-950/25 p-3 text-sm text-emerald-200">{notice}</p>}{mutationFailure && <p role="alert" className="rounded-lg border border-red-900 bg-red-950/30 p-3 text-sm text-red-200">{mutationFailure}</p>}</div>}
+
+    {summary.data && <p className="text-xs text-zinc-500">Atualizado em {dateText(summary.data.generated_at)} · Fuso do escritório: {summary.data.timezone}</p>}
+
+    {!summary.loading && !summary.error && <section aria-labelledby="daily-now" className="space-y-3">
+      <div><p className="text-xs font-semibold uppercase tracking-wide text-blue-300">Agora</p><h2 id="daily-now" className="mt-1 text-xl font-semibold text-zinc-50">Sua próxima ação</h2></div>
+      {current ? <PriorityItem item={current} busy={busyId === current.id} onComplete={complete} onEdit={openEditor} /> : <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-5"><div className="flex items-start gap-3"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-emerald-950/60 text-emerald-300"><CheckCircle2 aria-hidden="true" size={20} /></span><div><h3 className="font-semibold text-zinc-100">Agenda em dia</h3><p className="mt-1 text-sm text-zinc-300">Não há prioridade pendente. Revise a carteira para planejar o próximo passo.</p><Link href="/dashboard/tracker" className={`${button} mt-4`}>Revisar processos</Link></div></div></div>}
+    </section>}
+
+    {editor && <section role="dialog" aria-modal="false" aria-labelledby="quick-action-title" className="rounded-xl border border-blue-700 bg-zinc-950 p-4 shadow-xl md:p-5">
+      <h2 id="quick-action-title" className="text-lg font-semibold">{editor.mode === "create" ? "Cadastrar próxima ação" : "Reagendar ação"}</h2>
+      <p className="mt-1 text-sm text-zinc-400">{editor.item.case_title || editor.item.title} · confira a data antes de salvar.</p>
+      <form className="mt-4 space-y-3" onSubmit={submitQuickAction}>
+        <fieldset disabled={busyId === editor.item.id} className="space-y-3">
+          {editor.mode === "create" && <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Próxima ação"><input autoFocus className={control} name="title" minLength={2} maxLength={300} required /></Field>
+            <Field label="Tipo"><select className={control} name="kind" defaultValue="task"><option value="task">Compromisso</option><option value="deadline">Prazo</option><option value="hearing">Audiência</option></select></Field>
+            <Field label="Responsável"><select key={Boolean(members.data).toString()} className={control} name="assigned_user_id" defaultValue={user.id}><option value="">Sem responsável</option>{members.data?.items.map(member => <option key={member.id} value={member.id}>{member.full_name}</option>)}</select></Field>
+          </div>}
+          <Field label="Data e horário local"><input autoFocus={editor.mode === "reschedule"} className={control} name="due_at" type="datetime-local" required defaultValue={editor.mode === "reschedule" ? localDateTime(editor.item.relevant_at) : ""} /></Field>
+          <p className="text-xs text-zinc-400">O horário será enviado com o fuso do dispositivo e exibido no fuso configurado do escritório.</p>
+          <State error={members.error || mutationFailure} />
+          <div className="flex flex-wrap gap-2"><button className={primary}>{busyId === editor.item.id ? "Salvando…" : "Salvar"}</button><button type="button" className={button} onClick={() => { setEditor(null); setMutationFailure(""); }}>Cancelar</button></div>
+        </fieldset>
+      </form>
+    </section>}
+
+    {summary.data && <dl className="grid grid-cols-2 gap-3 lg:grid-cols-4">{[
+      ["Para hoje", summary.data.tasks.due_today],
+      ["Vencidos", summary.data.tasks.overdue],
+      ["Audiências próximas", summary.data.tasks.hearings_upcoming],
+      ["Processos sem ação", summary.data.cases.waiting_action],
+    ].map(([label, value]) => <div key={String(label)} className="rounded-xl border border-zinc-800 bg-zinc-900/30 p-4"><dt className="text-sm text-zinc-400">{label}</dt><dd className="mt-2 text-2xl font-semibold text-zinc-50">{value}</dd></div>)}</dl>}
+
+    {summary.data && <section className="grid gap-4 lg:grid-cols-[1.2fr_.8fr]">
+      <Panel title="Hoje e atenção" description="Itens que precisam de decisão antes do planejamento."><div className="space-y-3">{attentionItems.map(item => <PriorityItem key={`${item.source}:${item.id}`} item={item} busy={busyId === item.id} onComplete={complete} onEdit={openEditor} />)}{!attentionItems.length && <p className="text-sm text-zinc-400">Nenhum outro item crítico agora.</p>}</div></Panel>
+      <Panel title="Planejamento" description="Próximas ações e processos que ainda precisam de direção."><div className="space-y-3">{planningItems.map(item => <PriorityItem key={`${item.source}:${item.id}`} item={item} busy={busyId === item.id} onComplete={complete} onEdit={openEditor} />)}{!planningItems.length && <p className="text-sm text-zinc-400">Nenhum item adicional para planejar.</p>}</div></Panel>
+    </section>}
+
+    {summary.data && <Panel title="Sinais operacionais" description="Estados persistidos; não representam prazos jurídicos inferidos."><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <Link href="/dashboard/controladoria" className="rounded-lg border border-zinc-800 p-4 hover:border-blue-700"><BellRing aria-hidden="true" size={19} /><p className="mt-2 text-sm text-zinc-400">Movimentações para revisar</p><strong className="text-xl">{summary.data.attention.pending_judicial_movements}</strong></Link>
+      <Link href="/dashboard/library" className="rounded-lg border border-zinc-800 p-4 hover:border-blue-700"><FileWarning aria-hidden="true" size={19} /><p className="mt-2 text-sm text-zinc-400">Falhas em documentos</p><strong className="text-xl">{summary.data.attention.document_failures}</strong></Link>
+      <Link href="/dashboard/communications" className="rounded-lg border border-zinc-800 p-4 hover:border-blue-700"><MessageSquareWarning aria-hidden="true" size={19} /><p className="mt-2 text-sm text-zinc-400">Comunicações a revisar</p><strong className="text-xl">{summary.data.attention.communication_failures}</strong></Link>
+      {summary.data.attention.financial_drafts != null && <Link href="/dashboard/financeiro" className="rounded-lg border border-zinc-800 p-4 hover:border-blue-700"><WalletCards aria-hidden="true" size={19} /><p className="mt-2 text-sm text-zinc-400">Lançamentos em rascunho</p><strong className="text-xl">{summary.data.attention.financial_drafts}</strong></Link>}
+    </div></Panel>}
+
+    <section className="grid gap-4 lg:grid-cols-2">
+      <Panel title="Carga dos próximos 7 dias" description="Informação secundária; não bloqueia o fluxo diário."><State loading={analytics.loading} error={analytics.error} />{analytics.data && <div className="space-y-3">{Object.entries(analytics.data.workload_next_7_days || {}).map(([day, raw]) => { const value = Number(raw); const max = Math.max(1, ...Object.values(analytics.data?.workload_next_7_days || {}).map(Number)); return <div key={day} className="grid grid-cols-[5rem_1fr_2rem] items-center gap-3 text-sm"><span className="text-zinc-400">{new Date(`${day}T12:00:00`).toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit" })}</span><span className="h-2 overflow-hidden rounded-full bg-zinc-800"><span className="block h-full rounded-full bg-blue-500" style={{ width: `${(value / max) * 100}%` }} /></span><strong>{value}</strong></div>; })}</div>}</Panel>
+      <Panel title="Carteira por situação" description="Somente processos que você pode acessar."><State loading={analytics.loading} error={analytics.error} />{analytics.data && <div className="space-y-3">{Object.entries(analytics.data.cases_by_status || {}).map(([status, raw]) => <div key={status}><div className="mb-1 flex justify-between text-sm"><span>{caseLabels[status] || display(status)}</span><strong>{Number(raw)}</strong></div><div className="h-2 overflow-hidden rounded-full bg-zinc-800"><div className="h-full rounded-full bg-violet-500" style={{ width: `${(Number(raw) / caseTotal) * 100}%` }} /></div></div>)}</div>}</Panel>
+    </section>
+
+    <section className="grid gap-4 lg:grid-cols-[1.2fr_.8fr]">
+      <Panel title="Atividade recente" description="Atualizações em linguagem direta."><State loading={activity.loading} error={activity.error} empty={!activity.loading && !activity.data?.items.length} />{activity.data?.items.map(item => <Link key={`${item.area}:${item.id}`} href={item.href} className="block rounded-lg p-3 hover:bg-zinc-800/60"><p className="text-sm font-medium">{item.message}</p><p className="mt-1 text-xs text-zinc-400">{item.area} · {dateText(item.created_at)}</p></Link>)}</Panel>
+      <Panel title="Pergunte ao LexFlow" description="Assistência opcional; nada é executado sem confirmação."><button className={`${primary} justify-start gap-2`} onClick={() => window.dispatchEvent(new CustomEvent(OPEN_AI_EVENT, { detail: { prompt: "Organize minhas pendências persistidas sem inventar prazos ou providências." } }))}><Bot aria-hidden="true" size={18} /> Abrir assistente</button></Panel>
+    </section>
+
+    <RoutineAttention />
+    <Panel title="Cadastros rápidos"><div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4"><Link className={`${button} justify-start gap-2`} href="/dashboard/crm"><UserPlus aria-hidden="true" size={17} /> Novo cliente</Link><Link className={`${button} justify-start gap-2`} href="/dashboard/tracker"><BriefcaseBusiness aria-hidden="true" size={17} /> Novo processo</Link><Link className={`${button} justify-start gap-2`} href="/dashboard/tasks"><CalendarCheck aria-hidden="true" size={17} /> Novo compromisso</Link><Link className={`${button} justify-start gap-2`} href="/dashboard/petitions/editor"><FilePlus2 aria-hidden="true" size={17} /> Criar documento</Link></div></Panel>
+    <p className="max-w-[72ch] text-sm text-zinc-400">Confira datas judiciais e publicações na fonte oficial. O painel organiza registros; não calcula prazos jurídicos.</p>
+  </Page>;
+}

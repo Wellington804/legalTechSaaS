@@ -1,0 +1,12 @@
+.git
+.code-review-graph
+.env*
+backend
+deploy
+docs
+node_modules
+**/node_modules
+frontend/.next
+frontend/out
+*.md
+docker-compose*.yml

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the LegalTech operational gate every five minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=legaltech-production-health.service
+
+[Install]
+WantedBy=timers.target

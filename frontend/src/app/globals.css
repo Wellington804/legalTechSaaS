@@ -3,10 +3,62 @@
 @tailwind utilities;
 
 @layer base {
+  summary::marker,
+  summary::-webkit-details-marker {
+    display: none;
+    content: "";
+  }
+  :focus-visible {
+    outline: 2px solid #60a5fa;
+    outline-offset: 3px;
+  }
+
+  body:has(dialog[open]) {
+    overflow: hidden;
+  }
+
   body {
     @apply bg-[#09090b] text-[#f4f4f5] antialiased selection:bg-blue-600 selection:text-white;
     font-feature-settings: "rlig" 1, "calt" 1;
+    font-size: 16px;
+    line-height: 1.5;
   }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Keep mobile controls usable without blocking browser zoom. */
+@media (max-width: 767px) {
+  input:not([type="checkbox"]):not([type="radio"]), select, textarea {
+    font-size: 16px;
+    min-height: 44px;
+    max-width: 100%;
+  }
+
+  .workspace-page :is(button, summary, a),
+  .workspace-page label:has(input[type="checkbox"]) {
+    min-height: 44px;
+  }
+
+  .workspace-page a {
+    display: inline-flex;
+  }
+
+  .workspace-page label:has(input[type="checkbox"]) {
+    padding-block: 8px;
+  }
+}
+
+label:has(input[type="file"]):focus-within {
+  outline: 2px solid #60a5fa;
+  outline-offset: 3px;
 }
 
 /* Custom UI Polish & Scrollbars */
@@ -34,6 +86,147 @@
   backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
+
+/* Transitional semantic theme layer for the existing zinc-based interface. */
+html.light {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+html.light body {
+  background: #fafafa;
+  color: #18181b;
+}
+
+html.light ::selection {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+html.light ::-webkit-scrollbar-track {
+  background: #f4f4f5;
+}
+
+html.light ::-webkit-scrollbar-thumb {
+  background: #d4d4d8;
+}
+
+html.light ::-webkit-scrollbar-thumb:hover {
+  background: #a1a1aa;
+}
+
+html.light .glass-panel {
+  background: rgba(255, 255, 255, 0.88);
+  border-color: rgba(24, 24, 27, 0.1);
+}
+
+html.light .bg-zinc-950 { background-color: #fafafa; }
+html.light .bg-zinc-950\/95 { background-color: rgb(250 250 250 / 0.95); }
+html.light .bg-zinc-950\/90 { background-color: rgb(250 250 250 / 0.9); }
+html.light .bg-zinc-950\/80 { background-color: rgb(250 250 250 / 0.8); }
+html.light .bg-zinc-950\/60 { background-color: rgb(250 250 250 / 0.6); }
+html.light .bg-zinc-950\/50 { background-color: rgb(250 250 250 / 0.5); }
+html.light .bg-zinc-900 { background-color: #f4f4f5; }
+html.light .bg-zinc-900\/90 { background-color: rgb(244 244 245 / 0.9); }
+html.light .bg-zinc-900\/80 { background-color: rgb(244 244 245 / 0.8); }
+html.light .bg-zinc-900\/60 { background-color: rgb(244 244 245 / 0.6); }
+html.light .bg-zinc-800 { background-color: #e4e4e7; }
+html.light .bg-zinc-800\/60 { background-color: rgb(228 228 231 / 0.6); }
+html.light .bg-zinc-700 { background-color: #d4d4d8; }
+
+html.light .text-zinc-50,
+html.light .text-zinc-100,
+html.light .text-zinc-200 { color: #18181b; }
+html.light .text-zinc-300 { color: #27272a; }
+html.light .text-zinc-400 { color: #52525b; }
+html.light .text-zinc-500 { color: #71717a; }
+html.light .text-zinc-600 { color: #52525b; }
+html.light .placeholder-zinc-500::placeholder { color: #71717a; }
+
+html.light .border-zinc-800 { border-color: #d4d4d8; }
+html.light .border-zinc-800\/80 { border-color: rgb(212 212 216 / 0.8); }
+html.light .border-zinc-800\/60 { border-color: rgb(212 212 216 / 0.6); }
+html.light .border-zinc-700 { border-color: #a1a1aa; }
+html.light .divide-zinc-800 > :not([hidden]) ~ :not([hidden]) { border-color: #d4d4d8; }
+html.light .divide-zinc-800\/80 > :not([hidden]) ~ :not([hidden]) { border-color: rgb(212 212 216 / 0.8); }
+html.light .divide-zinc-800\/60 > :not([hidden]) ~ :not([hidden]) { border-color: rgb(212 212 216 / 0.6); }
+
+html.light .hover\:bg-zinc-900:hover,
+html.light .hover\:bg-zinc-900\/60:hover,
+html.light .hover\:bg-zinc-800:hover { background-color: #e4e4e7; }
+html.light .hover\:text-white:hover { color: #18181b; }
+
+html.light .text-blue-100,
+html.light .text-blue-200,
+html.light .text-blue-300,
+html.light .text-blue-400 { color: #1d4ed8; }
+html.light .text-emerald-100,
+html.light .text-emerald-300,
+html.light .text-emerald-400,
+html.light .text-green-300 { color: #047857; }
+html.light .text-amber-100,
+html.light .text-amber-200,
+html.light .text-amber-300,
+html.light .text-amber-400 { color: #92400e; }
+html.light .text-red-200,
+html.light .text-red-300 { color: #b91c1c; }
+
+html.light .bg-blue-950,
+html.light .bg-blue-950\/90,
+html.light .bg-blue-950\/80,
+html.light .bg-blue-950\/60,
+html.light .bg-blue-950\/40,
+html.light .bg-blue-950\/10,
+html.light .bg-blue-900,
+html.light .bg-blue-900\/60,
+html.light .bg-blue-800,
+html.light .bg-blue-800\/80 { background-color: #eff6ff; }
+html.light .bg-emerald-950,
+html.light .bg-emerald-950\/90,
+html.light .bg-emerald-950\/80,
+html.light .bg-emerald-950\/60,
+html.light .bg-emerald-950\/40,
+html.light .bg-emerald-950\/25,
+html.light .bg-emerald-950\/20,
+html.light .bg-emerald-900,
+html.light .bg-emerald-900\/80 { background-color: #ecfdf5; }
+html.light .bg-amber-950,
+html.light .bg-amber-950\/80,
+html.light .bg-amber-950\/60,
+html.light .bg-amber-950\/25,
+html.light .bg-amber-950\/10,
+html.light .bg-amber-900,
+html.light .bg-amber-900\/80 { background-color: #fffbeb; }
+html.light .bg-red-950,
+html.light .bg-red-950\/30 { background-color: #fef2f2; }
+
+html.light .border-blue-900,
+html.light .border-blue-900\/60,
+html.light .border-blue-800,
+html.light .border-blue-800\/80,
+html.light .border-blue-800\/60 { border-color: #93c5fd; }
+html.light .border-emerald-900,
+html.light .border-emerald-900\/60,
+html.light .border-emerald-800,
+html.light .border-emerald-800\/80 { border-color: #6ee7b7; }
+html.light .border-amber-900,
+html.light .border-amber-900\/50,
+html.light .border-amber-800,
+html.light .border-amber-800\/80 { border-color: #fcd34d; }
+html.light .border-red-900 { border-color: #fca5a5; }
+
+html.light .bg-zinc-900\/40,
+html.light .bg-zinc-900\/35,
+html.light .bg-zinc-900\/30,
+html.light .bg-zinc-900\/25 { background-color: rgb(244 244 245 / 0.72); }
+html.light .bg-violet-950\/35 { background-color: #f5f3ff; }
+html.light .text-violet-100 { color: #5b21b6; }
+html.light .border-violet-700 { border-color: #a78bfa; }
+html.light .from-blue-950\/70 { --tw-gradient-from: rgb(239 246 255 / 0.9); --tw-gradient-to: rgb(239 246 255 / 0); }
+html.light .to-zinc-900 { --tw-gradient-to: #f4f4f5; }
 
 .paper-shadow-3d {
   box-shadow: 0 20px 50px -12px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.05);

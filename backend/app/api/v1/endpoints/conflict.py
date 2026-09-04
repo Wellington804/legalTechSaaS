@@ -3,8 +3,9 @@ from pydantic import BaseModel
 from typing import List, Optional
 import hashlib
 import time
+from app.core.dependencies import get_current_user
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 class ConflictCheckRequest(BaseModel):
     entity_name: str

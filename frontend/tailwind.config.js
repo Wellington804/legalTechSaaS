@@ -9,9 +9,9 @@ module.exports = {
   theme: {
     extend: {
       fontFamily: {
-        serif: ['var(--font-playfair)', 'Merriweather', 'Georgia', 'serif'],
-        sans: ['var(--font-inter)', 'var(--font-outfit)', 'system-ui', 'sans-serif'],
-        mono: ['var(--font-mono)', 'monospace'],
+        serif: ['Georgia', 'Times New Roman', 'serif'],
+        sans: ['system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
+        mono: ['ui-monospace', 'SFMono-Regular', 'Consolas', 'monospace'],
       },
       colors: {
         background: '#09090b',

@@ -1,0 +1,6 @@
+services:
+  caddy:
+    ports: !override
+      - "127.0.0.1:${TAILSCALE_LOOPBACK_PORT:-8080}:80"
+    volumes:
+      - ./deploy/Caddyfile.tailscale:/etc/caddy/Caddyfile:ro

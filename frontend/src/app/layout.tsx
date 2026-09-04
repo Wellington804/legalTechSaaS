@@ -1,36 +1,19 @@
-import type { Metadata } from "next";
-import { Inter, Playfair_Display, Outfit, JetBrains_Mono } from "next/font/google";
+import type { Metadata, Viewport } from "next";
 import { UserProvider } from "@/context/user-context";
+import { PwaProvider } from "@/components/pwa-provider";
+import { AiAssistant } from "@/components/ai-assistant";
+import { themeInitializationScript } from "@/lib/theme";
 import "./globals.css";
 
-const inter = Inter({
-  subsets: ["latin"],
-  variable: "--font-inter",
-  display: "swap",
-});
-
-const playfair = Playfair_Display({
-  subsets: ["latin"],
-  variable: "--font-playfair",
-  display: "swap",
-});
-
-const outfit = Outfit({
-  subsets: ["latin"],
-  variable: "--font-outfit",
-  display: "swap",
-});
-
-const jetbrainsMono = JetBrains_Mono({
-  subsets: ["latin"],
-  variable: "--font-mono",
-  display: "swap",
-});
-
 export const metadata: Metadata = {
-  title: "LegalFlow Enterprise - SaaS LegalTech & Hub OAB",
-  description: "Plataforma SaaS Enterprise para Escritórios de Advocacia, Gestão Jurídica e Iniciação Profissional OAB.",
+  title: "LexFlow — Central do Advogado",
+  description: "Gestão do escritório, consulta aos casos e produção documental em um só lugar.",
+  applicationName: "LexFlow",
+  appleWebApp: { capable: true, title: "LexFlow", statusBarStyle: "default" },
+  icons: { icon: "/icons/icon-192.png", apple: "/icons/apple-touch-icon.png" },
 };
+
+export const viewport: Viewport = { themeColor: "#09090b", width: "device-width", initialScale: 1, viewportFit: "cover" };
 
 import CommandPalette from "@/components/ui/command-palette";
 
@@ -40,24 +23,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="pt-BR" className={`dark ${inter.variable} ${playfair.variable} ${outfit.variable} ${jetbrainsMono.variable}`}>
-      <body className={`${inter.className} bg-zinc-950 text-zinc-100 min-h-screen`}>
+    <html lang="pt-BR" suppressHydrationWarning>
+      <body className="min-h-screen bg-zinc-950 font-sans text-zinc-100">
+        <script dangerouslySetInnerHTML={{ __html: themeInitializationScript }} />
         <UserProvider>
+          <PwaProvider>
           {children}
           <CommandPalette />
-          <script
-            dangerouslySetInnerHTML={{
-              __html: `
-                if ('serviceWorker' in navigator) {
-                  window.addEventListener('load', function() {
-                    navigator.serviceWorker.register('/sw.js').catch(function(err) {
-                      console.log('SW registration failed: ', err);
-                    });
-                  });
-                }
-              `
-            }}
-          />
+          <AiAssistant />
+          </PwaProvider>
         </UserProvider>
       </body>
     </html>

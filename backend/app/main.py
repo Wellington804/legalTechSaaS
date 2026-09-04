@@ -1,53 +1,78 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from app.core.config import settings
-from app.core.middleware import TenantMiddleware
-from app.core.database import engine, Base
-from app.api.v1.router import api_router
+from contextlib import asynccontextmanager
 
+from fastapi import FastAPI, Response, status
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+from app.api.v1.router import api_router
+from app.core.config import settings
+from app.core.database import engine
+from app.core.observability import init_sentry
+from app.core.redis_cache import cache_manager
+
+
+init_sentry()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # Schema changes are an explicit deploy gate: `alembic upgrade head`.
+    await cache_manager.connect()
+    yield
+    await cache_manager.disconnect()
+    await engine.dispose()
+
+
+docs_enabled = not settings.is_hardened_environment
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version="1.0.0",
-    openapi_url=f"{settings.API_V1_STR}/openapi.json"
+    lifespan=lifespan,
+    openapi_url=f"{settings.API_V1_STR}/openapi.json" if docs_enabled else None,
+    docs_url=f"{settings.API_V1_STR}/docs" if docs_enabled else None,
+    redoc_url=None,
 )
 
-# CORS configuration
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.ALLOWED_HOSTS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
 )
-
-# Multi-Tenancy Middleware
-app.add_middleware(TenantMiddleware)
-
-# Include API Routers
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
-from app.core.redis_cache import cache_manager
-from app.core.db_optimizations import apply_db_optimizations
 
-@app.on_event("startup")
-async def startup_event():
-    # Initialize DB Tables asynchronously
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    # Apply Database Indexes & Optimizations
-    await apply_db_optimizations(engine)
-    # Initialize Redis L2 Cache Connection
-    await cache_manager.connect()
+@app.get("/healthz", include_in_schema=False)
+async def healthz() -> dict[str, str]:
+    return {"status": "ok"}
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    await cache_manager.disconnect()
 
-@app.get("/")
-async def root():
-    return {
-        "status": "online",
-        "service": settings.PROJECT_NAME,
-        "version": "1.0.0",
-        "docs": f"{settings.API_V1_STR}/docs"
-    }
+@app.get("/readyz", include_in_schema=False)
+async def readyz(response: Response) -> dict[str, str]:
+    ready = True
+    try:
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+    except Exception:
+        ready = False
+
+    try:
+        if cache_manager.redis_client is None:
+            ready = False
+        else:
+            await cache_manager.redis_client.ping()
+    except Exception:
+        ready = False
+
+    if not ready:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {"status": "not_ready"}
+    return {"status": "ready"}
+
+
+@app.get("/", include_in_schema=False)
+async def root() -> dict[str, str]:
+    return {"status": "online", "service": settings.PROJECT_NAME, "version": "1.0.0"}

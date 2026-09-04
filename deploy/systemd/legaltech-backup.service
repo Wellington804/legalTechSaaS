@@ -1,0 +1,12 @@
+[Unit]
+Description=LegalTech encrypted PostgreSQL backup
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/legaltech
+EnvironmentFile=/etc/legaltech/ops.env
+ExecStart=/bin/sh /opt/legaltech/deploy/backup-postgres.sh
+NoNewPrivileges=yes
+PrivateTmp=yes

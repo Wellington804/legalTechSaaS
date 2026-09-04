@@ -1,0 +1,410 @@
+name: legaltech-production
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-backend-image: &backend-image ${BACKEND_IMAGE:-legaltech-backend:latest}
+
+x-backend-environment: &backend-environment
+  ENVIRONMENT: production
+  RELEASE: ${RELEASE:?Set RELEASE to the deployed commit SHA}
+  SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY}
+  COOKIE_SECURE: "true"
+  DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL with an URL-encoded password}
+  REDIS_URL: ${REDIS_URL:?Set REDIS_URL with authentication}
+  CORS_ORIGINS: '["${FRONTEND_URL:?Set FRONTEND_URL to the HTTPS public origin}"]'
+  ALLOWED_HOSTS: '["${APP_DOMAIN}","localhost","127.0.0.1","backend"]'
+  FRONTEND_URL: ${FRONTEND_URL:?Set FRONTEND_URL to the HTTPS public origin}
+  SENTRY_DSN: ${BACKEND_SENTRY_DSN:-}
+  SUPPORT_URL: ${SUPPORT_URL:-}
+  ACCOUNT_TOKEN_PEPPER: ${ACCOUNT_TOKEN_PEPPER:?Set ACCOUNT_TOKEN_PEPPER}
+  MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?Set MFA_ENCRYPTION_KEY}
+  PRIVILEGED_MFA_REQUIRED: ${PRIVILEGED_MFA_REQUIRED:-true}
+  ACCOUNT_EMAILS_ENABLED: ${ACCOUNT_EMAILS_ENABLED:-false}
+  DEFAULT_TRIAL_DAYS: ${DEFAULT_TRIAL_DAYS:-14}
+  PILOT_ALLOWED_REGISTRATION_EMAILS: '${PILOT_ALLOWED_REGISTRATION_EMAILS:-[]}'
+  TRIAL_QUOTA_USERS: ${TRIAL_QUOTA_USERS:-3}
+  TRIAL_QUOTA_STORAGE_BYTES: ${TRIAL_QUOTA_STORAGE_BYTES:-1073741824}
+  TRIAL_QUOTA_MESSAGES: ${TRIAL_QUOTA_MESSAGES:-100}
+  R2_ENABLED: ${R2_ENABLED:-false}
+  R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+  R2_BUCKET_NAME: ${R2_BUCKET_NAME:-}
+  R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+  R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+  CLAMAV_HOST: clamav
+  CLAMAV_PORT: "3310"
+  DATAJUD_ENABLED: ${DATAJUD_ENABLED:-false}
+  DATAJUD_API_KEY: ${DATAJUD_API_KEY:-}
+  JUDICIAL_MONITORING_PROVIDER: ${JUDICIAL_MONITORING_PROVIDER:-datajud}
+  ESCAVADOR_ENABLED: ${ESCAVADOR_ENABLED:-false}
+  ESCAVADOR_API_TOKEN: ${ESCAVADOR_API_TOKEN:-}
+  AI_ENABLED: ${AI_ENABLED:-false}
+  AI_PROVIDER: ${AI_PROVIDER:-openrouter}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
+  OPENROUTER_GENERAL_MODEL: ${OPENROUTER_GENERAL_MODEL:-}
+  OPENROUTER_GENERAL_REASONING: ${OPENROUTER_GENERAL_REASONING:-low}
+  OPENROUTER_DEEP_MODEL: ${OPENROUTER_DEEP_MODEL:-}
+  OPENROUTER_DEEP_REASONING: ${OPENROUTER_DEEP_REASONING:-max}
+  OPENROUTER_LEGAL_MODEL: ${OPENROUTER_LEGAL_MODEL:-}
+  OPENROUTER_VISUAL_API_KEY: ${OPENROUTER_VISUAL_API_KEY:-}
+  OPENROUTER_VISUAL_MODEL: ${OPENROUTER_VISUAL_MODEL:-}
+  OPENROUTER_IMAGE_MODEL: ${OPENROUTER_IMAGE_MODEL:-}
+  OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-LexFlow}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  GEMINI_MODEL: ${GEMINI_MODEL:-}
+  BRAND_IMAGE_AI_ENABLED: ${BRAND_IMAGE_AI_ENABLED:-false}
+  GEMINI_IMAGE_MODEL: ${GEMINI_IMAGE_MODEL:-}
+  AI_REQUESTS_PER_DAY: ${AI_REQUESTS_PER_DAY:-20}
+  WEB_PUSH_ENABLED: ${WEB_PUSH_ENABLED:-false}
+  WEB_PUSH_VAPID_PUBLIC_KEY: ${WEB_PUSH_VAPID_PUBLIC_KEY:-}
+  WEB_PUSH_VAPID_PRIVATE_KEY: ${WEB_PUSH_VAPID_PRIVATE_KEY:-}
+  WEB_PUSH_VAPID_SUBJECT: ${WEB_PUSH_VAPID_SUBJECT:-}
+  NOTIFICATIONS_DRY_RUN: ${NOTIFICATIONS_DRY_RUN:-true}
+  UNBOUND_NOTIFICATION_DISPATCH_ENABLED: "false"
+  NOTIFICATION_PROCESSING_TIMEOUT_SECONDS: ${NOTIFICATION_PROCESSING_TIMEOUT_SECONDS:-900}
+  NOTIFICATION_RECONCILE_BATCH_SIZE: ${NOTIFICATION_RECONCILE_BATCH_SIZE:-100}
+  NOTIFICATION_MAX_DELIVERY_ATTEMPTS: ${NOTIFICATION_MAX_DELIVERY_ATTEMPTS:-5}
+  NOTIFICATION_RETRY_DELAY_SECONDS: ${NOTIFICATION_RETRY_DELAY_SECONDS:-60}
+  NOTIFICATION_RECOVERY_HEARTBEAT_MAX_AGE_SECONDS: ${NOTIFICATION_RECOVERY_HEARTBEAT_MAX_AGE_SECONDS:-180}
+  RESEND_ENABLED: ${RESEND_ENABLED:-false}
+  RESEND_API_KEY: ${RESEND_API_KEY:-}
+  RESEND_FROM_EMAIL: ${RESEND_FROM_EMAIL:-}
+  RESEND_WEBHOOK_SECRET: ${RESEND_WEBHOOK_SECRET:-}
+  EVOLUTION_ENABLED: ${EVOLUTION_ENABLED:-false}
+  EVOLUTION_GO_URL: http://evolution-go:4000
+  EVOLUTION_API_KEY: ${EVOLUTION_API_KEY:-}
+
+services:
+  caddy:
+    logging: *default-logging
+    pids_limit: 256
+    image: caddy:2.8.4-alpine@sha256:af32e97399febea808609119bb21544d0265c58a02836576e32a2d082c262c17
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/Caddyfile.routes:/etc/caddy/Caddyfile.routes:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    networks:
+      - frontend-edge
+      - backend-edge
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    logging: *default-logging
+    pids_limit: 256
+    image: ${FRONTEND_IMAGE:-legaltech-frontend:latest}
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: /api/v1
+        NEXT_PUBLIC_SENTRY_DSN: ${FRONTEND_SENTRY_DSN:-}
+        NEXT_PUBLIC_SENTRY_ENVIRONMENT: production
+        NEXT_PUBLIC_SENTRY_RELEASE: ${RELEASE}
+        SENTRY_ORG: ${SENTRY_ORG:-}
+        SENTRY_PROJECT: ${SENTRY_PROJECT:-}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      SENTRY_DSN: ${FRONTEND_SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: production
+      SENTRY_RELEASE: ${RELEASE}
+    expose:
+      - "3000"
+    networks:
+      - frontend-edge
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  backend:
+    logging: *default-logging
+    pids_limit: 256
+    image: *backend-image
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment: *backend-environment
+    expose:
+      - "8000"
+    depends_on:
+      permissions:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    networks:
+      - backend-edge
+      - app
+      - communications
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3)"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    logging: *default-logging
+    pids_limit: 256
+    image: *backend-image
+    build:
+      context: ./backend
+    restart: unless-stopped
+    command: ["celery", "-A", "app.core.celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=2", "-Q", "celery"]
+    environment: *backend-environment
+    depends_on:
+      permissions:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    networks:
+      - app
+      - communications
+      - outbound
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.core.celery_app:celery_app inspect ping -d celery@$$HOSTNAME --timeout 5 | grep -q pong"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  document-worker:
+    logging: *default-logging
+    pids_limit: 256
+    image: *backend-image
+    build:
+      context: ./backend
+    restart: unless-stopped
+    command: ["celery", "-A", "app.core.celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=1", "-Q", "documents", "-n", "documents@%h"]
+    environment: *backend-environment
+    depends_on:
+      permissions:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+    networks:
+      - app
+      - outbound
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.core.celery_app:celery_app inspect ping -d documents@$$HOSTNAME --timeout 5 | grep -q pong"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  clamav:
+    logging: *default-logging
+    pids_limit: 256
+    image: clamav/clamav:1.4.3@sha256:75fb5fd95fcbe1d7e6d240c369c1572b686ee2c95949d1042b5148de8eddebb4
+    restart: unless-stopped
+    networks:
+      - app
+      - outbound
+    volumes:
+      - clamav_data:/var/lib/clamav
+    healthcheck:
+      test: ["CMD-SHELL", "printf 'PING\\n' | nc 127.0.0.1 3310 | grep -q PONG"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  # Run exactly one scheduler. Delivery claims make a duplicate publication harmless,
+  # but a second Beat instance adds needless load and makes schedules non-deterministic.
+  beat:
+    logging: *default-logging
+    pids_limit: 128
+    image: *backend-image
+    build:
+      context: ./backend
+    restart: unless-stopped
+    command: ["celery", "-A", "app.core.celery_app:celery_app", "beat", "--loglevel=INFO", "--pidfile=/tmp/celerybeat.pid", "--schedule=/tmp/celerybeat-schedule"]
+    environment: *backend-environment
+    depends_on:
+      permissions:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    networks:
+      - app
+
+  migrate:
+    logging: *default-logging
+    pids_limit: 256
+    image: *backend-image
+    build:
+      context: ./backend
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    environment:
+      <<: *backend-environment
+      DATABASE_URL: ${MIGRATION_DATABASE_URL:?Set MIGRATION_DATABASE_URL for the admin role}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app
+
+  permissions:
+    logging: *default-logging
+    pids_limit: 256
+    image: postgres:16-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
+    command: ["sh", "/opt/legaltech/grant-runtime-role.sh"]
+    restart: "no"
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:-legaltech_db}
+      PGUSER: ${POSTGRES_ADMIN_USER:-legaltech_admin}
+      PGPASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD}
+      POSTGRES_ADMIN_USER: ${POSTGRES_ADMIN_USER:-legaltech_admin}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER:-legaltech_app}
+    volumes:
+      - ./deploy/postgres/grant-runtime-role.sh:/opt/legaltech/grant-runtime-role.sh:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - app
+
+  db:
+    logging: *default-logging
+    pids_limit: 256
+    image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-legaltech_db}
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-legaltech_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER:-legaltech_app}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres/init-runtime-role.sh:/docker-entrypoint-initdb.d/10-runtime-role.sh:ro
+    networks:
+      - app
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    logging: *default-logging
+    pids_limit: 256
+    image: redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+    command: ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    volumes:
+      - redisdata:/data
+    networks:
+      - app
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  evolution-go:
+    logging: *default-logging
+    pids_limit: 256
+    profiles: ["evolution"]
+    image: evoapicloud/evolution-go:0.7.2@sha256:6fa601464bd76d3d19ece4c48d8bb5373d025d95d45b939ae4bf0c77b03f5aaa
+    restart: unless-stopped
+    environment:
+      SERVER_PORT: "4000"
+      CLIENT_NAME: legaltech
+      GLOBAL_API_KEY: ${EVOLUTION_API_KEY:-}
+      POSTGRES_AUTH_DB: postgresql://${EVOLUTION_POSTGRES_USER:-evolution}:${EVOLUTION_POSTGRES_PASSWORD:-}@evolution-db:5432/evogo_auth?sslmode=disable
+      POSTGRES_USERS_DB: postgresql://${EVOLUTION_POSTGRES_USER:-evolution}:${EVOLUTION_POSTGRES_PASSWORD:-}@evolution-db:5432/evogo_users?sslmode=disable
+      DATABASE_SAVE_MESSAGES: "false"
+      CONNECT_ON_STARTUP: "false"
+      WEBHOOK_FILES: "false"
+      WADEBUG: INFO
+      LOGTYPE: console
+    expose:
+      - "4000"
+    volumes:
+      - evolution_data:/app/dbdata
+    depends_on:
+      evolution-db:
+        condition: service_healthy
+    networks:
+      - communications
+      - evolution-data
+      - outbound
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/server/ok"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  evolution-db:
+    logging: *default-logging
+    pids_limit: 256
+    profiles: ["evolution"]
+    image: postgres:16-alpine@sha256:e013e867e712fec275706a6c51c966f0bb0c93cfa8f51000f85a15f9865a28cb
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${EVOLUTION_POSTGRES_USER:-evolution}
+      POSTGRES_PASSWORD: ${EVOLUTION_POSTGRES_PASSWORD:-}
+      POSTGRES_DB: evogo_auth
+    volumes:
+      - evolution_pgdata:/var/lib/postgresql/data
+      - ./deploy/evolution/init-databases.sh:/docker-entrypoint-initdb.d/10-users-db.sh:ro
+    networks:
+      - evolution-data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+networks:
+  frontend-edge:
+  backend-edge:
+  app:
+    internal: true
+  communications:
+    internal: true
+  evolution-data:
+    internal: true
+  outbound:
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:
+  evolution_data:
+  evolution_pgdata:
+  clamav_data:

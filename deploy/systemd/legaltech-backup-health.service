@@ -1,0 +1,10 @@
+[Unit]
+Description=LegalTech PostgreSQL backup health check
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/legaltech
+EnvironmentFile=/etc/legaltech/ops.env
+ExecStart=/bin/sh /opt/legaltech/deploy/backup-health.sh
+NoNewPrivileges=yes
+PrivateTmp=yes

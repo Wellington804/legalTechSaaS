@@ -1,5 +1,4 @@
 import hashlib
-import uuid
 from typing import List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -29,11 +28,10 @@ class OABService:
             cpf=data["cpf"],
             rg=data["rg"],
             fgv_exam_number=data.get("fgv_exam_number"),
-            protocol_number=f"PROT-OAB-{uuid.uuid4().hex[:8].upper()}"
+            protocol_number=None,
         )
         db.add(app)
-        await db.commit()
-        await db.refresh(app)
+        await db.flush()
 
         # Initialize default checklist items
         for item in DEFAULT_OAB_CHECKLIST_ITEMS:
@@ -44,7 +42,7 @@ class OABService:
                 is_completed=False
             )
             db.add(chk)
-        await db.commit()
+        await db.flush()
         return app
 
     @staticmethod

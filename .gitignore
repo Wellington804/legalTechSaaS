@@ -25,6 +25,12 @@ ENV/
 .env.development.local
 .env.test.local
 .env.production.local
+.env.production
+.env.staging
+
+# Local review and browser-test artifacts
+.impeccable/
+frontend/test-results/
 
 # IDE & Editors
 .idea/

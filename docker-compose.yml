@@ -1,4 +1,22 @@
-version: '3.8'
+x-backend-environment: &backend-environment
+  DATABASE_URL: postgresql+asyncpg://postgres:postgres_password@db:5432/legaltech_db
+  REDIS_URL: redis://redis:6379/0
+  SECRET_KEY: development-only-change-me-32-bytes
+  ENVIRONMENT: development
+  PROTOTYPE_MODULES_ENABLED: "false"
+  SUPPORT_URL: ${SUPPORT_URL:-}
+  RELEASE: ${RELEASE:-local}
+  AI_ENABLED: ${AI_ENABLED:-false}
+  AI_PROVIDER: ${AI_PROVIDER:-openrouter}
+  OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+  OPENROUTER_MODEL: ${OPENROUTER_MODEL:-}
+  OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-LexFlow}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  GEMINI_MODEL: ${GEMINI_MODEL:-}
+  WEB_PUSH_ENABLED: ${WEB_PUSH_ENABLED:-false}
+  WEB_PUSH_VAPID_PUBLIC_KEY: ${WEB_PUSH_VAPID_PUBLIC_KEY:-}
+  WEB_PUSH_VAPID_PRIVATE_KEY: ${WEB_PUSH_VAPID_PRIVATE_KEY:-}
+  WEB_PUSH_VAPID_SUBJECT: ${WEB_PUSH_VAPID_SUBJECT:-}
 
 services:
   db:
@@ -10,7 +28,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres_password
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -24,7 +42,7 @@ services:
     container_name: legaltech_redis
     restart: always
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -32,34 +50,50 @@ services:
       retries: 5
 
   backend:
+    image: legaltechsaas-backend
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: legaltech_backend
     restart: always
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:postgres_password@db:5432/legaltech_db
-      - REDIS_URL=redis://redis:6379/0
-      - SECRET_KEY=enterprise_super_secret_key_legaltech_2026
-      - ENVIRONMENT=development
+    environment: *backend-environment
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
 
+  worker:
+    image: legaltechsaas-backend
+    restart: unless-stopped
+    environment: *backend-environment
+    command: ["celery", "-A", "app.core.celery_app.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    image: legaltechsaas-backend
+    restart: unless-stopped
+    environment: *backend-environment
+    command: ["celery", "-A", "app.core.celery_app.celery_app", "beat", "--loglevel=info", "--schedule=/tmp/celerybeat-schedule"]
+    depends_on:
+      - worker
+
   frontend:
     build:
-      context: ./frontend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
     container_name: legaltech_frontend
     restart: always
     ports:
-      - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+      - "127.0.0.1:3000:3000"
     depends_on:
       - backend
 

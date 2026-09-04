@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from typing import List, Optional
 from app.services.tasks import generate_audit_hash_task
+from app.core.dependencies import get_current_user
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 class LeadCreate(BaseModel):
     name: str
@@ -109,14 +110,14 @@ async def update_lead(lead_id: str, lead_data: LeadUpdate):
     }
 
 @router.post("/auto-trigger")
-async def trigger_pipeline_automation(trigger: PipelineEventTrigger):
+async def trigger_pipeline_automation(trigger: PipelineEventTrigger, request: Request):
     """
     Passo 4.1 — Automação de Workflow Legal: Avança o lead de estático no CRM e gera tarefa Celery ao confirmar assinatura.
     """
     # Envia tarefa de auditoria em background no Celery
     generate_audit_hash_task.delay(
-        tenant_id="default-tenant",
-        user_id="user-auto-trigger",
+        tenant_id=request.state.tenant_id,
+        user_id=request.state.user_id,
         action=f"AUTOMATED_PIPELINE_{trigger.event_type}",
         resource_type="crm_leads",
         details=trigger.metadata or {}

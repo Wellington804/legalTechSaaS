@@ -131,7 +131,7 @@ export function PixPaymentModal({
         {isPaymentConfirmed ? (
           /* Recibo / Status de Sucesso */
           <div className="p-8 text-center space-y-5 my-auto">
-            <div className="w-16 h-16 bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 rounded-full flex items-center justify-center mx-auto animate-bounce">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-emerald-500/40 bg-emerald-500/20 text-emerald-400">
               <Check className="w-8 h-8 stroke-[3]" />
             </div>
             <div>

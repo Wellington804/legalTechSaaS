@@ -34,6 +34,5 @@ class AuditService:
             sha256_hash=sha256_hash
         )
         db.add(log_entry)
-        await db.commit()
-        await db.refresh(log_entry)
+        await db.flush()
         return log_entry

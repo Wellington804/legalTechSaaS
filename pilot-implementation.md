@@ -1,0 +1,38 @@
+# Piloto fechado — melhorias aprovadas
+
+Proposta do anexo de 28/08/2026. Reutilizar PostgreSQL/RLS, conta/assinatura, casos/tarefas, documentos versionados, Branding/exportações e PWA/Web Push entregues. Não criar cobrança, assinatura eletrônica ou armazenamento offline. Não escolher tenant/contato/domínio nem declarar revisão jurídica externa inexistente.
+
+## Frentes e propriedade
+
+1. **Rotina backend**: campos de diligência nas tarefas, nota de resultado vinculada ao caso, checklists reutilizáveis (três presets operacionais que geram tarefas reais), próxima ação ausente, lembretes por data manual com registro in-app persistente e push opcional. Own workspace model/schema/endpoints apenas tarefas; novos routine model/schema/service/endpoints/tasks; migration `20260828_0008` após0007; alterações pushkind task_reminder. Não editar router central/alembic env/Celery/grants/config/frontend.
+2. **Kit documental backend**: catálogo enxuto de rascunhos genéricos (ficha, procuração, contrato de honorários), preenchimento seguro do cadastro real, campos faltantes/preview/revisão antes de salvar, DOCX/PDF via Branding existente. Own novos `document_kit*` backend/test files; sem migration, sem editar workspace e frontend. Não declarar modelos juridicamente homologados; citar fontes primárias e exigir revisão pelo advogado. Propor contratos abaixo sem alterações silenciosas.
+3. **Frontend**: primeiros passos, status/período do piloto, feedback, diligência, resultado, checklist, lembretes e kit, reutilizando componentes. Own frontend exclusivamente. Privacidade: rascunho só em memória da tela, sem cache/storage; erro/rede não limpa formulário. TestesUI375+desktop/Node, integração de fixtures anteriores. Sem buildDocker (principal).
+4. **Principal**: `/pilot` onboarding derivado, feedback semanal/problema persistido, suporte configurável e status honesto, migration `20260828_0009` após0008; router/alembic/Celery/grants/config/Compose/.envexample; verificação login/MFA/recuperação/sessões/RLS/restore de arquivos real em DBdescartável; operação local e documentação. Não mudar período de um tenant sem identificá-lo explicitamente; reutilizar CLI de assinatura com data final explícita.
+
+## Contratos frontend/backend
+
+### Piloto (`/pilot`, principal)
+
+GET `/overview`: `{steps:[{id,title,description,href,status}],subscription:{status,ends_at,days_remaining,write_allowed},security:{email_verified,mfa_enabled,environment,sentry_configured,account_email_configured,https_configured},support_url,release,weekly:{last_report_at,next_review_at},data_policy:'fictitious_until_validated'}`. Steps IDs `profile,client,case,task,document,finance`; status `done,pending,not_applicable`. Verificações deinfra são configuração apenas, não atestação externa.
+
+POST `/feedback` corpo `{request_id:UUID,kind:'problem'|'weekly',area:enum('dashboard','account','clients','cases','tasks','documents','finance','communications','other'),message:1..3000,completed_steps:stepIDs[],help_steps:stepIDs[],consent:true}` ->201 `{id,kind,area,message,release,completed_steps,help_steps,created_at}`. Endpoint idempotente porusuário+request; extras rejeitados; máximo10/dia. NenhumaURLquery/IDcliente/console/screenshotautomático. GET `/feedback` -> `{items:[...]}` somenteautor. `SUPPORT_URL` opcional contatoHTTPS/mailto validado; ausente não inventar canal. Revisão semanal via feedbackeindicação na tela, sem bot externo.
+
+### Rotina (`/routines`, agente backend)
+
+Tarefas existentes ganham `location`(300), `contact`(200), `notes`(5000), todos opcionais, create/update/read. Não adicionar novo tipo. GET `/attention` -> `{cases_without_next_action:[{id,title}],reminders:[{id,task_id,task_title,case_id,remind_at,status,push_status,acknowledged_at}],limit:50}` sóACL atual, reminders do usuário. Próximaação=taskpending/in_progress no caso aberto; apenaslista/calltoaction, não bloquear cadastro de caso.
+
+GET `/checklists` -> `{items:[{key,title,items:[string]}]}` presets `intake,documents,hearing` operacionais sem regrasjurídicas. POST `/cases/{id}/checklists` `{key,request_id:UUID}` ->201 `{task_ids:[...],created:bool}`; mesmasautoridades da criação de tarefas, transação+idempotência; datas permanecem em branco até revisão. GET/POST `/cases/{id}/outcomes` -> `{items:[{id,title,content_text,created_at}]}` / corpo `{request_id:UUID,title:2..200,content_text:1..5000}` ->201 document response `kind=note`; persistir versão pelo padrão existente e quota; retry sem duplicar. Não enviar nota ao provedor.
+
+GET `/tasks/{id}/reminder` -> `{item: Reminder|null}`; PUT mesmo caminho `{remind_at:ISOcomfuso,expected_revision:<taskrevision>}` -> Reminder (privado do usuário); DELETE ->204 revoga; POST `/reminders/{id}/acknowledge` ->204. Reminder campos comuns `{id,task_id,task_title,case_id,remind_at,status,push_status,acknowledged_at}`. Status `scheduled,due,cancelled`; push_status `not_requested,pending,accepted,failed,unknown,unavailable` (accepted não entregue). Exige tarefaativa, due_at e manually_reviewed, remind_at futura<=due_at; alteraçõesdata/status desativamlembrete anterior com informação na UI. Usuário logado é destinatário, ACLrevalidada tanto schedulerquanto sender. In-app funciona sempush; Beat task `routines.dispatch_reminders` cada30s, SQL discovery `routine_reminder_candidates(integer)` sóIDs/tenant egrant runtime. Enqueuepush novo kind `task_reminder` ligado task e revalidado com lembrete vigente; dedupeevento/reminder+revision. Preservar histórico de tentativa/devidoevitarressurreição de envio antigo apósadiar/remover. Informar princ. seprecisar FKcoluna adicionaldelivery.
+
+### Kit (`/document-kit`, agente documentos)
+
+GET `/templates` -> `{items:[{key,title,description,version,fields:[{key,label,required}],review_required:true}]}`; keys `intake,power_of_attorney,fee_agreement`. POST `/preview` `{template_key,case_id,values:{string:string}}` -> `{title,content_text,content_format:'plain',missing_fields:[{key,label}],source:{case_revision,client_revision,template_version,profile_fingerprint},review_required:true}`. Fontesautoridades (nomes/OAB/caso) sempre derivadas servidor, overrides apenasfieldsallowlistcontextuais; texto nãoexecutável semtemplatingengine. Camposfaltantesvisíveis com marcadores, sem inventardados/condições.
+
+POST `/documents` `{request_id:UUID,template_key,case_id,values:{},source:<preview.source>,reviewed:true}` ->201 `{document:<WorkspaceDocumentResponse>}`; bloquearcamposfaltantes e sourcealterada409; idempotênciafila não necessária: usar documentoID determinístico user+request no fluxoalvo com verificação payload/resposta correta (ououtrasoluçãoexistente semmudardocumentstorage), transação e quota. Conteúdo salvo exactlypreview; versões/evidence/brandingexport existentes. Solicitarrootseprecisarmigration mínima dedupe. A UI exige preview+review checkbox, depoislistaabreexportações existentes.
+
+## Gates
+
+Testes reais em PostgreSQL NOBYPASSRLS (incluindo outro tenant/ACL), revisões/idempotência, rascunhosemerros, datasconferidas/lembretes revogados, restoreisolado de arquivos byte/hash e controledeversões. Build+UIdesktop375 e mobile existentes. ServiçoSSL/Sentry/Resend externos sóstatusnomes, nunca imprimirsegredos. Preservar `.env` e dados locais; backup antesmigrate. Todo externo nãohomologado permanece explícito no guia e entrega.
+
+Status: implementação concluída e revisada; backend validado em 132 testes sem skips, restore isolado com bytes conferidos e migrações locais 0008/0009 aplicadas. Build, TypeScript, 13 testes Node e suítes UI piloto/workspace/mobile/PWA aprovados no pacote Docker final servido localmente. Gates externos e procedimentos em `docs/piloto-fechado.md`.

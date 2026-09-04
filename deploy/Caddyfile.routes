@@ -1,0 +1,47 @@
+encode zstd gzip
+
+header {
+	Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://*.r2.cloudflarestorage.com https://*.ingest.sentry.io https://*.ingest.us.sentry.io https://*.ingest.de.sentry.io; font-src 'self' data:; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests"
+	X-Content-Type-Options "nosniff"
+	Referrer-Policy "strict-origin-when-cross-origin"
+	Permissions-Policy "camera=(self), geolocation=(), microphone=()"
+	-Server
+}
+
+# Keep ordering explicit: uploads permit a 10 MB file plus multipart overhead,
+# while unauthenticated provider webhooks stay bounded independently at 256 KB.
+route {
+	@provider_webhooks path /api/v1/notifications/webhooks/* /webhooks/*
+	handle @provider_webhooks {
+		request_body {
+			max_size 256KB
+		}
+		header Cache-Control "no-store"
+		reverse_proxy backend:8000 {
+			header_up X-Real-IP {client_ip}
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	@backend path /api/v1/* /healthz /readyz
+	handle @backend {
+		request_body {
+			max_size 11MB
+		}
+		header Cache-Control "no-store"
+		reverse_proxy backend:8000 {
+			header_up X-Real-IP {client_ip}
+			header_up X-Forwarded-Proto https
+		}
+	}
+
+	handle {
+		reverse_proxy frontend:3000
+	}
+}
+
+log {
+	output stdout
+	format json
+}
