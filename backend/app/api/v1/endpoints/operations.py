@@ -1,8 +1,11 @@
 """Tenant-scoped commercial operations and separately authenticated webhooks."""
 
+import asyncio
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.responses import RedirectResponse, Response
 from pydantic import ValidationError
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +14,7 @@ from app.core.database import get_db
 from app.core.dependencies import CurrentUser, require_tenant_write
 from app.models.operations import FeeContract, FeeRule, Invoice, ProviderCredential, PublicIntake, PublicIntakeConfig, Receivable, SignatureEnvelope, TimeEntry
 from app.models.user import User
-from app.models.workspace import WorkspaceCase
+from app.models.workspace import WorkspaceCase, WorkspaceDocument
 from app.schemas.operations import (
     ExpectedRevision,
     FeeContractCreate,
@@ -44,6 +47,7 @@ from app.schemas.operations import (
 )
 from app.services.audit_service import AuditService
 from app.services.operations import (
+    apply_clicksign_event,
     apply_payment_event,
     apply_signature_event,
     convert_intake,
@@ -52,16 +56,20 @@ from app.services.operations import (
     create_or_get_public_intake,
     create_signature_envelope,
     create_time_entry,
+    dispatch_signature_envelope,
     digest,
     enforce_public_intake_rate_limit,
     get_fee_contract,
     get_fee_rule,
     get_invoice,
+    get_signature_envelope,
     resolve_public_intake_config,
     resolve_webhook_identity,
     upsert_provider_credential,
     verify_hmac_webhook,
 )
+from app.services.clicksign_provider import CLICKSIGN_BASE_URLS, ClicksignSigner, parse_clicksign_webhook
+from app.services.document_storage import create_download_url
 from app.services.workspace_service import ADMIN_ROLES, FINANCE_ROLES, bounded_limit, case_access_clause, get_case, require_case_write, require_role
 
 
@@ -490,6 +498,8 @@ async def put_provider_credential(
         provider = clean_provider(provider)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Provedor inválido.") from exc
+    if purpose == "signature" and provider not in CLICKSIGN_BASE_URLS:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Provedor de assinatura ainda não homologado.")
     record = await upsert_provider_credential(db, user, purpose=purpose, provider=provider, body=body)
     await audit(db, request, user.tenant_id, user.id, "OPERATION_PROVIDER_CREDENTIAL_CONFIGURED", "operation_provider_credentials", record.id, {"purpose": purpose, "provider": provider})
     await db.commit()
@@ -517,10 +527,46 @@ async def list_signature_providers(user: CurrentUser, db: AsyncSession = Depends
             ProviderCredential.purpose == "signature",
             ProviderCredential.enabled.is_(True),
             ProviderCredential.api_token_encrypted.is_not(None),
+            ProviderCredential.provider.in_(tuple(CLICKSIGN_BASE_URLS)),
         )
         .order_by(ProviderCredential.provider, ProviderCredential.account_reference)
     )).all()
     return {"items": [{"provider": record.provider, "account_reference": record.account_reference} for record in records]}
+
+
+@router.get("/signature-envelopes", response_model=dict)
+async def list_signature_envelopes(
+    user: CurrentUser,
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    require_role(user, FINANCE_ROLES | {"lawyer"})
+    rows = (
+        await db.scalars(
+            select(SignatureEnvelope)
+            .join(
+                WorkspaceDocument,
+                and_(
+                    WorkspaceDocument.tenant_id == SignatureEnvelope.tenant_id,
+                    WorkspaceDocument.id == SignatureEnvelope.document_id,
+                ),
+            )
+            .outerjoin(
+                WorkspaceCase,
+                and_(
+                    WorkspaceCase.tenant_id == WorkspaceDocument.tenant_id,
+                    WorkspaceCase.id == WorkspaceDocument.case_id,
+                ),
+            )
+            .where(
+                SignatureEnvelope.tenant_id == user.tenant_id,
+                (WorkspaceDocument.case_id.is_(None) | case_access_clause(user)),
+            )
+            .order_by(SignatureEnvelope.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
+    return {"items": [SignatureEnvelopeResponse.model_validate(row) for row in rows], "limit": limit}
 
 
 @router.post("/signature-envelopes", response_model=SignatureEnvelopeResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -532,15 +578,25 @@ async def create_signature_envelope_endpoint(
     _write: User = Depends(require_tenant_write),
 ):
     require_role(user, FINANCE_ROLES | {"lawyer"})
-    envelope = await create_signature_envelope(
+    signer = ClicksignSigner(
+        name=body.signer_name,
+        email=str(body.signer_email),
+        cpf=body.signer_cpf,
+        authentication=body.authentication,
+    )
+    envelope, material, credential, duplicate = await create_signature_envelope(
         db,
         user,
+        request_key=body.request_key,
         document_id=body.document_id,
         document_version=body.document_version,
         provider=body.provider,
         account_reference=body.account_reference,
+        signer=signer,
         expires_at=body.expires_at,
     )
+    if duplicate:
+        return SignatureEnvelopeResponse.model_validate(envelope)
     await audit(
         db,
         request,
@@ -552,7 +608,49 @@ async def create_signature_envelope_endpoint(
         {"document_id": envelope.document_id, "document_version": envelope.document_version, "document_hash": envelope.document_hash},
     )
     await db.commit()
+    if material is None or credential is None:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Snapshot de assinatura indisponível.")
+    dispatch_error = await dispatch_signature_envelope(envelope, credential, material, signer)
+    await audit(
+        db,
+        request,
+        user.tenant_id,
+        user.id,
+        "SIGNATURE_ENVELOPE_DISPATCHED" if dispatch_error is None else "SIGNATURE_ENVELOPE_DISPATCH_FAILED",
+        "signature_envelopes",
+        envelope.id,
+        {"provider": envelope.provider, "dispatch_status": envelope.dispatch_status},
+    )
+    await db.commit()
+    if dispatch_error:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(dispatch_error))
     return SignatureEnvelopeResponse.model_validate(envelope)
+
+
+@router.get("/signature-envelopes/{envelope_id}/download")
+async def download_signed_envelope(
+    envelope_id: str,
+    request: Request,
+    user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+):
+    require_role(user, FINANCE_ROLES | {"lawyer"})
+    envelope = await get_signature_envelope(db, user, envelope_id)
+    if not envelope.signed_file_available:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Documento assinado ainda não está disponível.")
+    filename = envelope.signed_filename or "documento-assinado-clicksign.pdf"
+    await audit(db, request, user.tenant_id, user.id, "SIGNED_DOCUMENT_DOWNLOADED", "signature_envelopes", envelope.id, {"sha256": envelope.signed_file_hash})
+    await db.commit()
+    if envelope.signed_object_key:
+        url = await asyncio.to_thread(create_download_url, envelope.signed_object_key, filename, "application/pdf")
+        return RedirectResponse(url, status_code=307, headers={"Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer"})
+    if envelope.signed_file_content is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Arquivo assinado não encontrado.")
+    return Response(
+        content=envelope.signed_file_content,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}", "Cache-Control": "private, no-store"},
+    )
 
 
 async def webhook_identity_or_401(
@@ -574,17 +672,41 @@ async def webhook_identity_or_401(
     return identity
 
 
-@public_router.post("/webhooks/signatures/{provider}", status_code=status.HTTP_202_ACCEPTED)
+@public_router.post("/webhooks/signatures/{provider}", status_code=status.HTTP_200_OK)
 async def signature_webhook(
     provider: str,
     request: Request,
-    x_operation_account: str = Header(alias="X-Operation-Account", min_length=2, max_length=128),
+    x_operation_account: str | None = Header(default=None, alias="X-Operation-Account", min_length=2, max_length=128),
     x_operation_signature: str | None = Header(default=None, alias="X-Operation-Signature", max_length=256),
+    content_hmac: str | None = Header(default=None, alias="Content-Hmac", max_length=256),
+    x_clicksign_signature: str | None = Header(default=None, alias="X-Clicksign-Signature", max_length=256),
+    event_header: str | None = Header(default=None, alias="Event", max_length=128),
     db: AsyncSession = Depends(get_db),
 ):
     raw = await request.body()
     if len(raw) > MAX_WEBHOOK_BYTES:
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Webhook muito grande.")
+    if provider in CLICKSIGN_BASE_URLS:
+        try:
+            clicksign_event = parse_clicksign_webhook(raw, event_header)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Payload de webhook inválido.") from exc
+        identity = await webhook_identity_or_401(
+            db,
+            raw,
+            content_hmac or x_clicksign_signature,
+            purpose="signature",
+            provider=provider,
+            account_reference=clicksign_event.account_reference,
+        )
+        if clicksign_event.event_type is None:
+            return {"received": True, "ignored": True}
+        envelope, duplicate = await apply_clicksign_event(db, identity, clicksign_event, raw)
+        await audit(db, request, identity.tenant_id, None, "SIGNATURE_PROVIDER_EVENT", "signature_envelopes", envelope.id, {"provider": identity.credential.provider, "event": clicksign_event.event_name, "duplicate": duplicate})
+        await db.commit()
+        return {"received": True, "duplicate": duplicate}
+    if not x_operation_account:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identidade do webhook ausente.")
     identity = await webhook_identity_or_401(db, raw, x_operation_signature, purpose="signature", provider=provider, account_reference=x_operation_account)
     try:
         event = SignatureWebhookEvent.model_validate_json(raw)

@@ -375,10 +375,15 @@ class ProviderCredentialResponse(OperationsResponse):
 
 
 class SignatureEnvelopeCreate(OperationsInput):
+    request_key: str = Field(min_length=16, max_length=128)
     document_id: str = Field(min_length=1, max_length=64)
     document_version: int = Field(ge=1)
     provider: str = Field(min_length=2, max_length=32)
     account_reference: str = Field(min_length=2, max_length=128)
+    signer_name: str = Field(min_length=3, max_length=200)
+    signer_email: EmailStr
+    signer_cpf: str | None = Field(default=None, min_length=11, max_length=18)
+    authentication: Literal["email", "icp_brasil"] = "icp_brasil"
     expires_at: datetime | None = None
 
     @field_validator("provider")
@@ -386,10 +391,33 @@ class SignatureEnvelopeCreate(OperationsInput):
     def provider_value(cls, value: str) -> str:
         return clean_provider(value)
 
+    @field_validator("request_key", "signer_name")
+    @classmethod
+    def required_signature_text(cls, value: str) -> str:
+        return required_text(value, "campo")
+
+    @field_validator("signer_cpf")
+    @classmethod
+    def signer_document(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = normalize_tax_id(value)
+        if len(normalized) != 11:
+            raise ValueError("signer_cpf deve ser um CPF com 11 digitos")
+        return normalized
+
     @field_validator("expires_at")
     @classmethod
     def expires(cls, value: datetime | None) -> datetime | None:
         return aware(value) if value else None
+
+    @model_validator(mode="after")
+    def icp_requires_cpf(self):
+        if len(self.signer_name.split()) < 2:
+            raise ValueError("signer_name deve conter nome e sobrenome")
+        if self.authentication == "icp_brasil" and not self.signer_cpf:
+            raise ValueError("signer_cpf e obrigatorio para assinatura ICP-Brasil")
+        return self
 
 
 class SignatureEnvelopeResponse(OperationsResponse):
@@ -404,6 +432,10 @@ class SignatureEnvelopeResponse(OperationsResponse):
     expires_at: datetime | None
     signed_at: datetime | None
     declined_at: datetime | None
+    signed_file_available: bool
+    signed_filename: str | None
+    signed_file_size: int | None
+    signed_file_hash: str | None
     revision: int
     created_at: datetime
     updated_at: datetime

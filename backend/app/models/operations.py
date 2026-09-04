@@ -17,6 +17,7 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -327,7 +328,9 @@ class SignatureEnvelope(Base):
     __tablename__ = "signature_envelopes"
     __table_args__ = (
         UniqueConstraint("tenant_id", "id", name="uq_signature_envelopes_tenant_id"),
+        UniqueConstraint("tenant_id", "request_hash", name="uq_signature_envelopes_request"),
         UniqueConstraint("tenant_id", "provider", "provider_account_reference", "provider_envelope_hash", name="uq_signature_envelopes_provider_reference"),
+        UniqueConstraint("tenant_id", "provider", "provider_account_reference", "provider_document_hash", name="uq_signature_envelopes_provider_document"),
         ForeignKeyConstraint(
             ["tenant_id", "document_id"],
             ["workspace_documents.tenant_id", "workspace_documents.id"],
@@ -340,6 +343,7 @@ class SignatureEnvelope(Base):
         ),
         CheckConstraint("status IN ('pending', 'signed', 'declined', 'expired')", name="ck_signature_envelopes_status"),
         CheckConstraint("dispatch_status IN ('not_dispatched', 'submitted', 'unknown', 'failed')", name="ck_signature_envelopes_dispatch"),
+        CheckConstraint("signed_file_size IS NULL OR signed_file_size > 0", name="ck_signature_envelopes_signed_file_size"),
     )
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -347,18 +351,31 @@ class SignatureEnvelope(Base):
     document_id = Column(String, nullable=False, index=True)
     document_version = Column(Integer, nullable=False)
     document_hash = Column(String(64), nullable=False)
+    request_hash = Column(String(64), nullable=True)
     provider = Column(String(32), nullable=False)
     provider_account_reference = Column(String(128), nullable=False)
     provider_envelope_hash = Column(String(64), nullable=True)
+    provider_document_hash = Column(String(64), nullable=True)
+    provider_envelope_id_encrypted = Column(Text, nullable=True)
+    provider_document_id_encrypted = Column(Text, nullable=True)
     status = Column(String(16), nullable=False, default="pending", index=True)
     dispatch_status = Column(String(20), nullable=False, default="not_dispatched")
     expires_at = Column(DateTime(timezone=True), nullable=True)
     signed_at = Column(DateTime(timezone=True), nullable=True)
     declined_at = Column(DateTime(timezone=True), nullable=True)
+    signed_filename = Column(String(255), nullable=True)
+    signed_file_content = Column(LargeBinary, nullable=True)
+    signed_object_key = Column(String(512), nullable=True, unique=True)
+    signed_file_size = Column(Integer, nullable=True)
+    signed_file_hash = Column(String(64), nullable=True)
     revision = Column(Integer, nullable=False, default=1)
     created_by_user_id = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+    @property
+    def signed_file_available(self) -> bool:
+        return bool(self.signed_file_hash and (self.signed_file_content is not None or self.signed_object_key))
 
 
 class SignatureProviderEvent(Base):

@@ -4,7 +4,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { api, ApiError } from "@/lib/api-client";
 import { isOfficeAdminRole, useUser } from "@/context/user-context";
 import type { List, Row } from "./records";
-import { Action, Field, Page, Panel, State, button, control, dateText, errorText, money, primary, useResource } from "./shared";
+import { Action, Field, Page, Panel, State, button, control, dateText, download, errorText, money, primary, useResource } from "./shared";
 
 type Intake = Row & {
   name: string;
@@ -33,13 +33,17 @@ type Invoice = {
   created_at?: string;
 };
 type TimeEntry = { id: string; description: string; duration_minutes: number; amount: string; status: "draft" | "approved" | "invoiced" | "void"; occurred_at: string };
-type Provider = { id: string; purpose: "signature" | "payment"; provider: string; account_reference: string; enabled: boolean; api_token_configured: boolean };
+type Provider = { id: string; purpose: "signature" | "payment"; provider: string; account_reference: string; enabled: boolean; api_token_configured: boolean; revision: number };
 type IntakeConfig = { id: string; enabled: boolean; form_title: string; notice_version: string; consent_version: string; notice_url: string | null; allowed_origin: string | null; revision: number };
 type Envelope = {
   id: string;
   document_id: string;
   status: "pending" | "signed" | "declined" | "expired";
   dispatch_status: "not_dispatched" | "submitted" | "unknown" | "failed";
+  signed_file_available: boolean;
+  signed_filename: string | null;
+  signed_file_hash: string | null;
+  created_at: string;
 };
 type Installment = { due_on: string; amount: string };
 
@@ -267,9 +271,56 @@ function Fees() {
   </Panel>;
 }
 
+function SignatureConfiguration() {
+  const providers = useResource<{ items: Provider[] }>("/operations/provider-credentials");
+  const [environment, setEnvironment] = useState<"clicksign-sandbox" | "clicksign">("clicksign-sandbox");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [webhookUrl, setWebhookUrl] = useState("");
+  const configured = providers.data?.items.find(item => item.purpose === "signature" && item.provider === environment);
+  useEffect(() => {
+    setWebhookUrl(`${window.location.origin}/api/v1/operations/webhooks/signatures/${environment}`);
+  }, [environment]);
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await api.put(`/operations/provider-credentials/signature/${environment}`, {
+        account_reference: data.get("account_reference"),
+        api_token: data.get("api_token") || null,
+        webhook_secret: data.get("webhook_secret"),
+        enabled: data.get("enabled") === "on",
+        expected_revision: configured?.account_reference === data.get("account_reference") ? configured.revision : null,
+      });
+      setNotice("Integração salva. Faça um envio de teste no ambiente selecionado.");
+      providers.reload();
+    } catch (reason) { setError(errorText(reason)); }
+    finally { setBusy(false); }
+  }
+  return <Panel title="Configurar Clicksign" collapsibleOnMobile>
+    <p className="text-sm text-zinc-400">As credenciais ficam cifradas por escritório. Cadastre na Clicksign o endereço abaixo e copie o segredo HMAC gerado por ela.</p>
+    <div className="space-y-1.5"><p className="text-sm font-medium text-zinc-300">URL pública do webhook</p><div className="flex min-w-0 flex-col gap-2 sm:flex-row"><input className={control} aria-label="URL pública do webhook" readOnly value={webhookUrl} onFocus={event => event.target.select()} /><button className={button} type="button" onClick={() => navigator.clipboard.writeText(webhookUrl)} disabled={!webhookUrl}>Copiar URL</button></div></div>
+    <State loading={providers.loading} error={providers.error || error} />
+    <form key={`${environment}:${configured?.revision || "new"}`} onSubmit={save} className="space-y-3">
+      <fieldset disabled={busy} className="grid min-w-0 gap-3 sm:grid-cols-2">
+        <Field label="Ambiente"><select className={control} value={environment} onChange={event => setEnvironment(event.target.value as typeof environment)}><option value="clicksign-sandbox">Sandbox (testes sem valor legal)</option><option value="clicksign">Produção</option></select></Field>
+        <Field label="Chave da conta"><input className={control} name="account_reference" required minLength={2} maxLength={128} defaultValue={configured?.account_reference || ""} autoComplete="off" /></Field>
+        <Field label={configured?.api_token_configured ? "Access Token (deixe vazio para manter)" : "Access Token"}><input className={control} name="api_token" type="password" minLength={16} required={!configured?.api_token_configured} autoComplete="new-password" /></Field>
+        <Field label="HMAC SHA256 Secret do webhook"><input className={control} name="webhook_secret" type="password" minLength={16} required autoComplete="new-password" /></Field>
+        <label className="flex min-h-11 items-center gap-3 text-sm text-zinc-300"><input name="enabled" type="checkbox" className="h-4 w-4" defaultChecked={configured?.enabled ?? true} /> Integração ativa</label>
+      </fieldset>
+      <button className={primary} disabled={busy}>{busy ? "Salvando…" : "Salvar integração"}</button>
+    </form>
+    {notice && <p role="status" className="text-sm text-emerald-300">{notice}</p>}
+  </Panel>;
+}
+
 function Signatures() {
   const documents = useResource<List>("/workspace/documents?limit=200");
   const providers = useResource<{ items: { provider: string; account_reference: string }[] }>("/operations/signature-providers");
+  const envelopes = useResource<{ items: Envelope[] }>("/operations/signature-envelopes?limit=50");
   const [envelope, setEnvelope] = useState<Envelope | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -279,20 +330,39 @@ function Signatures() {
     const [provider, account_reference] = String(data.get("provider_account") || "").split("\u001f");
     if (!provider || !account_reference) return;
     setBusy(true); setError("");
-    try { setEnvelope(await api.post<Envelope>("/operations/signature-envelopes", { document_id: document.id, document_version: document.current_version, provider, account_reference, expires_at: null })); }
+    try {
+      setEnvelope(await api.post<Envelope>("/operations/signature-envelopes", {
+        request_key: crypto.randomUUID(),
+        document_id: document.id,
+        document_version: document.current_version,
+        provider,
+        account_reference,
+        signer_name: data.get("signer_name"),
+        signer_email: data.get("signer_email"),
+        signer_cpf: data.get("signer_cpf"),
+        authentication: data.get("authentication"),
+        expires_at: null,
+      }));
+      envelopes.reload();
+    }
     catch (reason) { setError(errorText(reason)); }
-    finally { setBusy(false); }
+    finally { setBusy(false); envelopes.reload(); }
   }
   return <Panel title="Assinatura eletrônica" collapsibleOnMobile>
-    <p className="text-sm text-zinc-400">O LexFlow registra a versão exata enviada. A validade e o resultado dependem do serviço de assinatura configurado e do retorno confirmado por ele.</p>
-    <State loading={documents.loading || providers.loading} error={documents.error || providers.error || error} empty={Boolean(documents.data) && !documents.data?.items.length} emptyText="Crie ou envie um documento antes de solicitar assinatura." />
+    <p className="text-sm text-zinc-400">O LexFlow envia o PDF exato à Clicksign e só libera o arquivo final após confirmação autenticada. Na opção ICP-Brasil, certificado A1/A3 e PIN são usados na página segura da Clicksign e nunca passam pelo LexFlow.</p>
+    <State loading={documents.loading || providers.loading || envelopes.loading} error={documents.error || providers.error || envelopes.error || error} empty={Boolean(documents.data) && !documents.data?.items.length} emptyText="Crie ou envie um documento antes de solicitar assinatura." />
     {!providers.loading && providers.data && !providers.data.items.length && <p className="rounded-lg border border-amber-800 p-3 text-sm text-amber-300">Nenhum serviço de assinatura homologado está ativo. A aplicação não fará assinatura local nem simulará validade.</p>}
     {!envelope && Boolean(documents.data?.items.length) && Boolean(providers.data?.items.length) && <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2">
       <Field label="Documento"><select className={control} name="document_id" required defaultValue=""><option value="">Selecione…</option>{documents.data?.items.map(item => <option key={item.id} value={item.id}>{item.title} · versão {item.current_version}</option>)}</select></Field>
       <Field label="Serviço de assinatura"><select className={control} name="provider_account" required defaultValue=""><option value="">Selecione…</option>{providers.data?.items.map(item => <option key={`${item.provider}:${item.account_reference}`} value={`${item.provider}\u001f${item.account_reference}`}>{item.provider} · conta {item.account_reference}</option>)}</select></Field>
-      <div className="self-end"><button className={primary} disabled={busy}>{busy ? "Registrando…" : "Preparar envio para assinatura"}</button></div>
+      <Field label="Nome completo do signatário"><input className={control} name="signer_name" required minLength={3} maxLength={200} autoComplete="name" /></Field>
+      <Field label="E-mail do signatário"><input className={control} name="signer_email" type="email" required maxLength={320} autoComplete="email" /></Field>
+      <Field label="CPF do signatário"><input className={control} name="signer_cpf" inputMode="numeric" required minLength={11} maxLength={18} placeholder="000.000.000-00" autoComplete="off" /></Field>
+      <Field label="Confirmação de identidade"><select className={control} name="authentication" defaultValue="icp_brasil"><option value="icp_brasil">Certificado ICP-Brasil A1/A3</option><option value="email">Confirmação por e-mail</option></select></Field>
+      <div className="self-end sm:col-span-2"><button className={primary} disabled={busy}>{busy ? "Enviando à Clicksign…" : "Enviar PDF para assinatura"}</button></div>
     </form>}
-    {envelope && <div role="status" className="rounded-lg border border-amber-800 bg-amber-950/10 p-4"><p className="font-medium text-amber-200">Aguardando provedor de assinatura</p><p className="mt-1 text-sm text-zinc-300">O documento ainda não está assinado. O LexFlow só mudará essa situação quando receber uma confirmação autenticada do serviço.</p><p className="mt-2 text-xs text-zinc-400">Envio: {envelope.dispatch_status === "submitted" ? "encaminhado ao serviço" : envelope.dispatch_status === "failed" ? "falhou" : "aguardando integração do serviço"}</p></div>}
+    {envelope && <div role="status" className="space-y-3 rounded-lg border border-amber-800 bg-amber-950/10 p-4"><div><p className="font-medium text-amber-200">Solicitação enviada à Clicksign</p><p className="mt-1 text-sm text-zinc-300">O signatário receberá o link por e-mail. O LexFlow aguardará o webhook autenticado e preservará o PDF assinado sem sobrescrever o original.</p><p className="mt-2 text-xs text-zinc-400">Envio: {envelope.dispatch_status === "submitted" ? "encaminhado ao serviço" : envelope.dispatch_status === "failed" ? "falhou" : "confirmação pendente"}</p></div><button type="button" className={button} onClick={() => setEnvelope(null)}>Nova solicitação</button></div>}
+    <details className="border-t border-zinc-800 pt-3" open><summary className="min-h-11 cursor-pointer content-center font-medium text-zinc-100">Solicitações recentes ({envelopes.data?.items.length || 0})</summary><div className="mt-2 divide-y divide-zinc-800">{envelopes.data?.items.map(item => <article key={item.id} className="flex flex-col justify-between gap-2 py-3 sm:flex-row sm:items-center"><div><p className="text-sm font-medium">{documents.data?.items.find(document => document.id === item.document_id)?.title || "Documento"}</p><p className="text-xs text-zinc-400">{item.status === "signed" ? "Assinado" : item.status === "declined" ? "Recusado" : item.status === "expired" ? "Expirado" : item.dispatch_status === "submitted" ? "Aguardando assinatura" : item.dispatch_status === "failed" ? "Falha no envio" : "Envio incerto — não reenviar automaticamente"} · {dateText(item.created_at)}</p>{item.signed_file_hash && <p className="mt-1 max-w-xl truncate font-mono text-[11px] text-zinc-500">SHA-256 {item.signed_file_hash}</p>}</div>{item.signed_file_available && <button type="button" className={button} onClick={() => download(`/operations/signature-envelopes/${item.id}/download`, item.signed_filename || "documento-assinado-clicksign.pdf")}>Baixar PDF assinado</button>}</article>)}</div>{envelopes.data && !envelopes.data.items.length && <p className="mt-2 text-sm text-zinc-400">Nenhuma assinatura solicitada.</p>}</details>
   </Panel>;
 }
 
@@ -303,6 +373,7 @@ export function Operations() {
     {isOfficeAdminRole(user.role) && <IntakeConfiguration />}
     <Intakes />
     {isOfficeAdminRole(user.role) && <Fees />}
+    {isOfficeAdminRole(user.role) && <SignatureConfiguration />}
     <Signatures />
   </Page>;
 }

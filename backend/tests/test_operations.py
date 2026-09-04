@@ -9,7 +9,7 @@ from unittest.mock import patch
 from pydantic import ValidationError
 
 from app.schemas.operations import FeeRuleCreate, InvoiceCreate, PublicIntakeSubmit
-from app.models.operations import PaymentProviderEvent, PaymentReceipt, SignatureProviderEvent
+from app.models.operations import PaymentProviderEvent, PaymentReceipt, SignatureEnvelope, SignatureProviderEvent
 from app.services.operations import (
     FixedHostHttpClient,
     document_version_digest,
@@ -65,6 +65,13 @@ class OperationsContractsTests(unittest.TestCase):
         for model, columns in expected.items():
             unique_sets = {tuple(column.name for column in constraint.columns) for constraint in model.__table__.constraints if constraint.__class__.__name__ == "UniqueConstraint"}
             self.assertIn(columns, unique_sets)
+        envelope_unique_sets = {
+            tuple(column.name for column in constraint.columns)
+            for constraint in SignatureEnvelope.__table__.constraints
+            if constraint.__class__.__name__ == "UniqueConstraint"
+        }
+        self.assertIn(("tenant_id", "request_hash"), envelope_unique_sets)
+        self.assertIn(("tenant_id", "provider", "provider_account_reference", "provider_document_hash"), envelope_unique_sets)
 
     def test_signature_snapshot_is_version_immutable(self):
         snapshot = SimpleNamespace(sha256_hash=None, file_content=None, content_text="versão 1")
@@ -77,7 +84,9 @@ class OperationsContractsTests(unittest.TestCase):
         signature = "sha256=" + hmac.new(b"secret", raw, hashlib.sha256).hexdigest()
         with patch("app.services.operations.decrypt_mfa_secret", return_value="secret"):
             self.assertTrue(verify_hmac_webhook(raw, signature, "encrypted"))
+            self.assertTrue(verify_hmac_webhook(raw, signature.replace("sha256=", "SHA256="), "encrypted"))
             self.assertFalse(verify_hmac_webhook(raw, "sha256=bad", "encrypted"))
+            self.assertFalse(verify_hmac_webhook(raw, signature.replace("sha256=", "sha384="), "encrypted"))
         client = FixedHostHttpClient("https://provider.example/api/")
         self.assertEqual(client.host, "provider.example")
         with self.assertRaises(ValueError):
