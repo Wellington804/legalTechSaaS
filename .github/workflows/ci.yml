@@ -140,6 +140,8 @@ jobs:
           PGDATABASE: legaltech_e2e
           PGUSER: postgres
           PGPASSWORD: postgres
+          POSTGRES_DB: legaltech_e2e
+          POSTGRES_USER: postgres
           POSTGRES_ADMIN_USER: postgres
           POSTGRES_APP_USER: legaltech_app
           POSTGRES_APP_PASSWORD: e2e-runtime-password
