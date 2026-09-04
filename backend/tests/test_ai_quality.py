@@ -13,6 +13,8 @@ from app.services.ai_quality import (
     EvaluationCaseContent,
     EvaluationOutput,
     canonical_hash,
+    evaluation_prompt,
+    evaluation_run_outcome,
     score_evaluation,
     validate_document_intelligence,
 )
@@ -30,6 +32,8 @@ def gold_content(*, unknown_only=False):
         questions.append({"id": "Q2", "prompt": "O contrato foi rescindido?", "required": True})
         answers.append({"question_id": "Q2", "expected_status": "contradicted", "source_ids": ["G2"], "reviewer_note": "A fonte afirma vigência."})
     return EvaluationCaseContent.model_validate({
+        "draft_request": "Redija uma petição simples sobre o cumprimento do contrato.",
+        "reference_draft": "EXCELENTÍSSIMO SENHOR JUIZ. " + "A parte comprova o pagamento e a vigência contratual. " * 4,
         "sources": [
             {"id": "G1", "title": "Recibo", "page": 1, "paragraph": 1, "locator": "p. 1, § 1", "excerpt": "Pagamento recebido."},
             {"id": "G2", "title": "Contrato", "page": 2, "paragraph": 3, "locator": "p. 2, § 3", "excerpt": "O contrato permanece vigente."},
@@ -42,9 +46,10 @@ def gold_content(*, unknown_only=False):
 class AIQualityTests(unittest.TestCase):
     def test_perfect_metrics_keep_separate_auditable_denominators(self):
         output = EvaluationOutput.model_validate({
+            "draft": "EXCELENTÍSSIMO SENHOR JUIZ. O pagamento foi comprovado. O contrato permanece vigente. " * 2,
             "answers": [
-                {"question_id": "Q1", "status": "supported", "answer": "Sim.", "source_ids": ["G1"]},
-                {"question_id": "Q2", "status": "contradicted", "answer": "Não há rescisão.", "source_ids": ["G2"]},
+                {"question_id": "Q1", "status": "supported", "answer": "Sim.", "source_ids": ["G1"], "draft_excerpt": "O pagamento foi comprovado."},
+                {"question_id": "Q2", "status": "contradicted", "answer": "Não há rescisão.", "source_ids": ["G2"], "draft_excerpt": "O contrato permanece vigente."},
             ],
             "limitations": ["Resultado restrito ao corpus."], "human_review_required": True,
         })
@@ -57,7 +62,8 @@ class AIQualityTests(unittest.TestCase):
 
     def test_omission_contradiction_and_invented_citation_are_not_blended(self):
         output = EvaluationOutput.model_validate({
-            "answers": [{"question_id": "Q2", "status": "supported", "answer": "Foi rescindido.", "source_ids": ["G9"]}],
+            "draft": "EXCELENTÍSSIMO SENHOR JUIZ. O contrato foi rescindido sem qualquer ressalva. " * 2,
+            "answers": [{"question_id": "Q2", "status": "supported", "answer": "Foi rescindido.", "source_ids": ["G9"], "draft_excerpt": "O contrato foi rescindido sem qualquer ressalva."}],
             "limitations": ["Resposta parcial."], "human_review_required": True,
         })
         metrics = score_evaluation(gold_content(), output)
@@ -68,12 +74,19 @@ class AIQualityTests(unittest.TestCase):
 
     def test_zero_denominator_is_unknown_not_an_invented_score(self):
         output = EvaluationOutput.model_validate({
+            "draft": "EXCELENTÍSSIMO SENHOR JUIZ. Não há elementos suficientes para formular pedido seguro. " * 2,
             "answers": [{"question_id": "Q1", "status": "unknown", "answer": "Não é possível concluir.", "source_ids": []}],
             "limitations": ["Sem evidência suficiente."], "human_review_required": True,
         })
         metrics = score_evaluation(gold_content(unknown_only=True), output)
         self.assertEqual(metrics.citation_fidelity.status, "unknown")
         self.assertIsNone(metrics.citation_fidelity.rate)
+
+    def test_partial_benchmark_never_reports_success(self):
+        self.assertEqual(evaluation_run_outcome(2, 2), ("completed", None))
+        status, error = evaluation_run_outcome(1, 2)
+        self.assertEqual(status, "failed")
+        self.assertIn("1 de 2", error)
 
     def test_gold_contract_rejects_unreviewable_or_unknown_sources(self):
         payload = gold_content().model_dump(mode="json")
@@ -83,6 +96,20 @@ class AIQualityTests(unittest.TestCase):
         output = {"answers": [], "limitations": ["Revisar."], "human_review_required": False}
         with self.assertRaises(ValidationError):
             EvaluationOutput.model_validate(output)
+
+    def test_generated_assertions_are_bound_to_the_draft_without_leaking_reference(self):
+        content = gold_content()
+        self.assertNotIn(content.reference_draft, evaluation_prompt(content))
+        payload = {
+            "draft": "EXCELENTÍSSIMO SENHOR JUIZ. O pagamento foi comprovado pelos documentos juntados. " * 2,
+            "answers": [{
+                "question_id": "Q1", "status": "supported", "answer": "Sim.",
+                "source_ids": ["G1"], "draft_excerpt": "Trecho que não existe na peça.",
+            }],
+            "limitations": ["Revisão humana obrigatória."], "human_review_required": True,
+        }
+        with self.assertRaises(ValidationError):
+            EvaluationOutput.model_validate(payload)
 
     def test_document_intelligence_preserves_source_and_human_review(self):
         snapshots = [DocumentSnapshot(document_id="doc-a", version=1, sha256="a" * 64)]

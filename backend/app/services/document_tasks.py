@@ -34,6 +34,7 @@ from app.services.ai_quality import (
     canonical_hash,
     document_intelligence_prompt,
     evaluation_prompt,
+    evaluation_run_outcome,
     parse_document_intelligence,
     parse_evaluation_output,
     score_evaluation,
@@ -355,14 +356,13 @@ async def _run_evaluation(run_id: str, tenant_id: str) -> str:
             AIEvaluationResult.status == "completed",
         ))).scalars().all()
         all_metrics = [EvaluationMetrics.model_validate(row.metrics) for row in completed_rows if row.metrics]
-        run.status = "completed" if all_metrics else "failed"
+        run.status, run.error = evaluation_run_outcome(len(all_metrics), run.case_count)
         run.aggregate_metrics = aggregate_evaluation_metrics(all_metrics).model_dump(mode="json") if all_metrics else None
-        run.error = None if all_metrics else "Nenhum caso produziu resultado verificável."
         run.completed_at = datetime.now(timezone.utc)
         await AuditService.log_action(db, tenant_id, requested_by, "AI_EVALUATION_COMPLETED", "ai_evaluation_runs", run_id, {
             "provider": provider, "model": model, "completed_cases": len(all_metrics), "total_cases": run.case_count,
         })
-    return "completed" if all_metrics else "failed"
+    return run.status
 
 
 async def _run_document_intelligence(analysis_id: str, tenant_id: str) -> str:
