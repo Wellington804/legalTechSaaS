@@ -328,7 +328,7 @@ def poll_datajud():
     return asyncio.run(_poll_controladoria())
 
 
-@celery_app.task(name="controladoria.poll_subscription", soft_time_limit=45, time_limit=60)
+@celery_app.task(name="controladoria.poll_subscription", soft_time_limit=100, time_limit=120)
 def poll_subscription(tenant_id: str, subscription_id: str):
     try:
         return asyncio.run(_poll_subscription_safely(tenant_id, subscription_id))
