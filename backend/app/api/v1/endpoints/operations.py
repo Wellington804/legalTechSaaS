@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.dependencies import CurrentUser, require_tenant_write
+from app.core.request_body import read_limited_body
 from app.models.operations import FeeContract, FeeRule, Invoice, ProviderCredential, PublicIntake, PublicIntakeConfig, Receivable, SignatureEnvelope, TimeEntry
 from app.models.user import User
 from app.models.workspace import WorkspaceCase, WorkspaceDocument
@@ -683,9 +684,7 @@ async def signature_webhook(
     event_header: str | None = Header(default=None, alias="Event", max_length=128),
     db: AsyncSession = Depends(get_db),
 ):
-    raw = await request.body()
-    if len(raw) > MAX_WEBHOOK_BYTES:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Webhook muito grande.")
+    raw = await read_limited_body(request, MAX_WEBHOOK_BYTES, "Webhook muito grande.")
     if provider in CLICKSIGN_BASE_URLS:
         try:
             clicksign_event = parse_clicksign_webhook(raw, event_header)
@@ -726,9 +725,7 @@ async def payment_webhook(
     x_operation_signature: str | None = Header(default=None, alias="X-Operation-Signature", max_length=256),
     db: AsyncSession = Depends(get_db),
 ):
-    raw = await request.body()
-    if len(raw) > MAX_WEBHOOK_BYTES:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Webhook muito grande.")
+    raw = await read_limited_body(request, MAX_WEBHOOK_BYTES, "Webhook muito grande.")
     identity = await webhook_identity_or_401(db, raw, x_operation_signature, purpose="payment", provider=provider, account_reference=x_operation_account)
     try:
         event = PaymentWebhookEvent.model_validate_json(raw)

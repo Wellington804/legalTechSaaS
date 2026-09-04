@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.dependencies import _set_tenant_context, get_current_user
+from app.core.request_body import read_limited_body
 from app.core.redis_cache import cache_manager
 from app.models.user import User
 from app.models.engagement import TenantChannel
@@ -97,9 +98,7 @@ async def resend_webhook(
     svix_timestamp: str = Header(alias="svix-timestamp"),
     svix_signature: str = Header(alias="svix-signature"),
 ):
-    raw = await request.body()
-    if len(raw) > MAX_WEBHOOK_BYTES:
-        raise HTTPException(status_code=413, detail="Webhook too large")
+    raw = await read_limited_body(request, MAX_WEBHOOK_BYTES, "Webhook too large")
     secret = getattr(settings, "RESEND_WEBHOOK_SECRET", "")
     if not secret or not verify_resend_signature(
         raw,
@@ -139,9 +138,7 @@ async def resend_webhook(
 
 @router.post("/webhooks/evolution", status_code=status.HTTP_202_ACCEPTED)
 async def evolution_webhook(request: Request, db: AsyncSession = Depends(get_db)):
-    raw = await request.body()
-    if len(raw) > MAX_WEBHOOK_BYTES:
-        raise HTTPException(status_code=413, detail="Webhook too large")
+    raw = await read_limited_body(request, MAX_WEBHOOK_BYTES, "Webhook too large")
     try:
         payload = json.loads(raw)
         instance_id = payload["instanceId"]

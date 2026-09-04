@@ -322,6 +322,7 @@ function Signatures() {
   const providers = useResource<{ items: { provider: string; account_reference: string }[] }>("/operations/signature-providers");
   const envelopes = useResource<{ items: Envelope[] }>("/operations/signature-envelopes?limit=50");
   const [envelope, setEnvelope] = useState<Envelope | null>(null);
+  const [requestKey, setRequestKey] = useState(() => crypto.randomUUID());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -332,7 +333,7 @@ function Signatures() {
     setBusy(true); setError("");
     try {
       setEnvelope(await api.post<Envelope>("/operations/signature-envelopes", {
-        request_key: crypto.randomUUID(),
+        request_key: requestKey,
         document_id: document.id,
         document_version: document.current_version,
         provider,
@@ -352,7 +353,7 @@ function Signatures() {
     <p className="text-sm text-zinc-400">O LexFlow envia o PDF exato à Clicksign e só libera o arquivo final após confirmação autenticada. Na opção ICP-Brasil, certificado A1/A3 e PIN são usados na página segura da Clicksign e nunca passam pelo LexFlow.</p>
     <State loading={documents.loading || providers.loading || envelopes.loading} error={documents.error || providers.error || envelopes.error || error} empty={Boolean(documents.data) && !documents.data?.items.length} emptyText="Crie ou envie um documento antes de solicitar assinatura." />
     {!providers.loading && providers.data && !providers.data.items.length && <p className="rounded-lg border border-amber-800 p-3 text-sm text-amber-300">Nenhum serviço de assinatura homologado está ativo. A aplicação não fará assinatura local nem simulará validade.</p>}
-    {!envelope && Boolean(documents.data?.items.length) && Boolean(providers.data?.items.length) && <form onSubmit={submit} className="grid gap-3 sm:grid-cols-2">
+    {!envelope && Boolean(documents.data?.items.length) && Boolean(providers.data?.items.length) && <form onSubmit={submit} onChange={() => { if (error) { setRequestKey(crypto.randomUUID()); setError(""); } }} className="grid gap-3 sm:grid-cols-2">
       <Field label="Documento"><select className={control} name="document_id" required defaultValue=""><option value="">Selecione…</option>{documents.data?.items.map(item => <option key={item.id} value={item.id}>{item.title} · versão {item.current_version}</option>)}</select></Field>
       <Field label="Serviço de assinatura"><select className={control} name="provider_account" required defaultValue=""><option value="">Selecione…</option>{providers.data?.items.map(item => <option key={`${item.provider}:${item.account_reference}`} value={`${item.provider}\u001f${item.account_reference}`}>{item.provider} · conta {item.account_reference}</option>)}</select></Field>
       <Field label="Nome completo do signatário"><input className={control} name="signer_name" required minLength={3} maxLength={200} autoComplete="name" /></Field>
@@ -361,7 +362,7 @@ function Signatures() {
       <Field label="Confirmação de identidade"><select className={control} name="authentication" defaultValue="icp_brasil"><option value="icp_brasil">Certificado ICP-Brasil A1/A3</option><option value="email">Confirmação por e-mail</option></select></Field>
       <div className="self-end sm:col-span-2"><button className={primary} disabled={busy}>{busy ? "Enviando à Clicksign…" : "Enviar PDF para assinatura"}</button></div>
     </form>}
-    {envelope && <div role="status" className="space-y-3 rounded-lg border border-amber-800 bg-amber-950/10 p-4"><div><p className="font-medium text-amber-200">Solicitação enviada à Clicksign</p><p className="mt-1 text-sm text-zinc-300">O signatário receberá o link por e-mail. O LexFlow aguardará o webhook autenticado e preservará o PDF assinado sem sobrescrever o original.</p><p className="mt-2 text-xs text-zinc-400">Envio: {envelope.dispatch_status === "submitted" ? "encaminhado ao serviço" : envelope.dispatch_status === "failed" ? "falhou" : "confirmação pendente"}</p></div><button type="button" className={button} onClick={() => setEnvelope(null)}>Nova solicitação</button></div>}
+    {envelope && <div role="status" className="space-y-3 rounded-lg border border-amber-800 bg-amber-950/10 p-4"><div><p className="font-medium text-amber-200">Solicitação enviada à Clicksign</p><p className="mt-1 text-sm text-zinc-300">O signatário receberá o link por e-mail. O LexFlow aguardará o webhook autenticado e preservará o PDF assinado sem sobrescrever o original.</p><p className="mt-2 text-xs text-zinc-400">Envio: {envelope.dispatch_status === "submitted" ? "encaminhado ao serviço" : envelope.dispatch_status === "failed" ? "falhou" : "confirmação pendente"}</p></div><button type="button" className={button} onClick={() => { setEnvelope(null); setRequestKey(crypto.randomUUID()); }}>Nova solicitação</button></div>}
     <details className="border-t border-zinc-800 pt-3" open><summary className="min-h-11 cursor-pointer content-center font-medium text-zinc-100">Solicitações recentes ({envelopes.data?.items.length || 0})</summary><div className="mt-2 divide-y divide-zinc-800">{envelopes.data?.items.map(item => <article key={item.id} className="flex flex-col justify-between gap-2 py-3 sm:flex-row sm:items-center"><div><p className="text-sm font-medium">{documents.data?.items.find(document => document.id === item.document_id)?.title || "Documento"}</p><p className="text-xs text-zinc-400">{item.status === "signed" ? "Assinado" : item.status === "declined" ? "Recusado" : item.status === "expired" ? "Expirado" : item.dispatch_status === "submitted" ? "Aguardando assinatura" : item.dispatch_status === "failed" ? "Falha no envio" : "Envio incerto — não reenviar automaticamente"} · {dateText(item.created_at)}</p>{item.signed_file_hash && <p className="mt-1 max-w-xl truncate font-mono text-[11px] text-zinc-500">SHA-256 {item.signed_file_hash}</p>}</div>{item.signed_file_available && <button type="button" className={button} onClick={() => download(`/operations/signature-envelopes/${item.id}/download`, item.signed_filename || "documento-assinado-clicksign.pdf")}>Baixar PDF assinado</button>}</article>)}</div>{envelopes.data && !envelopes.data.items.length && <p className="mt-2 text-sm text-zinc-400">Nenhuma assinatura solicitada.</p>}</details>
   </Panel>;
 }

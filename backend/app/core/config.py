@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     JUDICIAL_MONITORING_PROVIDER: Literal["datajud", "escavador"] = "datajud"
     ESCAVADOR_ENABLED: bool = False
     ESCAVADOR_API_TOKEN: str | None = None
+    ESCAVADOR_CALLBACK_TOKEN: str | None = None
     AI_ENABLED: bool = False
     AI_PROVIDER: Literal["gemini", "openrouter"] = "gemini"
     GEMINI_API_KEY: str | None = None
@@ -172,6 +173,8 @@ class Settings(BaseSettings):
             problems.append("DataJud enabled without API key")
         if self.ESCAVADOR_ENABLED and not self.ESCAVADOR_API_TOKEN:
             problems.append("Escavador enabled without API token")
+        if self.ESCAVADOR_ENABLED and not self.ESCAVADOR_CALLBACK_TOKEN:
+            problems.append("Escavador enabled without callback token")
         monitoring_enabled = self.DATAJUD_ENABLED or self.ESCAVADOR_ENABLED
         if monitoring_enabled and self.JUDICIAL_MONITORING_PROVIDER == "datajud" and not self.DATAJUD_ENABLED:
             problems.append("selected judicial monitoring provider DataJud is disabled")

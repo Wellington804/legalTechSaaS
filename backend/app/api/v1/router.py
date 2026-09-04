@@ -12,6 +12,8 @@ api_router.include_router(routines.router, prefix="/routines", tags=["Rotina & D
 api_router.include_router(document_kit.router, prefix="/document-kit", tags=["Kit Documental"], dependencies=[Depends(require_privileged_mfa)])
 api_router.include_router(workspace.router, prefix="/workspace", tags=["Central do Advogado"], dependencies=[Depends(require_privileged_mfa)])
 api_router.include_router(controladoria.router, prefix="/controladoria", tags=["Controladoria judicial"], dependencies=[Depends(require_privileged_mfa)])
+# Escavador authenticates callbacks with its dedicated Bearer token, not an office session.
+api_router.include_router(controladoria.public_router, prefix="/controladoria", tags=["Webhooks judiciais"])
 api_router.include_router(operations.router, prefix="/operations", tags=["Atendimento e operacao"], dependencies=[Depends(require_privileged_mfa)])
 api_router.include_router(branding.router, prefix="/branding", tags=["Identidade Documental"], dependencies=[Depends(require_privileged_mfa)])
 api_router.include_router(engagement.router, prefix="/engagement", tags=["Comunicacoes do Escritorio"], dependencies=[Depends(require_privileged_mfa)])

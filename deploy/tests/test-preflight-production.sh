@@ -31,4 +31,12 @@ if PATH="$tmp/bin:$PATH" /bin/sh "$root/deploy/preflight-production.sh" "$env_fi
   printf '%s\n' 'preflight accepted unsafe notification dispatch' >&2
   exit 1
 fi
+sed -i 's/UNBOUND_NOTIFICATION_DISPATCH_ENABLED=true/UNBOUND_NOTIFICATION_DISPATCH_ENABLED=false/' "$env_file"
+printf '%s\n' 'ESCAVADOR_ENABLED=true' >> "$env_file"
+if PATH="$tmp/bin:$PATH" /bin/sh "$root/deploy/preflight-production.sh" "$env_file" config >/dev/null 2>&1; then
+  printf '%s\n' 'preflight accepted Escavador without callback credentials' >&2
+  exit 1
+fi
+printf '%s\n' 'ESCAVADOR_API_TOKEN=api-token' 'ESCAVADOR_CALLBACK_TOKEN=callback-token' >> "$env_file"
+PATH="$tmp/bin:$PATH" /bin/sh "$root/deploy/preflight-production.sh" "$env_file" config >/dev/null
 printf '%s\n' 'preflight tests passed'

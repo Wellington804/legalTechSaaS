@@ -8,7 +8,8 @@ const root = path.resolve(__dirname, "..");
 test("signature UI requests ICP-Brasil through Clicksign without collecting certificate secrets", () => {
   const source = readFileSync(path.join(root, "src/components/workspace/operations.tsx"), "utf8");
   assert.match(source, /Certificado ICP-Brasil A1\/A3/);
-  assert.match(source, /request_key: crypto\.randomUUID\(\)/);
+  assert.match(source, /request_key: requestKey/);
+  assert.match(source, /setRequestKey\(crypto\.randomUUID\(\)\)/);
   assert.match(source, /signature-envelopes\/\$\{item\.id\}\/download/);
   assert.match(source, /window\.location\.origin}\/api\/v1\/operations\/webhooks\/signatures/);
   assert.doesNotMatch(source, /name=["'](?:pin|pfx|certificate_password)["']/i);

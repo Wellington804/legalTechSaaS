@@ -43,3 +43,30 @@ class SecurityGuardsTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as caught:
             asyncio.run(list_audit_logs(current_user=user, db=NoQueryDatabase()))
         self.assertEqual(caught.exception.status_code, 403)
+
+    def test_hardened_escavador_requires_api_and_callback_tokens(self):
+        safe_settings = {
+            "SECRET_KEY": "a" * 64,
+            "COOKIE_SECURE": True,
+            "DATABASE_URL": "postgresql+asyncpg://app:secure-db-pass@db.example.test:5432/legaltech",
+            "REDIS_URL": "redis://:secure-redis-pass@redis.example.test:6379/0",
+            "CORS_ORIGINS": ["https://app.example.test"],
+            "ALLOWED_HOSTS": ["app.example.test"],
+            "FRONTEND_URL": "https://app.example.test",
+            "ACCOUNT_TOKEN_PEPPER": "test-pepper-" * 4,
+            "MFA_ENCRYPTION_KEY": "A" * 43 + "=",
+            "ESCAVADOR_ENABLED": True,
+            "JUDICIAL_MONITORING_PROVIDER": "escavador",
+            "_env_file": None,
+        }
+        with self.assertRaises(ValidationError) as caught:
+            Settings(ENVIRONMENT="production", **safe_settings)
+        self.assertIn("Escavador enabled without API token", str(caught.exception))
+        self.assertIn("Escavador enabled without callback token", str(caught.exception))
+
+        Settings(
+            ENVIRONMENT="production",
+            ESCAVADOR_API_TOKEN="api-token",
+            ESCAVADOR_CALLBACK_TOKEN="callback-token",
+            **safe_settings,
+        )

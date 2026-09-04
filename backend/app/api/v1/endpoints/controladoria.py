@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.dependencies import CurrentUser, require_tenant_write
+from app.core.request_body import read_limited_body
 from app.models.controladoria import (
     ControladoriaDeadlineReview,
     ControladoriaJudicialEvent,
@@ -103,9 +104,7 @@ async def escavador_webhook(
 ):
     if not valid_escavador_callback_token(authorization):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Callback nao autorizado.")
-    raw = await request.body()
-    if len(raw) > MAX_ESCAVADOR_CALLBACK_BYTES:
-        raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="Callback muito grande.")
+    raw = await read_limited_body(request, MAX_ESCAVADOR_CALLBACK_BYTES, "Callback muito grande.")
     try:
         payload = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:

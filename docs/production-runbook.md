@@ -69,7 +69,16 @@ docker compose --env-file .env.production -f docker-compose.prod.yml --profile e
 
 Antes de `EVOLUTION_ENABLED=true`, ative a licença e configure somente `EVOLUTION_API_KEY` como segredo global da VPS. Saúde HTTP do container não comprova `loggedIn`. Ao clicar em **Conectar WhatsApp**, o backend cria uma instância exclusiva, gera seu token, cifra a identidade no banco, configura o webhook e devolve somente o QR Code. A interface consulta o estado apenas durante o pareamento; depois, eventos assinados pela identidade da instância mantêm conexão e recibos atualizados. Confirme o ciclo real criar → QR → `LoggedIn=true` → enviar → receber confirmação → desconectar contra a imagem pinada antes de homologar.
 
-## 7. Backup e restore
+## 7. Integrações jurídicas
+
+- Escavador é opcional e global: preencha `ESCAVADOR_API_TOKEN` e um `ESCAVADOR_CALLBACK_TOKEN` aleatório, cadastre o callback `/api/v1/controladoria/webhooks/escavador` com o mesmo Bearer e só então ative `ESCAVADOR_ENABLED=true` e selecione `JUDICIAL_MONITORING_PROVIDER=escavador`. Sem as duas credenciais, produção falha fechado. DataJud continua disponível como alternativa.
+- Clicksign é configurada por escritório em **Atendimento e cobranças → Configurar Clicksign**. Comece pelo sandbox e informe chave da conta, Access Token e segredo HMAC. Esses segredos são cifrados no banco e não pertencem ao `.env` global. O PFX e o PIN do certificado ICP-Brasil nunca devem ser enviados ou armazenados pelo LexFlow.
+- A agenda Apple usa uma assinatura privada e revogável `webcal`/ICS. Ela é somente leitura, não exige segredo externo e pode sofrer o atraso de atualização do aplicativo de calendário.
+- Asaas permanece fora deste corte. Evolution Go continua sendo o único transporte WhatsApp e deve seguir a homologação da seção anterior.
+
+Antes de habilitar Escavador ou Clicksign em produção, valide criação, callback autenticado, replay idempotente, indisponibilidade e revogação em sandbox. Um adaptador publicado sem credenciais não comprova a homologação do provedor.
+
+## 8. Backup e restore
 
 O repositório inclui backup PostgreSQL cifrado, checksum, cópia SSH externa, retenção, health check e timers systemd. Eles só passam a existir operacionalmente depois de instalar as units, configurar `/etc/legaltech/ops.env` e comprovar um restore isolado. Não guardar a única cópia no disco da VPS.
 
@@ -88,7 +97,7 @@ pg_restore --exit-on-error --clean --if-exists --no-owner -d legaltech_restore_t
 
 Valide migrations, contagem de registros críticos e autenticação no ambiente restaurado. Um arquivo de dump sem restore testado não atende ao gate de produção. Faça também backup dos volumes do Evolution antes de qualquer atualização dele.
 
-## 8. Gates de corte
+## 9. Gates de corte
 
 - `docker compose config`, builds, migrations e testes passam.
 - Somente Caddy publica portas; Postgres, Redis, backend, frontend e Evolution são privados.
