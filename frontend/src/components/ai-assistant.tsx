@@ -10,7 +10,7 @@ import { button, control, errorText, Field, State, useResource } from "@/compone
 import type { Row } from "@/components/workspace/records";
 
 type ContextKind = "global" | "client" | "case" | "document" | "library" | "branding";
-type ContextDetail = { contextKind?: ContextKind; clientId?: string; caseId?: string; documentId?: string; prompt?: string };
+type ContextDetail = { contextKind?: ContextKind; clientId?: string; caseId?: string; documentId?: string };
 type Answer = { text: string; sources: Array<{ kind: string; id: string; label: string; url?: string; citation_id?: string; locator?: string; excerpt?: string }>; limitations: string[]; review_required: true; saved: false; conversation_id?: string };
 type ChatMessage = { id: string; role: "user" | "assistant"; text: string };
 type List = { items: Row[] };
@@ -56,8 +56,14 @@ export function AiAssistant() {
   useEffect(() => {
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<ContextDetail>).detail || {};
-      setContext({ ...inferredContext(pathname), ...detail });
-      setQuestion(detail.prompt || "");
+      const inferred = inferredContext(pathname);
+      setContext({
+        contextKind: detail.contextKind || inferred.contextKind,
+        clientId: detail.clientId || inferred.clientId,
+        caseId: detail.caseId || inferred.caseId,
+        documentId: detail.documentId || inferred.documentId,
+      });
+      setQuestion("");
       setMessages(welcome()); setConversationId(null); setAttachments([]); setAnswer(null); setSavedDocument(null); setError(""); setOpen(true);
     };
     window.addEventListener(OPEN_AI_EVENT, handler);
@@ -74,14 +80,6 @@ export function AiAssistant() {
   };
   const chooseKind = (next: ContextKind) => {
     setContext({ contextKind: next }); setMessages(welcome()); setAnswer(null); setSavedDocument(null); setError("");
-  };
-  const suggestions: Record<ContextKind, string[]> = {
-    global: ["Organize minhas prioridades de hoje sem inventar prazos.", "Aponte pendências da agenda que precisam de conferência."],
-    client: ["Resuma o atendimento e liste os dados que ainda faltam.", "Prepare um roteiro de próximos passos para este cliente."],
-    case: ["Monte uma cronologia com os dados registrados.", "Liste providências, lacunas e itens que exigem conferência."],
-    document: ["Resuma o documento e destaque inconsistências.", "Sugira uma revisão de redação sem alterar os fatos."],
-    library: ["Organize as referências por tema e indique lacunas.", "Resuma as referências recentes sem criar novas fontes."],
-    branding: ["Sugira uma direção visual coerente para os documentos.", "Transforme meu direcionamento em regras visuais objetivas."],
   };
   const contextLabel = kind === "global" ? "Orientação geral" : kind === "case" ? "Processo" : kind === "client" ? "Cliente" : kind === "document" ? "Documento" : kind === "branding" ? "Identidade documental" : "Biblioteca";
 
@@ -164,7 +162,6 @@ export function AiAssistant() {
       <div ref={log} role="log" aria-live="polite" aria-label="Conversa com o assistente" className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
         {messages.map(message => <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}><div className={`max-w-[88%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-relaxed ${message.role === "user" ? "bg-blue-600 text-white" : "border border-zinc-800 bg-zinc-900 text-zinc-100"}`}>{message.text}</div></div>)}
         {busy && <p role="status" className="text-sm text-zinc-400">Preparando resposta…</p>}
-        {messages.length === 1 && <div className="flex flex-wrap gap-2" aria-label="Sugestões de perguntas">{suggestions[kind].map(item => <button key={item} type="button" className={button} onClick={() => setQuestion(item)}>{item}</button>)}</div>}
         <State error={cases.error || clients.error || documents.error || error} />
         {answer && !busy && <section className="space-y-3 rounded-xl border border-zinc-800 p-3" aria-label="Ações da última resposta">
           <p className="text-xs text-amber-300">Rascunho sujeito à revisão profissional. Nenhum prazo ou ação foi criado.</p>

@@ -50,6 +50,8 @@ function fixtureApi() {
     }],
     messages: [],
     whatsapp: { status: "disconnected", connected: false, number: null, last_checked_at: null },
+    longAssistantResponse: false,
+    assistantUnavailable: false,
     dailyTaskCompleted: false,
     dailyNextActionCreated: false,
   };
@@ -168,6 +170,9 @@ function fixtureApi() {
     if (method === "GET" && path === "/api/v1/engagement/channels") return json(route, 200, {
       whatsapp: state.whatsapp,
     });
+    if (method === "GET" && path === "/api/v1/engagement/inbox") return json(route, 200, { items: [] });
+    if (method === "GET" && path === "/api/v1/engagement/inbox/email-address") return json(route, 200, { configured: false, provider_ready: true });
+    if (method === "GET" && path === "/api/v1/engagement/cases/case-a/document-intelligence") return json(route, 200, []);
     if (method === "POST" && path === "/api/v1/engagement/whatsapp/connect") {
       state.whatsapp = { status: "pending", connected: false, number: null, last_checked_at: new Date().toISOString() };
       return json(route, 200, { whatsapp: state.whatsapp, qr_code: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" });
@@ -186,8 +191,10 @@ function fixtureApi() {
       text: "Rascunho contextual para revisão.", sources: [],
       limitations: ["Resposta não salva."], review_required: true, saved: false,
     });
+    if (method === "GET" && path === "/api/v1/engagement/assistant/conversations") return json(route, 200, { items: [] });
+    if (method === "POST" && path === "/api/v1/engagement/assistant/chat" && state.assistantUnavailable) return json(route, 503, { detail: "O assistente está temporariamente indisponível. Tente novamente em instantes." });
     if (method === "POST" && path === "/api/v1/engagement/assistant/chat") return json(route, 200, {
-      text: "Rascunho contextual para revisão.", sources: [], limitations: ["Resposta não salva."],
+      text: state.longAssistantResponse ? Array.from({ length: 80 }, (_, index) => `Linha ${index + 1} para revisar.`).join("\n") : "Rascunho contextual para revisão.", sources: [], limitations: ["Resposta não salva."],
       review_required: true, saved: false, conversation_id: "conversation-a",
       conversation: { id: "conversation-a", title: "Conversa", context_kind: "global", retention_days: 90, message_count: 2, updated_at: new Date().toISOString() },
     });
@@ -308,11 +315,35 @@ if (require.main === module) (async () => {
     await page.getByRole("button", { name: "Abrir Assistente LexFlow", exact: true }).click();
     await page.getByRole("dialog", { name: "Assistente LexFlow" }).waitFor();
     const prepare = page.getByRole("button", { name: "Enviar mensagem", exact: true });
+    assert.equal(await page.getByLabel("Mensagem para o assistente", { exact: true }).inputValue(), "", "abrir o assistente preserva apenas o contexto, nunca uma pergunta pronta");
     assert.equal(await prepare.isDisabled(), true, "IA contextual exige um pedido explícito");
     await page.getByLabel("Mensagem para o assistente", { exact: true }).fill("Organize os próximos passos informados.");
     await prepare.click();
     await page.getByText("Rascunho contextual para revisão.", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Fechar assistente", exact: true }).click();
+
+    api.state.longAssistantResponse = true;
+    await page.goto(`${baseUrl}/dashboard/assistant`);
+    await page.getByRole("heading", { name: "Copiloto jurídico", exact: true }).waitFor();
+    assert.equal(await page.getByText("Laboratório de qualidade jurídica", { exact: true }).count(), 0, "o ambiente do advogado não exibe o laboratório técnico");
+    assert.equal(await page.getByText("Importar casos de referência em JSON", { exact: true }).count(), 0, "o Copiloto não pede arquivos técnicos ao advogado");
+    assert.equal(await page.getByLabel("Guardar esta conversa", { exact: true }).isVisible(), false, "as opções avançadas começam recolhidas");
+    await page.getByLabel("Mensagem para o Copiloto", { exact: true }).fill("Mostre uma conversa longa para revisão.");
+    await page.getByRole("button", { name: "Enviar mensagem", exact: true }).click();
+    const conversationLog = page.getByRole("log");
+    await conversationLog.getByText(/Linha 80 para revisar\./).waitFor();
+    assert.equal(await conversationLog.evaluate(node => node.scrollHeight > node.clientHeight), true, "conversas longas rolam dentro do Copiloto");
+    await conversationLog.evaluate(node => { node.scrollTop = 0; node.dispatchEvent(new Event("scroll")); });
+    await page.getByRole("button", { name: "Ir ao fim", exact: true }).waitFor();
+    api.state.longAssistantResponse = false;
+    api.state.assistantUnavailable = true;
+    await page.getByRole("button", { name: "Nova", exact: true }).click();
+    const retryQuestion = "Revise esta pergunta quando o assistente voltar.";
+    await page.getByLabel("Mensagem para o Copiloto", { exact: true }).fill(retryQuestion);
+    await page.getByRole("button", { name: "Enviar mensagem", exact: true }).click();
+    await page.getByText("O assistente está temporariamente indisponível. Tente novamente em instantes.", { exact: true }).waitFor();
+    assert.equal(await page.getByLabel("Mensagem para o Copiloto", { exact: true }).inputValue(), retryQuestion, "uma falha temporária preserva a pergunta para nova tentativa");
+    api.state.assistantUnavailable = false;
 
     await page.goto(`${baseUrl}/dashboard/crm`);
     await page.getByRole("heading", { name: "Clientes e oportunidades", exact: true }).waitFor();
@@ -503,7 +534,7 @@ if (require.main === module) (async () => {
 
     for (const path of [
       "/dashboard", "/dashboard/crm", "/dashboard/tracker", "/dashboard/cases/case-a",
-      "/dashboard/petitions/editor", "/dashboard/account", "/dashboard/communications",
+      "/dashboard/petitions/editor", "/dashboard/account", "/dashboard/communications", "/dashboard/assistant",
     ]) await assertNoHorizontalOverflow(page, path);
 
     api.state.needsSecuritySetup = true;

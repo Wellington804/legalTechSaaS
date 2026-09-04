@@ -230,6 +230,40 @@ class ResearchEndpointTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_contextual_assistant_reports_retryable_failure_without_technical_details(self):
+        async def run():
+            db = ResearchDatabase()
+            db.execute = AsyncMock(return_value=SimpleNamespace(
+                scalars=lambda: SimpleNamespace(all=lambda: []),
+            ))
+            audit = AsyncMock()
+            with (
+                patch.object(research, "ensure_tenant_write_access", AsyncMock()),
+                patch.object(research, "ai_available", return_value=True),
+                patch.object(research, "provider_name", return_value="openrouter"),
+                patch.object(research, "model_name", return_value="configured-model"),
+                patch.object(research, "reserve_request", AsyncMock()),
+                patch.object(research, "generate_text", AsyncMock(side_effect=research.AIProviderError("provider unavailable"))),
+                patch.object(research.AuditService, "log_action", audit),
+            ):
+                with self.assertRaises(HTTPException) as caught:
+                    await research._contextual_assistant(
+                        research.AssistantInput(question="Organize as providências pendentes", consent=True),
+                        self.user,
+                        db,
+                    )
+            self.assertEqual(caught.exception.status_code, 503)
+            self.assertEqual(
+                caught.exception.detail,
+                "O assistente está temporariamente indisponível. Tente novamente em instantes.",
+            )
+            self.assertNotIn("provedor", caught.exception.detail.lower())
+            self.assertEqual(db.commits, 1, "a solicitação é auditada, mas nenhuma conversa é salva")
+            self.assertEqual(db.added, [])
+            audit.assert_awaited_once()
+
+        asyncio.run(run())
+
     def test_chat_attachment_is_validated_and_forwarded_with_send_consent(self):
         async def run():
             forwarded = AsyncMock(return_value={"text": "resposta", "sources": [], "limitations": []})

@@ -510,7 +510,7 @@ async def _contextual_assistant(
     if not body.consent:
         raise HTTPException(403, "Confirme o envio desta consulta ao assistente.")
     if not ai_available(settings):
-        raise HTTPException(503, "IA não configurada. Preencha o provedor e o modelo no ambiente do servidor.")
+        raise HTTPException(503, "O assistente está temporariamente indisponível. Tente novamente em instantes.")
     context, sources = [f"Área atual: {body.context_kind}."], []
     if body.context_kind == "client":
         if not body.client_id:
@@ -659,7 +659,7 @@ async def _contextual_assistant(
             answer, sources, required=body.context_kind == "document" or bool(attachments),
         )
     except AIProviderError:
-        raise HTTPException(502, "O provedor de IA não respondeu de forma válida. Nenhum dado foi alterado.")
+        raise HTTPException(503, "O assistente está temporariamente indisponível. Tente novamente em instantes.") from None
     await _set_tenant_context(db, user.tenant_id)
     await AuditService.log_action(db, user.tenant_id, user.id, "AI_CONTEXT_RESPONDED", "ai_context", body.context_kind,
                                   {"review_required": True, "sources": len(sources)})
