@@ -61,10 +61,16 @@ class Settings(BaseSettings):
 
     DATAJUD_ENABLED: bool = False
     DATAJUD_API_KEY: str | None = None
-    JUDICIAL_MONITORING_PROVIDER: Literal["datajud", "escavador"] = "datajud"
+    JUDICIAL_MONITORING_PROVIDER: Literal["datajud", "escavador", "djen", "domicilio", "tribunal_api"] = "datajud"
     ESCAVADOR_ENABLED: bool = False
     ESCAVADOR_API_TOKEN: str | None = None
     ESCAVADOR_CALLBACK_TOKEN: str | None = None
+    DJEN_API_URL: str = "https://comunicaapi.pje.jus.br/api/v1/comunicacao"
+    DOMICILIO_JUDICIAL_API_URL: str | None = None
+    DOMICILIO_JUDICIAL_API_TOKEN: str | None = None
+    DOMICILIO_JUDICIAL_TOKEN_HEADER: Literal["Authorization", "X-API-Key"] = "Authorization"
+    DOMICILIO_JUDICIAL_HOMOLOGATED: bool = False
+    TRIBUNAL_SOURCE_CONNECTORS: dict[str, dict[str, str | bool]] = Field(default_factory=dict)
     AI_ENABLED: bool = False
     AI_PROVIDER: Literal["gemini", "openrouter"] = "gemini"
     GEMINI_API_KEY: str | None = None
@@ -181,6 +187,42 @@ class Settings(BaseSettings):
             problems.append("selected judicial monitoring provider DataJud is disabled")
         if monitoring_enabled and self.JUDICIAL_MONITORING_PROVIDER == "escavador" and not self.ESCAVADOR_ENABLED:
             problems.append("selected judicial monitoring provider Escavador is disabled")
+        djen = urlsplit(self.DJEN_API_URL)
+        if djen.scheme != "https" or djen.hostname not in {"comunicaapi.pje.jus.br", "hcomunicaapi.cnj.jus.br"} or djen.username or djen.password:
+            problems.append("DJEN_API_URL must use an approved CNJ HTTPS host")
+        domicilio_partial = bool(
+            self.DOMICILIO_JUDICIAL_API_URL
+            or self.DOMICILIO_JUDICIAL_API_TOKEN
+            or self.DOMICILIO_JUDICIAL_HOMOLOGATED
+        )
+        if domicilio_partial and not all((self.DOMICILIO_JUDICIAL_API_URL, self.DOMICILIO_JUDICIAL_API_TOKEN)):
+            problems.append("Domicilio Judicial configuration is incomplete")
+        if self.DOMICILIO_JUDICIAL_API_URL:
+            domicilio = urlsplit(self.DOMICILIO_JUDICIAL_API_URL)
+            if domicilio.scheme != "https" or not domicilio.hostname or domicilio.username or domicilio.password:
+                problems.append("Domicilio Judicial endpoint must be HTTPS without URL credentials")
+        if self.JUDICIAL_MONITORING_PROVIDER == "domicilio" and not self.DOMICILIO_JUDICIAL_HOMOLOGATED:
+            problems.append("selected Domicilio Judicial provider is not homologated")
+        homologated_tribunal_connector = False
+        for tribunal, connector in self.TRIBUNAL_SOURCE_CONNECTORS.items():
+            if not tribunal or not isinstance(connector, dict):
+                problems.append("invalid tribunal connector configuration")
+                continue
+            url = str(connector.get("url") or "")
+            token = str(connector.get("token") or "")
+            token_header = connector.get("token_header", "Authorization")
+            homologated = connector.get("homologated") is True
+            if token_header not in {"Authorization", "X-API-Key"}:
+                problems.append(f"invalid token header for tribunal connector {tribunal}")
+            if url:
+                parsed = urlsplit(url)
+                if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+                    problems.append(f"tribunal connector {tribunal} must use HTTPS without URL credentials")
+            if homologated and (not url or not token):
+                problems.append(f"homologated tribunal connector {tribunal} is incomplete")
+            homologated_tribunal_connector = homologated_tribunal_connector or bool(homologated and url and token)
+        if self.JUDICIAL_MONITORING_PROVIDER == "tribunal_api" and not homologated_tribunal_connector:
+            problems.append("selected tribunal provider has no homologated connector")
         if self.AI_ENABLED and self.AI_PROVIDER == "gemini" and (not self.GEMINI_API_KEY or not self.GEMINI_MODEL):
             problems.append("Gemini AI enabled without API key and model")
         if self.AI_ENABLED and self.AI_PROVIDER == "openrouter" and (

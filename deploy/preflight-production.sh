@@ -45,6 +45,26 @@ if [ "$(value_of ESCAVADOR_ENABLED)" = true ]; then
   require_keys ESCAVADOR_API_TOKEN ESCAVADOR_CALLBACK_TOKEN
 fi
 
+judicial_provider=$(value_of JUDICIAL_MONITORING_PROVIDER)
+case "$judicial_provider" in datajud|escavador|djen|domicilio|tribunal_api) ;; *) fail "unsupported JUDICIAL_MONITORING_PROVIDER" ;; esac
+djen_url=$(value_of DJEN_API_URL)
+[ -n "$djen_url" ] || djen_url=https://comunicaapi.pje.jus.br/api/v1/comunicacao
+case "$djen_url" in https://comunicaapi.pje.jus.br/*|https://hcomunicaapi.cnj.jus.br/*) ;; *) fail "DJEN_API_URL must use an approved CNJ HTTPS host" ;; esac
+domicilio_url=$(value_of DOMICILIO_JUDICIAL_API_URL)
+domicilio_token=$(value_of DOMICILIO_JUDICIAL_API_TOKEN)
+domicilio_homologated=$(value_of DOMICILIO_JUDICIAL_HOMOLOGATED)
+domicilio_header=$(value_of DOMICILIO_JUDICIAL_TOKEN_HEADER)
+[ -n "$domicilio_header" ] || domicilio_header=Authorization
+case "$domicilio_header" in Authorization|X-API-Key) ;; *) fail "invalid DOMICILIO_JUDICIAL_TOKEN_HEADER" ;; esac
+if [ -n "$domicilio_url" ] || [ -n "$domicilio_token" ] || [ "$domicilio_homologated" = true ]; then
+  [ -n "$domicilio_url" ] && [ -n "$domicilio_token" ] || fail "Domicilio Judicial configuration is incomplete"
+  case "$domicilio_url" in https://*@*|https://*) ;; *) fail "Domicilio Judicial endpoint must use HTTPS" ;; esac
+  case "$domicilio_url" in https://*@*) fail "Domicilio Judicial endpoint must not contain URL credentials" ;; esac
+fi
+[ "$judicial_provider" != domicilio ] || [ "$domicilio_homologated" = true ] || fail "selected Domicilio Judicial provider is not homologated"
+tribunal_connectors=$(value_of TRIBUNAL_SOURCE_CONNECTORS)
+[ "$judicial_provider" != tribunal_api ] || { [ -n "$tribunal_connectors" ] && [ "$tribunal_connectors" != '{}' ]; } || fail "selected tribunal provider has no configured connector"
+
 if [ "$mode" = go-live ]; then
   require_keys BACKEND_SENTRY_DSN FRONTEND_SENTRY_DSN OPENROUTER_API_KEY OPENROUTER_MODEL RESEND_API_KEY RESEND_FROM_EMAIL RESEND_WEBHOOK_SECRET EVOLUTION_API_KEY WEB_PUSH_VAPID_PUBLIC_KEY WEB_PUSH_VAPID_PRIVATE_KEY WEB_PUSH_VAPID_SUBJECT R2_ACCOUNT_ID R2_BUCKET_NAME R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY BACKUP_DIRECTORY BACKUP_PASSPHRASE_FILE BACKUP_OFFSITE_SSH_DESTINATION BACKUP_OFFSITE_SSH_KEY_PATH
   for flag in AI_ENABLED ACCOUNT_EMAILS_ENABLED RESEND_ENABLED EVOLUTION_ENABLED WEB_PUSH_ENABLED; do

@@ -70,3 +70,43 @@ class SecurityGuardsTests(unittest.TestCase):
             ESCAVADOR_CALLBACK_TOKEN="callback-token",
             **safe_settings,
         )
+
+    def test_hardened_judicial_connectors_fail_closed(self):
+        safe_settings = {
+            "SECRET_KEY": "a" * 64,
+            "COOKIE_SECURE": True,
+            "DATABASE_URL": "postgresql+asyncpg://app:secure-db-pass@db.example.test:5432/legaltech",
+            "REDIS_URL": "redis://:secure-redis-pass@redis.example.test:6379/0",
+            "CORS_ORIGINS": ["https://app.example.test"],
+            "ALLOWED_HOSTS": ["app.example.test"],
+            "FRONTEND_URL": "https://app.example.test",
+            "ACCOUNT_TOKEN_PEPPER": "test-pepper-" * 4,
+            "MFA_ENCRYPTION_KEY": "A" * 43 + "=",
+            "_env_file": None,
+        }
+        with self.assertRaises(ValidationError) as caught:
+            Settings(ENVIRONMENT="production", DJEN_API_URL="https://attacker.invalid/djen", **safe_settings)
+        self.assertIn("approved CNJ HTTPS host", str(caught.exception))
+
+        with self.assertRaises(ValidationError) as caught:
+            Settings(
+                ENVIRONMENT="production",
+                DOMICILIO_JUDICIAL_API_URL="https://domicilio.example.test/events",
+                **safe_settings,
+            )
+        self.assertIn("Domicilio Judicial configuration is incomplete", str(caught.exception))
+
+        with self.assertRaises(ValidationError) as caught:
+            Settings(
+                ENVIRONMENT="production",
+                JUDICIAL_MONITORING_PROVIDER="tribunal_api",
+                TRIBUNAL_SOURCE_CONNECTORS={
+                    "tjsp": {
+                        "url": "https://tribunal.example.test/events",
+                        "token": "secret",
+                        "homologated": False,
+                    }
+                },
+                **safe_settings,
+            )
+        self.assertIn("no homologated connector", str(caught.exception))
