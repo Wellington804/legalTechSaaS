@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { Globe2, Mail, MapPin, MessageCircle, Phone } from "lucide-react";
 import { apiBlob } from "@/lib/api-client";
 import {
@@ -50,12 +50,26 @@ function LayerContent({ layer, assets, compact }: { layer: BrandLayer; assets: B
   </span>;
 }
 
-export function BrandLivePreview({ name, settings, documentType = "general", professionalData, assets = [], compact = false, referenceOverlay, selectedLayerId, onSelectLayer, onClearSelection, onChangeLayer, onDeleteLayer, showSafeArea = false, zoom = 100 }: {
+export function BrandLivePreview({ name, settings, documentType = "general", professionalData, assets = [], compact = false, referenceOverlay, selectedLayerId, onSelectLayer, onClearSelection, onChangeLayer, onDeleteLayer, showSafeArea = false, zoom = 100, onZoomChange }: {
   name: string; settings: BrandSettings; documentType?: DocumentType; professionalData?: ProfessionalData; assets?: BrandAsset[]; compact?: boolean;
   referenceOverlay?: { assetId: string; page: number; opacity: number; blendMode?: CSSProperties["mixBlendMode"] };
   selectedLayerId?: string; onSelectLayer?: (id: string) => void; onClearSelection?: () => void; onChangeLayer?: (layer: BrandLayer) => void; onDeleteLayer?: (id: string) => void; showSafeArea?: boolean; zoom?: number;
+  onZoomChange?: (updater: number | ((current: number) => number)) => void;
 }) {
-  const tokens = materializeBrandText(settings, professionalData); const sample = samples[documentType];
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || compact || !onZoomChange) return;
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const step = e.ctrlKey ? 5 : 10;
+      const change = e.deltaY < 0 ? step : -step;
+      onZoomChange(current => Math.max(40, Math.min(250, current + change)));
+    };
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => el.removeEventListener("wheel", handleWheel);
+  }, [compact, onZoomChange]);
+  const tokens = materializeBrandText(settings, professionalData); const sample = samples[documentType] || samples.general;
   const logo = assets.find(asset => asset.id === tokens.logo_asset_id); const watermark = assets.find(asset => asset.id === tokens.watermark_asset_id); const background = assets.find(asset => asset.id === tokens.background_asset_id);
   const watermarkTransform = tokens.watermark_position === "diagonal" ? `translate(-50%, -50%) rotate(${-tokens.watermark_rotation_deg}deg)` : "translate(-50%, -50%)";
   const exact = tokens.layout_mode === "exact"; const composed = tokens.layout_mode === "composed"; const [guides, setGuides] = useState({ x: false, y: false });
@@ -102,9 +116,9 @@ export function BrandLivePreview({ name, settings, documentType = "general", pro
   };
   return <section aria-label={`Pré-visualização da identidade para ${documentTypeLabels[documentType]}`} className="min-w-0 space-y-2">
     {!compact && <div><h3 className="text-sm font-semibold">Documento em tempo real</h3><p className="text-xs text-zinc-400">Amostra visual de {documentTypeLabels[documentType].toLocaleLowerCase("pt-BR")}. Confira também o PDF real.</p></div>}
-    <div className={compact ? "" : "overflow-x-auto overflow-y-visible pb-2"}>
+    <div ref={containerRef} className={compact ? "" : "overflow-x-auto overflow-y-visible pb-4 pt-1 transition-transform"}>
     <div className={`relative mx-auto aspect-[210/297] ${compact ? "w-full max-w-[15rem]" : ""}`} style={compact ? undefined : { width: `${zoom}%`, maxWidth: `${36 * zoom / 100}rem` }}>
-    <div data-brand-paper onPointerDown={() => onClearSelection?.()} className="paper-shadow-3d absolute left-0 top-0 h-full w-full overflow-hidden text-zinc-900"
+    <div data-brand-paper onPointerDown={() => onClearSelection?.()} className="paper-shadow-3d absolute left-0 top-0 h-full w-full overflow-hidden text-zinc-900 shadow-2xl rounded-sm ring-1 ring-black/5"
       style={{ fontFamily: family(tokens.font_family), color: tokens.text_color, backgroundColor: tokens.paper_color, padding: `${Math.min(tokens.margin_top_mm / 2.97, 28)}% ${Math.min(tokens.margin_right_mm / 2.1, 24)}% ${Math.min(tokens.margin_bottom_mm / 2.97, 28)}% ${Math.min(tokens.margin_left_mm / 2.1, 24)}%`, width: compact ? "100%" : `${10000 / zoom}%`, height: compact ? "100%" : `${10000 / zoom}%`, transform: compact ? undefined : `scale(${zoom / 100})`, transformOrigin: "top left" }}>
       {exact && background && <PrivateBrandImage asset={background} alt="Fundo fiel do papel timbrado" className="pointer-events-none absolute inset-0 h-full w-full object-fill" />}
       {!exact && !composed && <header className={`absolute left-[8%] right-[8%] min-h-[9%] pb-2 whitespace-pre-line ${alignments[tokens.header_alignment]}`} style={{ top: `${(logo ? tokens.logo_top_mm : tokens.header_top_mm) / 2.97}%`, borderColor: tokens.accent_color, fontFamily: family(tokens.utility_font_family), fontSize: `${Math.max(5, tokens.header_font_size_pt * (compact ? .42 : .6))}px`, letterSpacing: `${tokens.header_letter_spacing_pt}px`, textTransform: tokens.header_uppercase ? "uppercase" : undefined }}>
@@ -114,7 +128,7 @@ export function BrandLivePreview({ name, settings, documentType = "general", pro
       {!exact && !composed && (tokens.watermark_text || watermark) && <div aria-hidden="true" className="pointer-events-none absolute w-[72%] text-center font-semibold" style={{ left: `${tokens.watermark_x_percent}%`, top: `${tokens.watermark_y_percent}%`, color: tokens.primary_color, opacity: tokens.watermark_opacity, transform: watermarkTransform, fontSize: `${Math.max(14, tokens.watermark_font_size_pt * (compact ? .18 : .28))}px` }}>{watermark ? <PrivateBrandImage asset={watermark} alt="" className="mx-auto max-h-40 max-w-full object-contain" /> : tokens.watermark_text}</div>}
       {showSafeArea && !compact && <div aria-hidden="true" className="pointer-events-none absolute border border-dashed border-emerald-600/70" style={{ left: `${tokens.margin_left_mm / 2.1}%`, right: `${tokens.margin_right_mm / 2.1}%`, top: `${tokens.margin_top_mm / 2.97}%`, bottom: `${tokens.margin_bottom_mm / 2.97}%`, zIndex: 110 }}><span className="absolute left-1 top-1 rounded bg-emerald-700/90 px-1 text-[7px] text-white">Área segura do texto</span></div>}
       {guides.x && <span aria-hidden="true" className="pointer-events-none absolute bottom-0 left-1/2 top-0 border-l border-blue-500" style={{ zIndex: 119 }} />}{guides.y && <span aria-hidden="true" className="pointer-events-none absolute left-0 right-0 top-1/2 border-t border-blue-500" style={{ zIndex: 119 }} />}
-      {composed && tokens.layout_layers.filter(layer => layer.page_scope !== "continuation" && layer.visible !== false).sort((a, b) => a.z_index - b.z_index).map(layer => <div key={layer.id}
+      {composed && (tokens.layout_layers || []).filter(layer => layer.page_scope !== "continuation" && layer.visible !== false).sort((a, b) => a.z_index - b.z_index).map(layer => <div key={layer.id}
         data-brand-layer={layer.id}
         role={onSelectLayer && !compact ? "button" : undefined} tabIndex={onSelectLayer && !compact ? 0 : undefined} aria-label={onSelectLayer && !compact ? `Editar ${layer.label}${layer.locked ? " (bloqueada)" : ""}` : undefined}
         onClick={event => { event.stopPropagation(); onSelectLayer?.(layer.id); }} onKeyDown={event => keyboardMove(event, layer)} onPointerDown={event => startEdit(event, layer)}
@@ -123,7 +137,7 @@ export function BrandLivePreview({ name, settings, documentType = "general", pro
         <LayerContent layer={layer} assets={assets} compact={compact} />
         {selectedLayerId === layer.id && onChangeLayer && !compact && !layer.locked && <>{(["nw", "ne", "sw", "se"] as const).map(handle => <span key={handle} aria-hidden="true" onPointerDown={event => startEdit(event, layer, handle)} className={`absolute h-4 w-4 rounded-full border-2 border-white bg-blue-600 shadow touch-none ${handle.includes("n") ? "-top-2" : "-bottom-2"} ${handle.includes("w") ? "-left-2" : "-right-2"} ${handle === "nw" || handle === "se" ? "cursor-nwse-resize" : "cursor-nesw-resize"}`} />)}<span aria-hidden="true" onPointerDown={event => startEdit(event, layer, "rotate")} className="absolute -top-8 left-1/2 h-4 w-4 -translate-x-1/2 cursor-grab rounded-full border-2 border-white bg-amber-500 shadow touch-none" /></>}
       </div>)}
-      <main style={{ fontSize: `${Math.max(6, tokens.body_size_pt * (compact ? .48 : .65))}px`, lineHeight: tokens.line_spacing }}><p className="mb-[5%] text-right text-[0.8em]">Cidade, 2 de setembro de 2026.</p>{tokens.show_document_title && <h4 className={`mb-[8%] text-center font-semibold ${tokens.heading_uppercase ? "uppercase" : ""}`} style={{ color: tokens.primary_color, fontFamily: family(tokens.heading_font_family), letterSpacing: `${tokens.heading_letter_spacing_pt}px`, fontSize: `${Math.max(8, tokens.heading_size_pt * (compact ? .52 : .72))}px` }}>{sample.title}</h4>}{sample.paragraphs.map(paragraph => <p key={paragraph} className="mb-[5%] text-justify">{paragraph}</p>)}<div className="mt-[10%] space-y-[5%]"><div className="h-px bg-zinc-200" /><div className="h-px w-5/6 bg-zinc-200" /><div className="h-px w-4/6 bg-zinc-200" /></div></main>
+      <main style={{ fontSize: `${Math.max(6, tokens.body_size_pt * (compact ? .48 : .65))}px`, lineHeight: tokens.line_spacing }}><p className="mb-[5%] text-right text-[0.8em]">Cidade, 2 de setembro de 2026.</p>{tokens.show_document_title && <h4 className={`mb-[8%] text-center font-semibold ${tokens.heading_uppercase ? "uppercase" : ""}`} style={{ color: tokens.primary_color, fontFamily: family(tokens.heading_font_family), letterSpacing: `${tokens.heading_letter_spacing_pt}px`, fontSize: `${Math.max(8, tokens.heading_size_pt * (compact ? .52 : .72))}px` }}>{sample?.title || "Documento jurídico"}</h4>}{(sample?.paragraphs || []).map(paragraph => <p key={paragraph} className="mb-[5%] text-justify">{paragraph}</p>)}<div className="mt-[10%] space-y-[5%]"><div className="h-px bg-zinc-200" /><div className="h-px w-5/6 bg-zinc-200" /><div className="h-px w-4/6 bg-zinc-200" /></div></main>
       {!exact && !composed && <footer className={`absolute left-[8%] right-[8%] pt-2 whitespace-pre-line ${alignments[tokens.footer_alignment]}`} style={{ bottom: `${tokens.footer_bottom_mm / 2.97}%`, borderColor: tokens.accent_color, fontFamily: family(tokens.utility_font_family), fontSize: `${Math.max(5, tokens.footer_font_size_pt * (compact ? .38 : .55))}px`, letterSpacing: `${tokens.footer_letter_spacing_pt}px`, textTransform: tokens.footer_uppercase ? "uppercase" : undefined }}>{tokens.footer_divider && <span className={`mb-2 block ${tokens.footer_alignment === "center" ? "mx-auto" : tokens.footer_alignment === "right" ? "ml-auto" : ""}`} style={{ width: `${tokens.footer_divider_width_percent}%`, borderTop: `${Math.max(1, tokens.footer_divider_thickness_pt)}px solid ${tokens.accent_color}` }} />}{tokens.footer_text || "Informações profissionais"}{tokens.page_numbers && <span className="float-right">1</span>}</footer>}
       {composed && tokens.page_numbers && <span className="absolute bottom-[1.5%] right-[2%] text-[7px]">1</span>}{exact && tokens.page_numbers && <span className="absolute bottom-[2%] right-[3%] text-[7px]">1</span>}
       {!!referenceOverlay?.opacity && <PrivateBrandImage endpoint={`/branding/assets/${referenceOverlay.assetId}/pages/${referenceOverlay.page}`} alt="Comparação com a referência" className="pointer-events-none absolute inset-0 h-full w-full object-fill" style={{ opacity: referenceOverlay.opacity, mixBlendMode: referenceOverlay.blendMode }} />}

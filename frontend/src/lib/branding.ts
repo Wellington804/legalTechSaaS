@@ -15,6 +15,11 @@ export const documentTypeLabels: Record<DocumentType, string> = {
   notice: "Notificação", correspondence: "Correspondência",
 };
 
+export const ZOOM_PRESETS = [50, 75, 100, 125, 150, 200] as const;
+export function clampZoom(zoom: number, min = 40, max = 250): number {
+  return Math.max(min, Math.min(max, Math.round(zoom)));
+}
+
 export const PROFESSIONAL_FIELDS = [
   "professional_name", "oab", "professional_email", "professional_phone", "professional_address",
   "office_name", "office_email", "office_phone", "office_address", "website",
@@ -121,14 +126,27 @@ export const brandSettingLabels: Record<keyof BrandSettings, string> = {
 };
 
 export function effectiveBrandSettings(settings: BrandSettings, variants: BrandVariants, type: DocumentType): BrandSettings {
-  return type === "general" ? settings : { ...settings, ...(variants[type] || {}) };
+  const merged = type === "general" ? settings : { ...settings, ...(variants?.[type] || {}) };
+  return {
+    ...defaultBrandSettings,
+    ...merged,
+    layout_layers: merged.layout_layers || defaultBrandSettings.layout_layers,
+    header_fields: merged.header_fields || defaultBrandSettings.header_fields,
+    footer_fields: merged.footer_fields || defaultBrandSettings.footer_fields,
+    professional_overrides: merged.professional_overrides || defaultBrandSettings.professional_overrides,
+  };
 }
 
 export function materializeBrandText(settings: BrandSettings, data?: ProfessionalData): BrandSettings {
-  const values = Object.fromEntries((data?.fields || []).map(field => [field.key, settings.professional_overrides[field.key] || field.value]));
-  const lines = (keys: ProfessionalField[], custom: string) => [...keys.map(key => values[key]).filter(Boolean), custom].filter(Boolean).join("\n");
-  return { ...settings, header_text: lines(settings.header_fields, settings.header_text), footer_text: lines(settings.footer_fields, settings.footer_text),
-    layout_layers: settings.layout_layers.map(layer => layer.binding ? { ...layer, text: values[layer.binding] || "Dado ainda não cadastrado" } : layer) };
+  const overrides = settings.professional_overrides || {};
+  const values = Object.fromEntries((data?.fields || []).map(field => [field.key, overrides[field.key] || field.value]));
+  const lines = (keys: ProfessionalField[] = [], custom = "") => [...(keys || []).map(key => values[key]).filter(Boolean), custom].filter(Boolean).join("\n");
+  return {
+    ...settings,
+    header_text: lines(settings.header_fields || [], settings.header_text || ""),
+    footer_text: lines(settings.footer_fields || [], settings.footer_text || ""),
+    layout_layers: (settings.layout_layers || []).map(layer => layer.binding ? { ...layer, text: values[layer.binding] || "Dado ainda não cadastrado" } : layer),
+  };
 }
 
 export function moveBrandLayerToEdge(layers: BrandLayer[], selectedId: string, edge: "back" | "front"): BrandLayer[] {

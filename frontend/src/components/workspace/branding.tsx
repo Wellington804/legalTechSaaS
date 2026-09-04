@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type Dispatch, type FormEvent, type SetStateAction } from "react";
-import { Archive, ArrowDown, ArrowLeft, ArrowUp, CheckCircle2, Copy, Eye, EyeOff, FileText, GripVertical, Lock, Palette, Plus, Redo2, Sparkles, Trash2, Undo2, Unlock, Upload, X } from "lucide-react";
+import { Archive, ArrowDown, ArrowLeft, ArrowUp, CheckCircle2, ChevronRight, Copy, Eye, EyeOff, FileText, GripVertical, Lock, Palette, Plus, Redo2, Sparkles, Trash2, Undo2, Unlock, Upload, X } from "lucide-react";
 import { api, apiBlob, apiClient } from "@/lib/api-client";
 import { isOfficeAdminRole, useUser } from "@/context/user-context";
 import {
@@ -77,8 +77,8 @@ export function Branding() {
   return <Page title="Identidade documental" subtitle="Organize identidades pessoais e do escritório. Cada publicação fica preservada para manter o histórico dos documentos.">
     <State loading={profiles.loading || capabilities.loading} error={profiles.error || capabilities.error || error} />
     <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-semibold">Suas identidades</h2><p className="text-sm text-zinc-400">Abra uma identidade para editar com prévia em tempo real.</p></div>{canCreate && <button type="button" className={primary} onClick={() => setCreating(true)}>Nova identidade</button>}</div>
-    {!profiles.loading && !profiles.data?.items.length && <section className="rounded-2xl border border-dashed border-zinc-700 p-8 text-center"><Palette className="mx-auto text-blue-300" aria-hidden="true" /><h2 className="mt-3 text-lg font-semibold">Crie sua primeira identidade</h2><p className="mt-1 text-sm text-zinc-400">Comece por um estilo ou use um documento como referência.</p>{canCreate && <button className={`${primary} mt-4`} onClick={() => setCreating(true)}>Começar agora</button>}</section>}
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{profiles.data?.items.map(profile => <article key={profile.id} className="group overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/25 transition hover:border-blue-700">
+    {!profiles.loading && !(profiles.data?.items || []).length && <section className="rounded-2xl border border-dashed border-zinc-700 p-8 text-center"><Palette className="mx-auto text-blue-300" aria-hidden="true" /><h2 className="mt-3 text-lg font-semibold">Crie sua primeira identidade</h2><p className="mt-1 text-sm text-zinc-400">Comece por um estilo ou use um documento como referência.</p>{canCreate && <button className={`${primary} mt-4`} onClick={() => setCreating(true)}>Começar agora</button>}</section>}
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{(profiles.data?.items || []).map(profile => <article key={profile.id} className="group overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/25 transition hover:border-blue-700">
       <button type="button" className="block w-full text-left" onClick={() => { setOpenAt("identity"); setOpenInAi(false); setSelected(profile); }}>
         <div className="bg-zinc-950/60 p-4"><BrandLivePreview name={profile.name} settings={effectiveBrandSettings(profile.settings, profile.variants || {}, "general")} compact /></div>
         <div className="space-y-2 p-4"><div className="flex items-start justify-between gap-2"><h2 className="font-semibold">{profile.name}</h2><span className={`rounded-full px-2 py-1 text-xs ${profile.published_version ? "bg-emerald-950 text-emerald-300" : "bg-amber-950 text-amber-300"}`}>{profile.published_version ? `Publicada v${profile.published_version}` : "Rascunho"}</span></div><p className="text-sm text-zinc-400">{profile.scope === "office" ? "Identidade do escritório" : "Identidade pessoal"}</p><span className="inline-flex min-h-11 items-center text-sm text-blue-300">Abrir estúdio</span></div>
@@ -96,18 +96,20 @@ export function Branding() {
 
 type DraftSnapshot = { name: string; settings: BrandSettings; variants: BrandVariants };
 function BrandEditor({ initial, initialElement, initialMobileTab, capabilities, onBack, onChanged }: { initial: BrandProfile; initialElement: EditorElement; initialMobileTab: "edit" | "ai"; capabilities: BrandCapabilities; onBack: () => void; onChanged: () => void }) {
-  const [profile, setProfile] = useState(initial); const [name, setName] = useState(initial.name); const [settings, setSettings] = useState(initial.settings); const [variants, setVariants] = useState<BrandVariants>(initial.variants || {});
+  const initialSettings = useMemo(() => effectiveBrandSettings(initial.settings, initial.variants || {}, "general"), [initial.settings, initial.variants]);
+  const [profile, setProfile] = useState(initial); const [name, setName] = useState(initial.name); const [settings, setSettings] = useState(initialSettings); const [variants, setVariants] = useState<BrandVariants>(initial.variants || {});
   const [documentType, setDocumentType] = useState<DocumentType>("general"); const [element, setElement] = useState<EditorElement>(initialElement); const [mobileTab, setMobileTab] = useState<"edit" | "preview" | "ai">(initialMobileTab);
   const [saveState, setSaveState] = useState<"saved" | "saving" | "unsaved" | "failed" | "conflict">("saved"); const [error, setError] = useState(""); const [message, setMessage] = useState(""); const [busy, setBusy] = useState(false); const [approved, setApproved] = useState(false); const [pdf, setPdf] = useState<Blob | null>(null); const [referencePdf, setReferencePdf] = useState<{ blob: Blob; filename: string } | null>(null);
   const [kind, setKind] = useState<BrandAsset["kind"]>("reference"); const [uploading, setUploading] = useState(false); const [brief, setBrief] = useState(""); const [referenceIds, setReferenceIds] = useState<string[]>([]); const [referencePages, setReferencePages] = useState<Record<string, number>>({}); const [referenceIntent, setReferenceIntent] = useState<ReferenceIntent>("reproduce"); const [generateLogo, setGenerateLogo] = useState(false); const [proposals, setProposals] = useState<Proposal[]>([]);
   const [selectedReferenceId, setSelectedReferenceId] = useState(""); const [crop, setCrop] = useState<Crop>({ x_percent: 10, y_percent: 5, width_percent: 80, height_percent: 20 }); const [overlayOpacity, setOverlayOpacity] = useState(0); const [compareMode, setCompareMode] = useState<"overlay" | "side" | "difference">("overlay");
   const [previewZoom, setPreviewZoom] = useState(100);
-  const [selectedLayerId, setSelectedLayerId] = useState(initial.settings.layout_layers[0]?.id || "");
+  const [aiExpanded, setAiExpanded] = useState(true);
+  const [selectedLayerId, setSelectedLayerId] = useState(initialSettings.layout_layers[0]?.id || "");
   const [saveGeneration, setSaveGeneration] = useState(0);
   const assets = useResource<Items<BrandAsset>>(profile.can_edit ? `/branding/profiles/${profile.id}/assets` : null);
   const versions = useResource<Items<BrandVersion>>(profile.can_edit ? `/branding/profiles/${profile.id}/versions` : null);
   const professional = useResource<ProfessionalData>(profile.can_edit ? `/branding/profiles/${profile.id}/professional-data` : null);
-  const draftRef = useRef({ name, settings, variants }); const revisionRef = useRef(profile.revision); const savedSignature = useRef(signature(initial.name, initial.settings, initial.variants || {})); const failedSignature = useRef(""); const inFlight = useRef(false);
+  const draftRef = useRef({ name, settings, variants }); const revisionRef = useRef(profile.revision); const savedSignature = useRef(signature(initial.name, initialSettings, initial.variants || {})); const failedSignature = useRef(""); const inFlight = useRef(false);
   const undoRef = useRef<DraftSnapshot[]>([]); const redoRef = useRef<DraftSnapshot[]>([]); const lastHistoryAt = useRef(0); const [, setHistoryVersion] = useState(0);
   draftRef.current = { name, settings, variants };
   const currentSignature = signature(name, settings, variants); const dirty = currentSignature !== savedSignature.current;
@@ -216,27 +218,439 @@ function BrandEditor({ initial, initialElement, initialMobileTab, capabilities, 
   function restoreVersion(version: BrandVersion) { remember(); restore({ name, settings: version.settings, variants: version.variants || {} }); setMessage(`A versão ${version.version} foi restaurada como rascunho. Nada foi publicado ainda.`); }
 
   const saveLabel = saveState === "saving" ? "Salvando…" : saveState === "saved" ? "Salvo" : saveState === "conflict" ? "Conflito de edição" : saveState === "failed" ? "Não foi possível salvar" : "Alterações pendentes";
-  const overlayReference = assets.data?.items.find(asset => asset.id === selectedReferenceId && asset.kind === "reference" && asset.content_type !== "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-  return <div className="space-y-4">
-    <header className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-800 bg-zinc-900/25 p-3"><div className="flex min-w-0 items-center gap-2"><button type="button" className={`${button} gap-2`} aria-label="Voltar às identidades" onClick={onBack}><ArrowLeft aria-hidden="true" size={17} /> <span className="hidden sm:inline">Identidades</span></button><div className="min-w-0"><input aria-label="Nome da identidade" className="w-full min-w-0 bg-transparent text-lg font-semibold outline-none focus:ring-2 focus:ring-blue-500" value={name} maxLength={100} disabled={!profile.can_edit} onChange={event => { remember(); setName(event.target.value); }} /><p className="text-xs text-zinc-400">{profile.scope === "office" ? "Escritório" : "Pessoal"} · r{revisionRef.current} · <span role="status">{profile.can_edit ? saveLabel : "Somente leitura"}</span></p></div></div>{profile.can_edit && <div className="flex flex-wrap gap-2"><button type="button" className={button} aria-label="Desfazer" title="Desfazer" disabled={!undoRef.current.length} onClick={undo}><Undo2 aria-hidden="true" size={16} /></button><button type="button" className={button} aria-label="Refazer" title="Refazer" disabled={!redoRef.current.length} onClick={redo}><Redo2 aria-hidden="true" size={16} /></button><Action className={`${button} gap-2`} run={duplicate}><Copy aria-hidden="true" size={16} /> Duplicar</Action><Action className={`${button} gap-2`} run={archive}><Archive aria-hidden="true" size={16} /> Arquivar</Action><button type="button" className={primary} disabled={!dirty || busy || saveState === "conflict"} onClick={() => void persist()}>{saveState === "saving" ? "Salvando…" : "Salvar agora"}</button></div>}</header>
-    <State error={error} />{message && <p role="status" className="rounded-lg border border-emerald-900 bg-emerald-950/25 p-3 text-sm text-emerald-200">{message}</p>}
-    <nav aria-label="Modo do estúdio no celular" className="grid grid-cols-3 gap-2 lg:hidden">{(["edit", "preview", "ai"] as const).map(tab => <button key={tab} className={mobileTab === tab ? primary : button} aria-pressed={mobileTab === tab} onClick={() => setMobileTab(tab)}>{tab === "edit" ? "Editar" : tab === "preview" ? "Visualizar" : "IA"}</button>)}</nav>
-    <div className="flex max-w-full gap-2 overflow-x-auto pb-1" aria-label="Tipo de documento">{DOCUMENT_TYPES.map(type => <button key={type} type="button" className={`${documentType === type ? primary : button} shrink-0 whitespace-nowrap`} aria-pressed={documentType === type} onClick={() => setDocumentType(type)}>{documentTypeLabels[type]}{type !== "general" && variants[type] && <span className="ml-1 text-xs">•</span>}</button>)}</div>
-    <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(17rem,.78fr)_minmax(24rem,1.35fr)_minmax(18rem,.9fr)]">
-      <aside className={`${mobileTab === "edit" ? "block" : "hidden"} min-w-0 space-y-3 lg:block`}><nav aria-label="Elementos da identidade" className="grid gap-2">{editorAreas.map(area => <button key={area.id} type="button" aria-current={element === area.id ? "page" : undefined} onClick={() => setElement(area.id)} className={`rounded-xl border p-3 text-left transition ${element === area.id ? "border-blue-500 bg-blue-950/20" : "border-zinc-800 bg-zinc-900/25 hover:border-zinc-600"}`}><span className="block text-sm font-medium">{area.label}</span><span className="mt-1 block text-xs text-zinc-400">{area.hint}</span></button>)}</nav><EditorControls element={element} scope={profile.scope} capabilities={capabilities} settings={effective} baseSettings={settings} assets={assets.data?.items || []} professional={professional.data} documentType={documentType} busy={busy || uploading || !profile.can_edit} change={change} toggleProfessional={toggleProfessional} kind={kind} setKind={setKind} upload={upload} openReference={openReference} preview={preview} publish={publish} approved={approved} setApproved={setApproved} dirty={dirty} versions={versions} restoreVersion={restoreVersion} preflight={preflight} selectedReferenceId={selectedReferenceId} setSelectedReferenceId={setSelectedReferenceId} referencePages={referencePages} setReferencePages={setReferencePages} crop={crop} setCrop={setCrop} extractReference={extractReference} selectedLayerId={selectedLayerId} setSelectedLayerId={setSelectedLayerId} setLayers={setLayers} deleteLayer={deleteLayer} editImage={() => setElement("references")} /></aside>
-      <main className={`${mobileTab === "preview" ? "block" : "hidden"} min-w-0 rounded-2xl border border-zinc-800 bg-zinc-950/40 p-3 lg:block`}><div className="lg:sticky lg:top-20">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><span className="text-xs font-medium text-zinc-400">Zoom da folha</span><div className="flex items-center gap-1" role="group" aria-label="Zoom da pré-visualização"><button type="button" className={button} aria-label="Diminuir zoom" disabled={previewZoom === 75} onClick={() => setPreviewZoom(value => Math.max(75, value - 25))}>−</button><button type="button" className={`${button} min-w-20`} aria-label="Ajustar pré-visualização à tela" onClick={() => setPreviewZoom(100)}>{previewZoom}%</button><button type="button" className={button} aria-label="Aumentar zoom" disabled={previewZoom === 200} onClick={() => setPreviewZoom(value => Math.min(200, value + 25))}>+</button></div></div>
-        {overlayReference && <div className="mb-3 flex flex-wrap gap-2" aria-label="Comparar com a referência">{([['overlay', 'Sobrepor'], ['side', 'Lado a lado'], ['difference', 'Diferenças']] as const).map(([value, label]) => <button type="button" key={value} className={compareMode === value ? primary : button} aria-pressed={compareMode === value} onClick={() => setCompareMode(value)}>{label}</button>)}</div>}
-        <div className={compareMode === "side" && overlayReference ? "grid gap-3 xl:grid-cols-2" : ""}>{compareMode === "side" && overlayReference && <div className="overflow-hidden rounded-xl border border-zinc-700 bg-white"><PrivateReferencePage asset={overlayReference} page={referencePages[overlayReference.id] || 1} /></div>}<BrandLivePreview name={name} settings={effective} documentType={documentType} professionalData={professional.data || undefined} assets={assets.data?.items || []} selectedLayerId={selectedLayerId} onSelectLayer={id => { setSelectedLayerId(id); setElement("layers"); }} onClearSelection={() => setSelectedLayerId("")} onChangeLayer={changeLayer} onDeleteLayer={deleteLayer} showSafeArea={element === "layers" || element === "header" || element === "footer" || element === "paper"} zoom={previewZoom} referenceOverlay={overlayReference && compareMode !== "side" ? { assetId: overlayReference.id, page: referencePages[overlayReference.id] || 1, opacity: compareMode === "difference" ? 1 : overlayOpacity, blendMode: compareMode === "difference" ? "difference" : undefined } : undefined} /></div>
-        {overlayReference && compareMode === "overlay" && <Field label={`Sobrepor referência (${Math.round(overlayOpacity * 100)}%)`}><input className="w-full" type="range" min="0" max="0.8" step="0.05" value={overlayOpacity} onChange={event => setOverlayOpacity(event.target.valueAsNumber)} /></Field>}{selectedLayerId && <button type="button" className={`${primary} sticky bottom-20 mt-3 w-full lg:hidden`} onClick={() => { setElement("layers"); setMobileTab("edit"); }}>Ajustar camada selecionada</button>}{documentType !== "general" && <p className="mt-3 text-center text-xs text-zinc-400">Esta variação herda a identidade geral. Os ajustes feitos em margens, cabeçalho e rodapé valem somente para {documentTypeLabels[documentType].toLocaleLowerCase("pt-BR")}.</p>}
-      </div></main>
-      <aside className={`${mobileTab === "ai" ? "block" : "hidden"} min-w-0 space-y-3 lg:block`}><section className="rounded-2xl border border-blue-900/70 bg-blue-950/15 p-4"><div className="flex items-center gap-2"><Sparkles className="text-blue-300" aria-hidden="true" size={19} /><h2 className="font-semibold">Assistente de design</h2></div><p className="mt-1 text-xs text-zinc-400">Converse sobre o elemento aberto. A IA propõe mudanças; você escolhe o que aplicar.</p>{!capabilities.ai_available && <p className="mt-3 text-sm text-amber-300">O provedor de IA ainda não está disponível.</p>}
-        <div aria-live="polite" className="mt-4 space-y-3">{proposals.map(proposal => <ProposalCard key={proposal.id} proposal={proposal} current={effective} assets={assets.data?.items || []} setProposals={setProposals} apply={applyProposal} />)}{!proposals.length && <div className="rounded-xl border border-dashed border-zinc-700 p-3 text-sm text-zinc-400">Ex.: “Deixe o cabeçalho mais sóbrio e dê destaque à OAB sem aumentar a altura.”</div>}</div>
-        <form onSubmit={askAi} className="mt-4 space-y-3">{selectedLayerId && <div className="rounded-lg border border-blue-800 bg-blue-950/30 p-2 text-xs text-blue-200">A IA atuará primeiro na camada “{settings.layout_layers.find(layer => layer.id === selectedLayerId)?.label}”. <button type="button" className="underline" onClick={() => setSelectedLayerId("")}>Usar a identidade inteira</button></div>}<Field label="Como a referência deve ser usada?"><select className={control} value={referenceIntent} disabled={!profile.can_edit} onChange={event => setReferenceIntent(event.target.value as ReferenceIntent)}><option value="inspire">Usar como inspiração</option><option value="modernize">Modernizar mantendo a essência</option><option value="reproduce">Reconstruir com a maior fidelidade possível</option></select></Field><p className="text-xs text-zinc-400">A IA separa faixas, linhas, logotipo, marca-d'água e contatos e reserva automaticamente a área do texto.</p>{selectedLayerId && <div className="flex flex-wrap gap-2"><button type="button" className={button} onClick={() => setBrief("Alinhe esta camada com precisão e preserve as demais.")}>Alinhar</button><button type="button" className={button} onClick={() => setBrief("Torne esta camada mais discreta, mantendo a legibilidade.")}>Mais discreta</button><button type="button" className={button} onClick={() => setBrief("Aproxime esta camada da referência anexada sem alterar as demais.")}>Aproximar da referência</button></div>}{referenceIds.length > 0 && <button type="button" className={`${primary} w-full`} disabled={busy || dirty || !capabilities.ai_available || !profile.can_edit} onClick={() => void requestAi("Reconstrua esta página como um timbrado editável com máxima fidelidade. Identifique faixas, linhas, logo, marca-d'água e cada contato do rodapé, vinculando os dados profissionais corretos. Meça o cabeçalho e o rodapé e preserve uma área segura para todo o texto.")}>{busy ? "Analisando a página…" : "Analisar página e montar identidade"}</button>}<Field label="Mensagem para a IA"><textarea className={control} rows={4} minLength={10} maxLength={4000} required value={brief} disabled={!profile.can_edit} onChange={event => setBrief(event.target.value)} placeholder={`O que deseja mudar em ${editorAreas.find(area => area.id === element)?.label.toLocaleLowerCase("pt-BR") || "identidade"}?`} /></Field>
-          {!!assets.data?.items.filter(asset => asset.kind === "reference").length && <fieldset><legend className="text-xs text-zinc-400">Referências anexadas (até 3)</legend>{assets.data.items.filter(asset => asset.kind === "reference").map(asset => <div key={asset.id} className="rounded-lg border border-zinc-800 p-2"><label className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={referenceIds.includes(asset.id)} disabled={!referenceIds.includes(asset.id) && referenceIds.length >= 3} onChange={event => { setReferenceIds(current => event.target.checked ? [...current, asset.id] : current.filter(id => id !== asset.id)); if (event.target.checked) setSelectedReferenceId(asset.id); }} />{asset.filename}</label>{referenceIds.includes(asset.id) && asset.content_type === "application/pdf" && <Field label="Página que melhor representa o papel timbrado"><input className={control} type="number" min={1} max={Number(asset.analysis?.identified?.pages || 200)} value={referencePages[asset.id] || 1} onChange={event => setReferencePages(current => ({ ...current, [asset.id]: event.target.valueAsNumber || 1 }))} /></Field>}</div>)}</fieldset>}
-          {capabilities.image_ai_available && <label className="flex min-h-11 items-start gap-2 text-sm"><input className="mt-1" type="checkbox" checked={generateLogo} onChange={event => setGenerateLogo(event.target.checked)} /><span>Criar também uma proposta de símbolo original. Logotipos já existentes devem ser enviados no Cabeçalho.</span></label>}
-          <button className={primary} disabled={busy || dirty || !capabilities.ai_available || !profile.can_edit}>{busy ? "Preparando sugestão…" : "Enviar e comparar"}</button>{dirty && <p className="text-xs text-amber-300">Aguarde o salvamento do rascunho antes de pedir uma sugestão.</p>}
-        </form></section></aside>
+  const overlayReference = (assets.data?.items || []).find(asset => asset.id === selectedReferenceId && asset.kind === "reference" && asset.content_type !== "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+  return <div className="space-y-3">
+    {/* Executive Studio Header */}
+    <header className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-800/80 bg-zinc-900/40 p-3 shadow-sm backdrop-blur-md">
+      <div className="flex min-w-0 items-center gap-3">
+        <button type="button" className={`${button} gap-1.5 font-medium`} aria-label="Voltar às identidades" onClick={onBack}>
+          <ArrowLeft aria-hidden="true" size={16} />
+          <span className="hidden sm:inline">Identidades</span>
+        </button>
+        <div className="h-5 w-px bg-zinc-800 hidden sm:block" />
+        <div className="min-w-0 flex items-center gap-2">
+          <input
+            aria-label="Nome da identidade"
+            className="min-w-0 max-w-[14rem] sm:max-w-[20rem] bg-transparent text-base sm:text-lg font-semibold outline-none border-b border-transparent hover:border-zinc-700 focus:border-blue-500 transition px-1"
+            value={name}
+            maxLength={100}
+            disabled={!profile.can_edit}
+            onChange={event => { remember(); setName(event.target.value); }}
+          />
+          <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full shrink-0 border ${profile.scope === "office" ? "bg-blue-950/60 text-blue-300 border-blue-800/50" : "bg-purple-950/60 text-purple-300 border-purple-800/50"}`}>
+            {profile.scope === "office" ? "Escritório" : "Pessoal"}
+          </span>
+          <span role="status" className={`hidden md:inline-flex items-center gap-1.5 text-xs px-2.5 py-0.5 rounded-full border ${saveState === "saved" ? "bg-emerald-950/30 text-emerald-300 border-emerald-900/40" : saveState === "saving" ? "bg-blue-950/30 text-blue-300 border-blue-900/40 animate-pulse" : "bg-zinc-800/40 text-zinc-300 border-zinc-700/50"}`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${saveState === "saved" ? "bg-emerald-400" : saveState === "saving" ? "bg-blue-400" : "bg-amber-400"}`} />
+            {profile.can_edit ? saveLabel : "Somente leitura"}
+          </span>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        {profile.can_edit && (
+          <>
+            <div className="flex items-center gap-1 border-r border-zinc-800 pr-2">
+              <button type="button" className={button} aria-label="Desfazer" title="Desfazer" disabled={!undoRef.current.length} onClick={undo}><Undo2 aria-hidden="true" size={15} /></button>
+              <button type="button" className={button} aria-label="Refazer" title="Refazer" disabled={!redoRef.current.length} onClick={redo}><Redo2 aria-hidden="true" size={15} /></button>
+            </div>
+            <Action className={`${button} gap-1.5 text-xs`} run={duplicate}><Copy aria-hidden="true" size={14} /> Duplicar</Action>
+            <Action className={`${button} gap-1.5 text-xs`} run={archive}><Archive aria-hidden="true" size={14} /> Arquivar</Action>
+            <button
+              type="button"
+              className={`${button} gap-1.5 text-xs ${aiExpanded ? "border-blue-700 bg-blue-950/40 text-blue-200" : "text-zinc-300"}`}
+              onClick={() => setAiExpanded(prev => !prev)}
+              aria-pressed={aiExpanded}
+              title={aiExpanded ? "Ocultar assistente IA" : "Mostrar assistente IA"}
+            >
+              <Sparkles aria-hidden="true" size={14} className={aiExpanded ? "text-blue-400" : "text-zinc-400"} />
+              <span className="hidden sm:inline">Assistente IA</span>
+            </button>
+            <button
+              type="button"
+              className={`${primary} text-xs`}
+              disabled={!dirty || busy || saveState === "conflict"}
+              onClick={() => void persist()}
+            >
+              {saveState === "saving" ? "Salvando…" : "Salvar agora"}
+            </button>
+          </>
+        )}
+      </div>
+    </header>
+
+    <State error={error} />
+    {message && <p role="status" className="rounded-xl border border-emerald-900/60 bg-emerald-950/30 p-3 text-sm text-emerald-200 flex items-center justify-between gap-2 shadow-sm"><span>{message}</span><button type="button" onClick={() => setMessage("")} className="text-emerald-400 hover:text-emerald-200"><X size={14} /></button></p>}
+
+    {/* Mobile Navigation Tabs */}
+    <nav aria-label="Modo do estúdio no celular" className="grid grid-cols-3 gap-2 lg:hidden">
+      {(["edit", "preview", "ai"] as const).map(tab => (
+        <button key={tab} className={mobileTab === tab ? primary : button} aria-pressed={mobileTab === tab} onClick={() => setMobileTab(tab)}>
+          {tab === "edit" ? "Editar" : tab === "preview" ? "Visualizar" : "IA"}
+        </button>
+      ))}
+    </nav>
+
+    {/* Document Type Selector Bar */}
+    <div className="flex items-center justify-between gap-2 overflow-x-auto pb-1" aria-label="Tipo de documento">
+      <div className="flex items-center gap-1.5 p-1 rounded-xl bg-zinc-900/30 border border-zinc-800/60 overflow-x-auto">
+        <span className="text-xs text-zinc-500 font-medium px-2 hidden sm:inline">Variação:</span>
+        {DOCUMENT_TYPES.map(type => (
+          <button
+            key={type}
+            type="button"
+            className={`px-3 py-1 rounded-lg text-xs font-medium transition shrink-0 whitespace-nowrap ${
+              documentType === type
+                ? "bg-zinc-800 text-white shadow-sm border border-zinc-700/80"
+                : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40"
+            }`}
+            aria-pressed={documentType === type}
+            onClick={() => setDocumentType(type)}
+          >
+            {documentTypeLabels[type]}
+            {type !== "general" && variants[type] && <span className="ml-1 text-[10px] text-blue-400">•</span>}
+          </button>
+        ))}
+      </div>
+      {documentType !== "general" && (
+        <span className="text-[11px] text-blue-300 hidden md:inline truncate">
+          Personalizando regras de {documentTypeLabels[documentType].toLocaleLowerCase("pt-BR")}
+        </span>
+      )}
+    </div>
+
+    {/* Studio Main Stage */}
+    <div className={`grid min-w-0 gap-4 ${aiExpanded ? "lg:grid-cols-[minmax(19rem,23rem)_1fr_minmax(18rem,21rem)]" : "lg:grid-cols-[minmax(20rem,24rem)_1fr]"}`}>
+      {/* Left Column: Categorized Inspector */}
+      <aside className={`${mobileTab === "edit" ? "block" : "hidden"} min-w-0 space-y-3 lg:block`}>
+        {/* Compact 3x3 Category Grid */}
+        <nav aria-label="Elementos da identidade" className="grid grid-cols-3 gap-1 p-1 rounded-xl border border-zinc-800/80 bg-zinc-900/40 shadow-inner">
+          {editorAreas.map(area => {
+            const active = element === area.id;
+            return (
+              <button
+                key={area.id}
+                type="button"
+                aria-current={active ? "page" : undefined}
+                onClick={() => setElement(area.id)}
+                className={`flex flex-col items-center justify-center rounded-lg px-1 py-2 text-center transition ${
+                  active
+                    ? "bg-blue-600 text-white font-medium shadow-sm shadow-blue-950"
+                    : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50"
+                }`}
+              >
+                <span className="text-xs truncate max-w-full">{area.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Controls Container */}
+        <EditorControls
+          element={element}
+          scope={profile.scope}
+          capabilities={capabilities}
+          settings={effective}
+          baseSettings={settings}
+          assets={assets.data?.items || []}
+          professional={professional.data}
+          documentType={documentType}
+          busy={busy || uploading || !profile.can_edit}
+          change={change}
+          toggleProfessional={toggleProfessional}
+          kind={kind}
+          setKind={setKind}
+          upload={upload}
+          openReference={openReference}
+          preview={preview}
+          publish={publish}
+          approved={approved}
+          setApproved={setApproved}
+          dirty={dirty}
+          versions={versions}
+          restoreVersion={restoreVersion}
+          preflight={preflight}
+          selectedReferenceId={selectedReferenceId}
+          setSelectedReferenceId={setSelectedReferenceId}
+          referencePages={referencePages}
+          setReferencePages={setReferencePages}
+          crop={crop}
+          setCrop={setCrop}
+          extractReference={extractReference}
+          selectedLayerId={selectedLayerId}
+          setSelectedLayerId={setSelectedLayerId}
+          setLayers={setLayers}
+          deleteLayer={deleteLayer}
+          editImage={() => setElement("references")}
+        />
+      </aside>
+
+      {/* Center Column: Interactive Document Canvas */}
+      <main className={`${mobileTab === "preview" ? "block" : "hidden"} min-w-0 rounded-2xl border border-zinc-800/80 bg-zinc-950/70 p-3 lg:block flex flex-col shadow-inner`}>
+        <div className="lg:sticky lg:top-16 space-y-2">
+          {/* Floating Zoom and View Toolbar */}
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800/60 pb-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-zinc-300">Prévia do documento</span>
+              <span className="text-[11px] text-zinc-500 hidden xl:inline">· Roda do mouse na folha para zoom</span>
+            </div>
+            <div className="flex items-center gap-1.5" role="group" aria-label="Zoom da pré-visualização">
+              <button
+                type="button"
+                className={`${button} h-7 w-7 p-0 flex items-center justify-center`}
+                aria-label="Diminuir zoom"
+                disabled={previewZoom <= 50}
+                onClick={() => setPreviewZoom(v => Math.max(50, v - 25))}
+              >
+                −
+              </button>
+              <div className="hidden sm:flex items-center gap-1">
+                {[50, 75, 100, 150].map(z => (
+                  <button
+                    key={z}
+                    type="button"
+                    className={`px-2 py-0.5 rounded text-[11px] font-medium transition ${previewZoom === z ? "bg-blue-600 text-white" : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50"}`}
+                    onClick={() => setPreviewZoom(z)}
+                  >
+                    {z}%
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                className={`${button} h-7 px-2 font-mono text-xs min-w-14 text-center`}
+                aria-label="Ajustar pré-visualização à tela"
+                onClick={() => setPreviewZoom(100)}
+                title="Redefinir para 100%"
+              >
+                {previewZoom}%
+              </button>
+              <button
+                type="button"
+                className={`${button} h-7 w-7 p-0 flex items-center justify-center`}
+                aria-label="Aumentar zoom"
+                disabled={previewZoom >= 250}
+                onClick={() => setPreviewZoom(v => Math.min(250, v + 25))}
+              >
+                +
+              </button>
+            </div>
+          </div>
+
+          {overlayReference && (
+            <div className="flex flex-wrap items-center gap-2 pt-1" aria-label="Comparar com a referência">
+              <span className="text-xs text-zinc-400">Comparação:</span>
+              {([['overlay', 'Sobrepor'], ['side', 'Lado a lado'], ['difference', 'Diferenças']] as const).map(([val, lab]) => (
+                <button
+                  key={val}
+                  type="button"
+                  className={`text-xs px-2.5 py-1 rounded-lg transition ${compareMode === val ? primary : button}`}
+                  aria-pressed={compareMode === val}
+                  onClick={() => setCompareMode(val)}
+                >
+                  {lab}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className={compareMode === "side" && overlayReference ? "grid gap-3 xl:grid-cols-2" : ""}>
+            {compareMode === "side" && overlayReference && (
+              <div className="overflow-hidden rounded-xl border border-zinc-700 bg-white shadow-xl">
+                <PrivateReferencePage asset={overlayReference} page={referencePages[overlayReference.id] || 1} />
+              </div>
+            )}
+            <BrandLivePreview
+              name={name}
+              settings={effective}
+              documentType={documentType}
+              professionalData={professional.data || undefined}
+              assets={assets.data?.items || []}
+              selectedLayerId={selectedLayerId}
+              onSelectLayer={id => { setSelectedLayerId(id); setElement("layers"); }}
+              onClearSelection={() => setSelectedLayerId("")}
+              onChangeLayer={changeLayer}
+              onDeleteLayer={deleteLayer}
+              showSafeArea={element === "layers" || element === "header" || element === "footer" || element === "paper"}
+              zoom={previewZoom}
+              onZoomChange={setPreviewZoom}
+              referenceOverlay={overlayReference && compareMode !== "side" ? { assetId: overlayReference.id, page: referencePages[overlayReference.id] || 1, opacity: compareMode === "difference" ? 1 : overlayOpacity, blendMode: compareMode === "difference" ? "difference" : undefined } : undefined}
+            />
+          </div>
+
+          {overlayReference && compareMode === "overlay" && (
+            <Field label={`Sobrepor referência (${Math.round(overlayOpacity * 100)}%)`}>
+              <input className="w-full accent-blue-500" type="range" min="0" max="0.8" step="0.05" value={overlayOpacity} onChange={event => setOverlayOpacity(event.target.valueAsNumber)} />
+            </Field>
+          )}
+
+          {selectedLayerId && (
+            <button type="button" className={`${primary} sticky bottom-20 mt-3 w-full lg:hidden`} onClick={() => { setElement("layers"); setMobileTab("edit"); }}>
+              Ajustar camada selecionada
+            </button>
+          )}
+
+          {documentType !== "general" && (
+            <p className="mt-2 text-center text-xs text-zinc-500">
+              Esta variação herda a identidade geral. Os ajustes feitos em margens, cabeçalho e rodapé valem somente para {documentTypeLabels[documentType].toLocaleLowerCase("pt-BR")}.
+            </p>
+          )}
+        </div>
+      </main>
+
+      {/* Right Column / Collapsible AI Assistant */}
+      <aside className={`${mobileTab === "ai" ? "block" : "hidden"} ${aiExpanded ? "block" : "hidden"} min-w-0 space-y-3 lg:block`}>
+        <section className="rounded-2xl border border-blue-900/60 bg-blue-950/20 p-4 shadow-sm">
+          <div className="flex items-center justify-between gap-2 border-b border-blue-900/40 pb-2">
+            <div className="flex items-center gap-2">
+              <Sparkles className="text-blue-400" aria-hidden="true" size={18} />
+              <h2 className="font-semibold text-sm">Assistente de design</h2>
+            </div>
+            <button
+              type="button"
+              className="text-zinc-400 hover:text-zinc-200 hidden lg:block p-1 rounded hover:bg-blue-900/30 transition"
+              onClick={() => setAiExpanded(false)}
+              aria-label="Recolher assistente"
+              title="Recolher assistente"
+            >
+              <ChevronRight size={16} />
+            </button>
+          </div>
+
+          <p className="mt-2 text-xs text-zinc-400 leading-relaxed">
+            Converse sobre o elemento aberto. A IA propõe mudanças; você escolhe o que aplicar.
+          </p>
+          {!capabilities.ai_available && (
+            <p className="mt-2 text-xs text-amber-300/90 rounded-lg border border-amber-900/50 bg-amber-950/20 p-2">
+              O provedor de IA ainda não está configurado.
+            </p>
+          )}
+
+          <div aria-live="polite" className="mt-3 space-y-2.5">
+            {proposals.map(proposal => (
+              <ProposalCard key={proposal.id} proposal={proposal} current={effective} assets={assets.data?.items || []} setProposals={setProposals} apply={applyProposal} />
+            ))}
+            {!proposals.length && (
+              <div className="rounded-xl border border-dashed border-blue-800/40 p-3 text-xs text-zinc-400 bg-blue-950/10">
+                Ex.: “Deixe o cabeçalho mais sóbrio e dê destaque à OAB sem aumentar a altura.”
+              </div>
+            )}
+          </div>
+
+          <form onSubmit={askAi} className="mt-3 space-y-3">
+            {selectedLayerId && (
+              <div className="rounded-lg border border-blue-800 bg-blue-950/30 p-2 text-xs text-blue-200">
+                A IA atuará primeiro na camada “{settings.layout_layers.find(layer => layer.id === selectedLayerId)?.label}”.{" "}
+                <button type="button" className="underline font-medium" onClick={() => setSelectedLayerId("")}>
+                  Usar identidade inteira
+                </button>
+              </div>
+            )}
+
+            <Field label="Como a referência deve ser usada?">
+              <select className={control} value={referenceIntent} disabled={!profile.can_edit} onChange={event => setReferenceIntent(event.target.value as ReferenceIntent)}>
+                <option value="inspire">Usar como inspiração</option>
+                <option value="modernize">Modernizar mantendo a essência</option>
+                <option value="reproduce">Reconstruir com máxima fidelidade</option>
+              </select>
+            </Field>
+
+            {selectedLayerId && (
+              <div className="flex flex-wrap gap-1.5">
+                <button type="button" className={`${button} text-xs py-1`} onClick={() => setBrief("Alinhe esta camada com precisão e preserve as demais.")}>Alinhar</button>
+                <button type="button" className={`${button} text-xs py-1`} onClick={() => setBrief("Torne esta camada mais discreta, mantendo a legibilidade.")}>Mais discreta</button>
+                <button type="button" className={`${button} text-xs py-1`} onClick={() => setBrief("Aproxime esta camada da referência anexada sem alterar as demais.")}>Aproximar da referência</button>
+              </div>
+            )}
+
+            {referenceIds.length > 0 && (
+              <button
+                type="button"
+                className={`${primary} w-full text-xs py-2`}
+                disabled={busy || dirty || !capabilities.ai_available || !profile.can_edit}
+                onClick={() => void requestAi("Reconstrua esta página como um timbrado editável com máxima fidelidade. Identifique faixas, linhas, logo, marca-d'água e cada contato do rodapé, vinculando os dados profissionais corretos. Meça o cabeçalho e o rodapé e preserve uma área segura para todo o texto.")}
+              >
+                {busy ? "Analisando a página…" : "Analisar página e montar identidade"}
+              </button>
+            )}
+
+            <Field label="Mensagem para a IA">
+              <textarea
+                className={control}
+                rows={3}
+                minLength={10}
+                maxLength={4000}
+                required
+                value={brief}
+                disabled={!profile.can_edit}
+                onChange={event => setBrief(event.target.value)}
+                placeholder={`O que deseja mudar em ${editorAreas.find(area => area.id === element)?.label.toLocaleLowerCase("pt-BR") || "identidade"}?`}
+              />
+            </Field>
+
+            {/* Quick Prompt Chips */}
+            <div className="flex flex-wrap gap-1">
+              <button type="button" className="text-[11px] px-2 py-0.5 rounded border border-blue-900/60 bg-blue-950/40 text-blue-300 hover:bg-blue-900/50 transition" onClick={() => setBrief("Tornar a identidade mais sóbria, elegante e formal para advocacia.")}>
+                Estilo Sóbrio
+              </button>
+              <button type="button" className="text-[11px] px-2 py-0.5 rounded border border-blue-900/60 bg-blue-950/40 text-blue-300 hover:bg-blue-900/50 transition" onClick={() => setBrief("Destacar o número da OAB e contatos de forma harmoniosa no cabeçalho e rodapé.")}>
+                Destacar OAB
+              </button>
+              <button type="button" className="text-[11px] px-2 py-0.5 rounded border border-blue-900/60 bg-blue-950/40 text-blue-300 hover:bg-blue-900/50 transition" onClick={() => setBrief("Otimizar margens e espaçamentos para petições longas mantendo excelente legibilidade.")}>
+                Otimizar Margens
+              </button>
+            </div>
+
+            {!!(assets.data?.items || []).filter(asset => asset.kind === "reference").length && (
+              <fieldset className="space-y-1.5 pt-1">
+                <legend className="text-xs text-zinc-400 font-medium">Referências anexadas (até 3)</legend>
+                {(assets.data?.items || []).filter(asset => asset.kind === "reference").map(asset => (
+                  <div key={asset.id} className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-2 text-xs">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={referenceIds.includes(asset.id)}
+                        disabled={!referenceIds.includes(asset.id) && referenceIds.length >= 3}
+                        onChange={event => {
+                          setReferenceIds(curr => event.target.checked ? [...curr, asset.id] : curr.filter(id => id !== asset.id));
+                          if (event.target.checked) setSelectedReferenceId(asset.id);
+                        }}
+                      />
+                      <span className="truncate">{asset.filename}</span>
+                    </label>
+                    {referenceIds.includes(asset.id) && asset.content_type === "application/pdf" && (
+                      <div className="mt-1.5 pl-5">
+                        <Field label="Página do timbrado">
+                          <input
+                            className={control}
+                            type="number"
+                            min={1}
+                            max={Number(asset.analysis?.identified?.pages || 200)}
+                            value={referencePages[asset.id] || 1}
+                            onChange={event => setReferencePages(curr => ({ ...curr, [asset.id]: event.target.valueAsNumber || 1 }))}
+                          />
+                        </Field>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </fieldset>
+            )}
+
+            {capabilities.image_ai_available && (
+              <label className="flex items-start gap-2 text-xs text-zinc-300">
+                <input className="mt-0.5" type="checkbox" checked={generateLogo} onChange={event => setGenerateLogo(event.target.checked)} />
+                <span>Criar proposta de símbolo original por IA.</span>
+              </label>
+            )}
+
+            <button className={`${primary} w-full text-xs py-2`} disabled={busy || dirty || !capabilities.ai_available || !profile.can_edit}>
+              {busy ? "Preparando sugestão…" : "Enviar e comparar"}
+            </button>
+            {dirty && <p className="text-[11px] text-amber-300 text-center">Aguarde o salvamento do rascunho antes de pedir uma sugestão.</p>}
+          </form>
+        </section>
+      </aside>
     </div>
     {pdf && <PrivatePdfPreview blob={pdf} title={`PDF real · ${documentTypeLabels[documentType]}`} filename="previa-identidade.pdf" onClose={() => setPdf(null)} />}
     {referencePdf && <PrivatePdfPreview blob={referencePdf.blob} title="Referência original" filename={referencePdf.filename} onClose={() => setReferencePdf(null)} />}
@@ -270,7 +684,7 @@ function EditorControls({ element, scope, capabilities, settings, baseSettings, 
     {element === "footer" && <>{fieldPicker("footer_fields")}<Field label="Texto adicional"><textarea className={control} rows={3} value={settings.footer_text} disabled={busy} onChange={event => change("footer_text", event.target.value)} /></Field>{alignment("footer_alignment")}<div className="grid grid-cols-2 gap-3">{number("footer_font_size_pt", 6, 18, .5)}{number("footer_letter_spacing_pt", 0, 5, .1)}{number("footer_bottom_mm", 0, 60, .5)}</div><label className="flex min-h-11 items-center gap-3 text-sm"><input type="checkbox" checked={settings.footer_uppercase} disabled={busy} onChange={event => change("footer_uppercase", event.target.checked)} />Rodapé em maiúsculas</label><label className="flex min-h-11 items-center gap-3 text-sm"><input type="checkbox" checked={settings.footer_divider} disabled={busy} onChange={event => change("footer_divider", event.target.checked)} />Mostrar linha de separação</label>{settings.footer_divider && <div className="grid grid-cols-2 gap-3">{number("footer_divider_width_percent", 20, 100, 1)}{number("footer_divider_thickness_pt", .25, 3, .25)}</div>}<label className="flex min-h-11 items-center gap-3 text-sm"><input type="checkbox" checked={settings.page_numbers} disabled={busy} onChange={event => change("page_numbers", event.target.checked)} />Mostrar número da página</label></>}
     {element === "watermark" && <>{assetSelect("watermark_asset_id", "watermark")}<label className={`${button} w-full cursor-pointer gap-2`}><Upload aria-hidden="true" size={17} /> Enviar imagem da marca-d'água<input className="sr-only" type="file" accept=".png,.jpg,.jpeg" disabled={busy} onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; void upload(file, "watermark"); }} /></label><Field label="Texto da marca-d'água"><input className={control} maxLength={80} value={baseSettings.watermark_text} disabled={busy} onChange={event => change("watermark_text", event.target.value)} /></Field><div className="grid grid-cols-2 gap-3">{number("watermark_opacity", .03, .3, .01)}{number("watermark_width_mm", 30, 150)}{number("watermark_font_size_pt", 24, 180, 1)}{number("watermark_x_percent", 0, 100, 1)}{number("watermark_y_percent", 0, 100, 1)}</div><Field label="Orientação"><select className={control} value={settings.watermark_position} disabled={busy} onChange={event => change("watermark_position", event.target.value as BrandSettings["watermark_position"])}><option value="diagonal">Diagonal</option><option value="center">Sem rotação</option></select></Field>{settings.watermark_position === "diagonal" && number("watermark_rotation_deg", -90, 90, 1)}</>}
     {element === "paper" && <><Field label="Papel"><select className={control} value={baseSettings.paper_size} disabled={busy} onChange={event => change("paper_size", event.target.value as BrandSettings["paper_size"])}><option value="A4">A4</option><option value="LETTER">Carta</option></select></Field><Field label="Cor do papel"><div className="flex items-center gap-2"><input type="color" className="h-11 w-14 rounded border border-zinc-700 bg-zinc-950 p-1" value={baseSettings.paper_color} disabled={busy} onChange={event => change("paper_color", event.target.value)} /><span className="text-xs">{baseSettings.paper_color}</span></div></Field>{(settings.margin_top_mm < safeMargins.top || settings.margin_bottom_mm < safeMargins.bottom) && <div className="rounded-lg border border-amber-800 bg-amber-950/20 p-3 text-sm text-amber-200"><p>O desenho precisa de {safeMargins.top} mm no topo e {safeMargins.bottom} mm no rodapé para não cobrir o texto.</p>{safeMargins.top <= 80 && safeMargins.bottom <= 80 && <button type="button" className={`${button} mt-2`} onClick={() => { change("margin_top_mm", safeMargins.top); change("margin_bottom_mm", safeMargins.bottom); }}>Aplicar área segura</button>}</div>}<div className="grid grid-cols-2 gap-3">{number("margin_top_mm", 20, 80)}{number("margin_bottom_mm", 20, 80)}{number("margin_left_mm", 15, 50)}{number("margin_right_mm", 15, 50)}</div><Field label="Timbrado"><select className={control} value={settings.background_scope} disabled={busy} onChange={event => change("background_scope", event.target.value as BrandSettings["background_scope"])}><option value="all">Todas as páginas</option><option value="first">Somente primeira página</option></select></Field></>}
-    {element === "publish" && <><p className="text-sm text-zinc-400">{dirty ? "Aguarde o salvamento do rascunho." : "Rascunho salvo e pronto para conferência."}</p><div className="space-y-2" aria-label="Verificação antes de publicar">{preflight.map(issue => <p key={issue.text} className={`rounded-lg border p-2 text-xs ${issue.level === "error" ? "border-rose-800 bg-rose-950/20 text-rose-200" : issue.level === "warning" ? "border-amber-800 bg-amber-950/20 text-amber-200" : "border-emerald-800 bg-emerald-950/20 text-emerald-200"}`}>{issue.level === "error" ? "Corrigir: " : issue.level === "warning" ? "Conferir: " : "Pronto: "}{issue.text}</p>)}</div><button type="button" className={button} disabled={busy || dirty || hasPreflightError || !capabilities.pdf_available} onClick={() => void preview()}><FileText aria-hidden="true" size={17} /> Gerar PDF real desta variação</button><label className="flex min-h-11 items-start gap-3 text-sm"><input className="mt-1" type="checkbox" checked={approved} disabled={dirty || busy || hasPreflightError} onChange={event => setApproved(event.target.checked)} /><span>Conferi dados profissionais, imagens e visual em todas as variações que pretendo usar.</span></label><button type="button" className={primary} disabled={busy || dirty || !approved || hasPreflightError} onClick={() => void publish()}><CheckCircle2 aria-hidden="true" size={17} /> Publicar nova versão</button><div className="border-t border-zinc-800 pt-3"><h3 className="text-sm font-medium">Versões publicadas</h3><State loading={versions.loading} error={versions.error} empty={!versions.data?.items.length} />{versions.data?.items.map(version => <div key={version.id} className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-zinc-800 p-2"><p className="text-xs text-zinc-400">v{version.version} · {dateText(version.created_at)}</p><button type="button" className={button} disabled={busy} onClick={() => restoreVersion(version)}>Restaurar como rascunho</button></div>)}</div></>}
+    {element === "publish" && <><p className="text-sm text-zinc-400">{dirty ? "Aguarde o salvamento do rascunho." : "Rascunho salvo e pronto para conferência."}</p><div className="space-y-2" aria-label="Verificação antes de publicar">{preflight.map(issue => <p key={issue.text} className={`rounded-lg border p-2 text-xs ${issue.level === "error" ? "border-rose-800 bg-rose-950/20 text-rose-200" : issue.level === "warning" ? "border-amber-800 bg-amber-950/20 text-amber-200" : "border-emerald-800 bg-emerald-950/20 text-emerald-200"}`}>{issue.level === "error" ? "Corrigir: " : issue.level === "warning" ? "Conferir: " : "Pronto: "}{issue.text}</p>)}</div><button type="button" className={button} disabled={busy || dirty || hasPreflightError || !capabilities.pdf_available} onClick={() => void preview()}><FileText aria-hidden="true" size={17} /> Gerar PDF real desta variação</button><label className="flex min-h-11 items-start gap-3 text-sm"><input className="mt-1" type="checkbox" checked={approved} disabled={dirty || busy || hasPreflightError} onChange={event => setApproved(event.target.checked)} /><span>Conferi dados profissionais, imagens e visual em todas as variações que pretendo usar.</span></label><button type="button" className={primary} disabled={busy || dirty || !approved || hasPreflightError} onClick={() => void publish()}><CheckCircle2 aria-hidden="true" size={17} /> Publicar nova versão</button><div className="border-t border-zinc-800 pt-3"><h3 className="text-sm font-medium">Versões publicadas</h3><State loading={versions.loading} error={versions.error} empty={!(versions.data?.items || []).length} />{(versions.data?.items || []).map(version => <div key={version.id} className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-zinc-800 p-2"><p className="text-xs text-zinc-400">v{version.version} · {dateText(version.created_at)}</p><button type="button" className={button} disabled={busy} onClick={() => restoreVersion(version)}>Restaurar como rascunho</button></div>)}</div></>}
   </section>;
 }
 
@@ -385,10 +799,80 @@ function ReferenceTools({ assets, busy, dirty, kind, setKind, upload, openRefere
     {selected && <article className="space-y-3 rounded-xl border border-zinc-800 p-3">
       <div className="flex items-start justify-between gap-2"><div><p className="text-sm font-medium">{selected.filename}</p><p className="text-xs text-zinc-400">{pages} {pages === 1 ? "página" : "páginas"}</p></div><div className="flex gap-2">{selected.content_type === "application/pdf" && <button className={button} type="button" onClick={() => void openReference(selected)}>Abrir PDF</button>}<Action run={() => download(`/branding/assets/${selected.id}/download`, selected.filename)}>Baixar</Action></div></div>
       {visual && <>
-        {pages > 1 && <div className="flex items-end gap-2"><button type="button" className={button} disabled={page <= 1} onClick={() => setReferencePages(current => ({ ...current, [selected.id]: page - 1 }))}>Anterior</button><Field label="Página"><input className={control} type="number" min={1} max={pages} value={page} onChange={event => setReferencePages(current => ({ ...current, [selected.id]: Math.max(1, Math.min(pages, event.target.valueAsNumber || 1)) }))} /></Field><button type="button" className={button} disabled={page >= pages} onClick={() => setReferencePages(current => ({ ...current, [selected.id]: page + 1 }))}>Próxima</button></div>}
-        <div className="relative overflow-hidden rounded-lg border border-zinc-700 bg-white"><PrivateReferencePage asset={selected} page={page} /><span aria-hidden="true" className="pointer-events-none absolute border-2 border-blue-500 bg-blue-500/10" style={{ left: `${crop.x_percent}%`, top: `${crop.y_percent}%`, width: `${crop.width_percent}%`, height: `${crop.height_percent}%` }} /></div>
-        <fieldset><legend className="mb-2 text-sm font-medium">Área para extrair logo ou marca-d'água</legend><div className="grid grid-cols-2 gap-2">{([['x_percent', 'Esquerda'], ['y_percent', 'Topo'], ['width_percent', 'Largura'], ['height_percent', 'Altura']] as [keyof Crop, string][]).map(([key, label]) => <Field key={key} label={`${label} (%)`}><input className={control} type="number" min={key.includes("width") || key.includes("height") ? 1 : 0} max={100} value={crop[key]} onChange={event => updateCrop(key, event.target.valueAsNumber || 0)} /></Field>)}</div></fieldset>
-        <div className="grid gap-2"><button type="button" className={primary} disabled={busy || dirty} onClick={() => void extractReference(selected, "background")}>Usar página inteira como timbrado fiel</button><div className="grid grid-cols-2 gap-2"><button type="button" className={button} disabled={busy || dirty} onClick={() => void extractReference(selected, "logo")}>Extrair logotipo</button><button type="button" className={button} disabled={busy || dirty} onClick={() => void extractReference(selected, "watermark")}>Extrair marca-d'água</button></div></div>
+        {pages > 1 && (
+          <div className="flex items-end gap-2">
+            <button type="button" className={button} disabled={page <= 1} onClick={() => setReferencePages(current => ({ ...current, [selected.id]: page - 1 }))}>Anterior</button>
+            <Field label="Página">
+              <input className={control} type="number" min={1} max={pages} value={page} onChange={event => setReferencePages(current => ({ ...current, [selected.id]: Math.max(1, Math.min(pages, event.target.valueAsNumber || 1)) }))} />
+            </Field>
+            <button type="button" className={button} disabled={page >= pages} onClick={() => setReferencePages(current => ({ ...current, [selected.id]: page + 1 }))}>Próxima</button>
+          </div>
+        )}
+        <div className="relative overflow-hidden rounded-lg border border-zinc-700 bg-white">
+          <PrivateReferencePage asset={selected} page={page} />
+          <span aria-hidden="true" className="pointer-events-none absolute border-2 border-blue-500 bg-blue-500/15 shadow-sm transition-all duration-150" style={{ left: `${crop.x_percent}%`, top: `${crop.y_percent}%`, width: `${crop.width_percent}%`, height: `${crop.height_percent}%` }} />
+        </div>
+
+        {/* Quick Crop Presets */}
+        <div className="space-y-1.5">
+          <span className="text-xs font-medium text-zinc-300">Área de recorte rápida</span>
+          <div className="grid grid-cols-2 gap-1.5">
+            {[
+              { label: "Topo / Logo", preset: { x_percent: 5, y_percent: 2, width_percent: 90, height_percent: 25 } },
+              { label: "Centro / Marca-d'água", preset: { x_percent: 15, y_percent: 25, width_percent: 70, height_percent: 45 } },
+              { label: "Rodapé / Contatos", preset: { x_percent: 5, y_percent: 82, width_percent: 90, height_percent: 16 } },
+              { label: "Página Inteira", preset: { x_percent: 0, y_percent: 0, width_percent: 100, height_percent: 100 } },
+            ].map(item => (
+              <button
+                key={item.label}
+                type="button"
+                className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-2 py-1.5 text-xs text-zinc-300 hover:border-blue-700 hover:bg-blue-950/30 hover:text-white transition"
+                onClick={() => setCrop(item.preset)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Collapsible Fine Numeric Adjustments */}
+        <details className="rounded-lg border border-zinc-800/80 bg-zinc-950/40 p-2 text-xs">
+          <summary className="cursor-pointer font-medium text-zinc-400 hover:text-zinc-200">
+            Ajuste milimétrico em porcentagem
+          </summary>
+          <fieldset className="mt-2.5">
+            <legend className="sr-only">Área para extrair logo ou marca-d'água</legend>
+            <div className="grid grid-cols-2 gap-2">
+              {([['x_percent', 'Esquerda'], ['y_percent', 'Topo'], ['width_percent', 'Largura'], ['height_percent', 'Altura']] as [keyof Crop, string][]).map(([key, label]) => (
+                <Field key={key} label={`${label} (%)`}>
+                  <input
+                    className={control}
+                    type="number"
+                    min={key.includes("width") || key.includes("height") ? 1 : 0}
+                    max={100}
+                    value={crop[key]}
+                    onChange={event => updateCrop(key, event.target.valueAsNumber || 0)}
+                  />
+                </Field>
+              ))}
+            </div>
+          </fieldset>
+        </details>
+
+        {/* Real Extraction Actions */}
+        <div className="grid gap-2 pt-1">
+          <button type="button" className={primary} disabled={busy || dirty} onClick={() => void extractReference(selected, "background")}>
+            Usar página inteira como timbrado fiel
+          </button>
+          <div className="grid grid-cols-2 gap-2">
+            <button type="button" className={button} disabled={busy || dirty} onClick={() => void extractReference(selected, "logo")}>
+              Extrair logotipo
+            </button>
+            <button type="button" className={button} disabled={busy || dirty} onClick={() => void extractReference(selected, "watermark")}>
+              Extrair marca-d'água
+            </button>
+          </div>
+        </div>
         {dirty && <p className="text-xs text-amber-300">Aguarde o salvamento do rascunho antes de extrair.</p>}
       </>}
       {selected.analysis?.warnings?.map(warning => <p key={warning} className="text-xs text-amber-300">{warning}</p>)}
