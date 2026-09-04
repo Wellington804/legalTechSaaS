@@ -3,12 +3,13 @@ import asyncio
 import hashlib
 import json
 import re
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,9 +25,19 @@ from app.models.workspace import (
     WorkspacePublication,
     WorkspaceTask,
 )
-from app.models.assistant import AIConversation, AIConversationMessage
+from app.models.assistant import (
+    AIConversation,
+    AIConversationMessage,
+    AIEvaluationCase,
+    AIEvaluationResult,
+    AIEvaluationRun,
+    DocumentIntelligenceAnalysis,
+    DocumentIntelligenceSource,
+)
 from app.services.ai_provider import AIProviderError, ai_available, generate_text, model_name, provider_name
 from app.services.audit_service import AuditService
+from app.services.ai_quality import EvaluationCaseContent, canonical_hash
+from app.services.document_tasks import run_ai_evaluation, run_document_intelligence
 from app.services.document_text import TextExtractionError, citation_chunks, extract_upload_text
 from app.services.legal_ai import (
     DRAFT_SYSTEM_PROMPT,
@@ -133,6 +144,60 @@ class GuidedDraftInput(BaseModel):
         if len(values) != len(set(values)):
             raise ValueError("A seleção contém itens repetidos.")
         return values
+
+
+class EvaluationCaseCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    name: str = Field(min_length=3, max_length=200)
+    legal_area: str = Field(min_length=2, max_length=100)
+    version: int = Field(default=1, ge=1, le=10_000)
+    content: EvaluationCaseContent
+
+
+class EvaluationCaseImport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cases: list[EvaluationCaseCreate] = Field(min_length=1, max_length=20)
+
+
+class EvaluationReviewInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    decision: Literal["approve", "reject"]
+    note: str = Field(min_length=3, max_length=1000)
+    expected_revision: int = Field(ge=1)
+
+
+class EvaluationRunInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: uuid.UUID
+    case_ids: list[str] | None = Field(default=None, min_length=1, max_length=5)
+
+    @field_validator("case_ids")
+    @classmethod
+    def unique_case_ids(cls, values: list[str] | None) -> list[str] | None:
+        if values is not None and (len(values) != len(set(values)) or any(not value or len(value) > 64 for value in values)):
+            raise ValueError("Casos de avaliação inválidos ou repetidos.")
+        return values
+
+
+class DocumentIntelligenceInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: uuid.UUID
+    document_ids: list[str] = Field(min_length=1, max_length=10)
+    consent: StrictBool = False
+
+    @field_validator("document_ids")
+    @classmethod
+    def unique_intelligence_documents(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)) or any(not value or len(value) > 64 for value in values):
+            raise ValueError("Documentos inválidos ou repetidos.")
+        return values
+
+
+class DocumentIntelligenceReviewInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    decision: Literal["approve", "reject"]
+    note: str = Field(min_length=3, max_length=1000)
+    expected_revision: int = Field(ge=1)
 
 
 def _conversation_payload(conversation: AIConversation) -> dict:
@@ -753,3 +818,396 @@ async def assistant_chat(
     await db.commit()
     result.update({"conversation_id": conversation.id, "conversation": _conversation_payload(conversation)})
     return result
+
+
+def _evaluation_case_payload(row: AIEvaluationCase) -> dict:
+    return {
+        "id": row.id, "name": row.name, "legal_area": row.legal_area, "version": row.version,
+        "status": row.status, "content": row.content, "content_hash": row.content_hash,
+        "reviewed_by_user_id": row.reviewed_by_user_id, "review_note": row.review_note,
+        "reviewed_at": row.reviewed_at, "revision": row.revision,
+        "created_at": row.created_at, "updated_at": row.updated_at,
+    }
+
+
+def _evaluation_run_payload(row: AIEvaluationRun, results: list[AIEvaluationResult] | None = None) -> dict:
+    payload = {
+        "id": row.id, "request_id": row.request_id, "status": row.status, "provider": row.provider,
+        "model": row.model, "corpus_hash": row.corpus_hash, "case_count": row.case_count,
+        "case_ids": row.case_ids, "aggregate_metrics": row.aggregate_metrics, "error": row.error,
+        "started_at": row.started_at, "completed_at": row.completed_at, "created_at": row.created_at,
+    }
+    if results is not None:
+        payload["results"] = [{
+            "id": item.id, "case_id": item.case_id, "case_version": item.case_version,
+            "case_hash": item.case_hash, "status": item.status, "output": item.output,
+            "output_hash": item.output_hash, "metrics": item.metrics, "error": item.error,
+            "created_at": item.created_at,
+        } for item in results]
+    return payload
+
+
+def _document_intelligence_payload(row: DocumentIntelligenceAnalysis, sources: list[DocumentIntelligenceSource]) -> dict:
+    return {
+        "id": row.id, "case_id": row.case_id, "request_id": row.request_id,
+        "snapshot_hash": row.snapshot_hash, "status": row.status, "provider": row.provider, "model": row.model,
+        "evidence_sources": row.evidence_sources, "result_hash": row.result_hash,
+        "classifications": row.classifications, "timeline": row.timeline,
+        "contradiction_groups": row.contradiction_groups, "limitations": row.limitations, "error": row.error,
+        "sources": [{"document_id": item.document_id, "version": item.document_version, "sha256": item.sha256, "title": item.title} for item in sources],
+        "reviewed_by_user_id": row.reviewed_by_user_id, "review_note": row.review_note,
+        "reviewed_at": row.reviewed_at, "revision": row.revision,
+        "created_at": row.created_at, "updated_at": row.updated_at,
+        "human_review_required": row.status not in {"approved", "rejected"},
+    }
+
+
+def _reenqueue_if_queued(task, row, tenant_id: str) -> None:
+    if row.status != "queued":
+        return
+    try:
+        task.apply_async(args=[row.id, tenant_id], queue="documents")
+    except Exception:
+        raise HTTPException(503, "A fila assíncrona está indisponível. Tente novamente.") from None
+
+
+async def _create_evaluation_case(db: AsyncSession, user, body: EvaluationCaseCreate) -> tuple[AIEvaluationCase, bool]:
+    content = body.content.model_dump(mode="json")
+    content_hash = canonical_hash(content)
+    existing = await db.scalar(select(AIEvaluationCase).where(
+        AIEvaluationCase.tenant_id == user.tenant_id,
+        AIEvaluationCase.name == body.name,
+        AIEvaluationCase.version == body.version,
+    ))
+    if existing:
+        if existing.content_hash != content_hash or existing.legal_area != body.legal_area:
+            raise HTTPException(409, "Já existe outra versão com este nome e número.")
+        return existing, False
+    row = AIEvaluationCase(
+        tenant_id=user.tenant_id, name=body.name, legal_area=body.legal_area,
+        version=body.version, status="draft", content=content, content_hash=content_hash,
+        created_by_user_id=user.id,
+    )
+    db.add(row)
+    await db.flush()
+    return row, True
+
+
+@router.post("/assistant/evaluations/cases")
+async def create_evaluation_case(body: EvaluationCaseCreate, user: CurrentUser, db: AsyncSession = Depends(get_db)):
+    require_role(user, {"admin", "partner", "lawyer"})
+    await ensure_tenant_write_access(db, user.tenant_id)
+    row, created = await _create_evaluation_case(db, user, body)
+    if created:
+        submitted_hash, submitted_area = row.content_hash, row.legal_area
+        await AuditService.log_action(db, user.tenant_id, user.id, "AI_EVALUATION_CASE_CREATED", "ai_evaluation_cases", row.id, {
+            "version": row.version, "content_hash": row.content_hash, "status": "draft",
+        })
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            await _set_tenant_context(db, user.tenant_id)
+            existing = await db.scalar(select(AIEvaluationCase).where(
+                AIEvaluationCase.tenant_id == user.tenant_id,
+                AIEvaluationCase.name == body.name,
+                AIEvaluationCase.version == body.version,
+            ))
+            if existing and existing.content_hash == submitted_hash and existing.legal_area == submitted_area:
+                return {**_evaluation_case_payload(existing), "created": False}
+            raise HTTPException(409, "Já existe outra versão com este nome e número.") from None
+    return {**_evaluation_case_payload(row), "created": created}
+
+
+@router.post("/assistant/evaluations/cases/import")
+async def import_evaluation_cases(body: EvaluationCaseImport, user: CurrentUser, db: AsyncSession = Depends(get_db)):
+    require_role(user, {"admin", "partner", "lawyer"})
+    await ensure_tenant_write_access(db, user.tenant_id)
+    rows, created_count = [], 0
+    for item in body.cases:
+        row, created = await _create_evaluation_case(db, user, item)
+        rows.append(row)
+        created_count += int(created)
+    await AuditService.log_action(db, user.tenant_id, user.id, "AI_EVALUATION_CASES_IMPORTED", "ai_evaluation_cases", user.tenant_id, {
+        "received": len(rows), "created": created_count, "status": "draft",
+    })
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, "A importação contém versões duplicadas ou conflitantes.") from None
+    return {"created": created_count, "cases": [_evaluation_case_payload(row) for row in rows]}
+
+
+@router.get("/assistant/evaluations/cases")
+async def list_evaluation_cases(user: CurrentUser, db: AsyncSession = Depends(get_db)):
+    require_role(user, {"admin", "partner", "lawyer"})
+    rows = (await db.execute(select(AIEvaluationCase).where(
+        AIEvaluationCase.tenant_id == user.tenant_id,
+    ).order_by(AIEvaluationCase.name, AIEvaluationCase.version.desc()).limit(200))).scalars().all()
+    return [_evaluation_case_payload(row) for row in rows]
+
+
+@router.post("/assistant/evaluations/cases/{case_id}/review")
+async def review_evaluation_case(case_id: str, body: EvaluationReviewInput, user: CurrentUser, db: AsyncSession = Depends(get_db)):
+    require_role(user, {"admin", "partner", "lawyer"})
+    await ensure_tenant_write_access(db, user.tenant_id)
+    if body.decision == "approve" and (not user.oab_number or not user.oab_uf):
+        raise HTTPException(422, "Informe a OAB do advogado revisor antes de aprovar o corpus.")
+    row = await db.scalar(select(AIEvaluationCase).where(
+        AIEvaluationCase.id == case_id, AIEvaluationCase.tenant_id == user.tenant_id,
+    ).with_for_update())
+    if not row:
+        raise HTTPException(404, "Caso de avaliação não encontrado.")
+    if row.revision != body.expected_revision:
+        raise HTTPException(409, "O caso mudou durante a revisão.")
+    try:
+        content = EvaluationCaseContent.model_validate(row.content)
+    except ValueError:
+        raise HTTPException(409, "O corpus persistido não corresponde ao contrato atual.") from None
+    if canonical_hash(content.model_dump(mode="json")) != row.content_hash:
+        raise HTTPException(409, "O hash do corpus não confere. A revisão foi bloqueada.")
+    if body.decision == "approve":
+        await db.execute(update(AIEvaluationCase).where(
+            AIEvaluationCase.tenant_id == user.tenant_id,
+            AIEvaluationCase.name == row.name,
+            AIEvaluationCase.id != row.id,
+            AIEvaluationCase.status == "approved",
+        ).values(status="retired", revision=AIEvaluationCase.revision + 1, updated_at=datetime.now(timezone.utc)))
+    row.status = "approved" if body.decision == "approve" else "rejected"
+    row.reviewed_by_user_id = user.id
+    row.review_note = body.note
+    row.reviewed_at = datetime.now(timezone.utc)
+    row.revision += 1
+    await AuditService.log_action(db, user.tenant_id, user.id, "AI_EVALUATION_CASE_REVIEWED", "ai_evaluation_cases", row.id, {
+        "decision": body.decision, "version": row.version, "content_hash": row.content_hash,
+    })
+    await db.commit()
+    return _evaluation_case_payload(row)
+
+
+@router.post("/assistant/evaluations/runs")
+async def create_evaluation_run(body: EvaluationRunInput, user: CurrentUser, db: AsyncSession = Depends(get_db)):
+    require_role(user, {"admin", "partner", "lawyer"})
+    await ensure_tenant_write_access(db, user.tenant_id)
+    if not ai_available(settings, "legal"):
+        raise HTTPException(503, "A rota jurídica da IA não está configurada.")
+    request_id = str(body.request_id)
+    existing = await db.scalar(select(AIEvaluationRun).where(
+        AIEvaluationRun.tenant_id == user.tenant_id, AIEvaluationRun.request_id == request_id,
+    ))
+    if existing:
+        _reenqueue_if_queued(run_ai_evaluation, existing, user.tenant_id)
+        return {**_evaluation_run_payload(existing), "created": False}
+    query = select(AIEvaluationCase).where(
+        AIEvaluationCase.tenant_id == user.tenant_id,
+        AIEvaluationCase.status == "approved",
+    )
+    if body.case_ids:
+        query = query.where(AIEvaluationCase.id.in_(body.case_ids))
+    cases = (await db.execute(query.order_by(AIEvaluationCase.id).limit(6))).scalars().all()
+    if not cases or len(cases) > 5 or (body.case_ids and len(cases) != len(body.case_ids)):
+        raise HTTPException(422, "Selecione de 1 a 5 casos aprovados do corpus.")
+    for _case in cases:
+        await reserve_request(user.tenant_id, "ai", settings.AI_REQUESTS_PER_DAY, 86400)
+    snapshot = sorted(({"id": row.id, "version": row.version, "content_hash": row.content_hash} for row in cases), key=lambda item: item["id"])
+    row = AIEvaluationRun(
+        tenant_id=user.tenant_id, request_id=request_id, status="queued",
+        provider=provider_name(settings), model=model_name(settings, "legal"),
+        corpus_hash=canonical_hash(snapshot), case_count=len(cases), case_ids=[item.id for item in cases],
+        requested_by_user_id=user.id,
+    )
+    db.add(row)
+    await AuditService.log_action(db, user.tenant_id, user.id, "AI_EVALUATION_REQUESTED", "ai_evaluation_runs", row.id, {
+        "case_count": len(cases), "corpus_hash": row.corpus_hash, "model": row.model,
+    })
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        await _set_tenant_context(db, user.tenant_id)
+        existing = await db.scalar(select(AIEvaluationRun).where(
+            AIEvaluationRun.tenant_id == user.tenant_id, AIEvaluationRun.request_id == request_id,
+        ))
+        if existing:
+            _reenqueue_if_queued(run_ai_evaluation, existing, user.tenant_id)
+            return {**_evaluation_run_payload(existing), "created": False}
+        raise
+    try:
+        run_ai_evaluation.apply_async(args=[row.id, user.tenant_id], queue="documents")
+    except Exception:
+        await _set_tenant_context(db, user.tenant_id)
+        row.status, row.error, row.completed_at = "failed", "Fila de avaliação indisponível.", datetime.now(timezone.utc)
+        await db.commit()
+        raise HTTPException(503, "Não foi possível enfileirar a avaliação.") from None
+    return {**_evaluation_run_payload(row), "created": True}
+
+
+@router.get("/assistant/evaluations/runs")
+async def list_evaluation_runs(user: CurrentUser, db: AsyncSession = Depends(get_db)):
+    require_role(user, {"admin", "partner", "lawyer"})
+    rows = (await db.execute(select(AIEvaluationRun).where(
+        AIEvaluationRun.tenant_id == user.tenant_id,
+    ).order_by(AIEvaluationRun.created_at.desc()).limit(100))).scalars().all()
+    return [_evaluation_run_payload(row) for row in rows]
+
+
+@router.get("/assistant/evaluations/runs/{run_id}")
+async def get_evaluation_run(run_id: str, user: CurrentUser, db: AsyncSession = Depends(get_db)):
+    require_role(user, {"admin", "partner", "lawyer"})
+    row = await db.scalar(select(AIEvaluationRun).where(
+        AIEvaluationRun.id == run_id, AIEvaluationRun.tenant_id == user.tenant_id,
+    ))
+    if not row:
+        raise HTTPException(404, "Execução de avaliação não encontrada.")
+    results = (await db.execute(select(AIEvaluationResult).where(
+        AIEvaluationResult.run_id == row.id, AIEvaluationResult.tenant_id == user.tenant_id,
+    ).order_by(AIEvaluationResult.case_id))).scalars().all()
+    return _evaluation_run_payload(row, results)
+
+
+async def _analysis_sources(db: AsyncSession, user, analysis_id: str) -> tuple[DocumentIntelligenceAnalysis, list[DocumentIntelligenceSource]]:
+    row = await db.scalar(select(DocumentIntelligenceAnalysis).where(
+        DocumentIntelligenceAnalysis.id == analysis_id,
+        DocumentIntelligenceAnalysis.tenant_id == user.tenant_id,
+    ))
+    if not row:
+        raise HTTPException(404, "Análise documental não encontrada.")
+    sources = (await db.execute(select(DocumentIntelligenceSource).where(
+        DocumentIntelligenceSource.analysis_id == row.id,
+        DocumentIntelligenceSource.tenant_id == user.tenant_id,
+    ).order_by(DocumentIntelligenceSource.document_id))).scalars().all()
+    return row, sources
+
+
+@router.post("/cases/{case_id}/document-intelligence")
+async def create_document_intelligence(case_id: str, body: DocumentIntelligenceInput, user: CurrentUser, db: AsyncSession = Depends(get_db)):
+    require_role(user, {"admin", "partner", "lawyer"})
+    await ensure_tenant_write_access(db, user.tenant_id)
+    if not body.consent:
+        raise HTTPException(403, "Confirme o envio dos documentos selecionados ao assistente.")
+    if not ai_available(settings, "legal"):
+        raise HTTPException(503, "A rota jurídica da IA não está configurada.")
+    request_id = str(body.request_id)
+    existing = await db.scalar(select(DocumentIntelligenceAnalysis).where(
+        DocumentIntelligenceAnalysis.tenant_id == user.tenant_id,
+        DocumentIntelligenceAnalysis.request_id == request_id,
+    ))
+    if existing:
+        _reenqueue_if_queued(run_document_intelligence, existing, user.tenant_id)
+        row, sources = await _analysis_sources(db, user, existing.id)
+        return {**_document_intelligence_payload(row, sources), "created": False}
+    case, documents = await _case_evidence(db, user, case_id, body.document_ids)
+    await reserve_request(user.tenant_id, "ai", settings.AI_REQUESTS_PER_DAY, 86400)
+    snapshots = sorted(({
+        "document_id": document.id, "version": document.current_version,
+        "sha256": hashlib.sha256((document.content_text or "").encode()).hexdigest(),
+    } for document in documents), key=lambda item: item["document_id"])
+    analysis = DocumentIntelligenceAnalysis(
+        tenant_id=user.tenant_id, case_id=case.id, request_id=request_id,
+        snapshot_hash=canonical_hash(snapshots), status="queued",
+        provider=provider_name(settings), model=model_name(settings, "legal"), requested_by_user_id=user.id,
+    )
+    db.add(analysis)
+    await db.flush()
+    sources = [DocumentIntelligenceSource(
+        tenant_id=user.tenant_id, analysis_id=analysis.id, document_id=document.id,
+        document_version=document.current_version,
+        sha256=hashlib.sha256((document.content_text or "").encode()).hexdigest(), title=document.title,
+    ) for document in documents]
+    db.add_all(sources)
+    await AuditService.log_action(db, user.tenant_id, user.id, "DOCUMENT_INTELLIGENCE_REQUESTED", "document_intelligence_analyses", analysis.id, {
+        "documents": snapshots, "snapshot_hash": analysis.snapshot_hash, "model": analysis.model,
+    })
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        await _set_tenant_context(db, user.tenant_id)
+        existing = await db.scalar(select(DocumentIntelligenceAnalysis).where(
+            DocumentIntelligenceAnalysis.tenant_id == user.tenant_id,
+            DocumentIntelligenceAnalysis.request_id == request_id,
+        ))
+        if existing:
+            _reenqueue_if_queued(run_document_intelligence, existing, user.tenant_id)
+            existing_row, existing_sources = await _analysis_sources(db, user, existing.id)
+            return {**_document_intelligence_payload(existing_row, existing_sources), "created": False}
+        raise
+    try:
+        run_document_intelligence.apply_async(args=[analysis.id, user.tenant_id], queue="documents")
+    except Exception:
+        await _set_tenant_context(db, user.tenant_id)
+        analysis.status, analysis.error = "failed", "Fila de análise indisponível."
+        await db.commit()
+        raise HTTPException(503, "Não foi possível enfileirar a análise documental.") from None
+    return {**_document_intelligence_payload(analysis, sources), "created": True}
+
+
+@router.get("/cases/{case_id}/document-intelligence")
+async def list_document_intelligence(case_id: str, user: CurrentUser, db: AsyncSession = Depends(get_db)):
+    require_role(user, {"admin", "partner", "lawyer", "paralegal"})
+    await get_case(db, user, case_id)
+    rows = (await db.execute(select(DocumentIntelligenceAnalysis).where(
+        DocumentIntelligenceAnalysis.tenant_id == user.tenant_id,
+        DocumentIntelligenceAnalysis.case_id == case_id,
+    ).order_by(DocumentIntelligenceAnalysis.created_at.desc()).limit(100))).scalars().all()
+    result = []
+    for row in rows:
+        _, sources = await _analysis_sources(db, user, row.id)
+        result.append(_document_intelligence_payload(row, sources))
+    return result
+
+
+@router.post("/cases/{case_id}/document-intelligence/{analysis_id}/review")
+async def review_document_intelligence(case_id: str, analysis_id: str, body: DocumentIntelligenceReviewInput, user: CurrentUser, db: AsyncSession = Depends(get_db)):
+    require_role(user, {"admin", "partner", "lawyer"})
+    await ensure_tenant_write_access(db, user.tenant_id)
+    await get_case(db, user, case_id)
+    analysis = await db.scalar(select(DocumentIntelligenceAnalysis).where(
+        DocumentIntelligenceAnalysis.id == analysis_id,
+        DocumentIntelligenceAnalysis.tenant_id == user.tenant_id,
+    ).with_for_update())
+    if not analysis:
+        raise HTTPException(404, "Análise documental não encontrada.")
+    sources = (await db.execute(select(DocumentIntelligenceSource).where(
+        DocumentIntelligenceSource.analysis_id == analysis.id,
+        DocumentIntelligenceSource.tenant_id == user.tenant_id,
+    ).order_by(DocumentIntelligenceSource.document_id))).scalars().all()
+    if analysis.case_id != case_id:
+        raise HTTPException(404, "Análise documental não encontrada.")
+    if analysis.revision != body.expected_revision:
+        raise HTTPException(409, "A análise mudou durante a revisão.")
+    if analysis.status != "review_required":
+        raise HTTPException(409, "Somente análises pendentes podem ser revisadas.")
+    persisted_result_hash = canonical_hash({
+        "evidence_sources": analysis.evidence_sources,
+        "classifications": analysis.classifications,
+        "timeline": analysis.timeline,
+        "contradiction_groups": analysis.contradiction_groups,
+        "limitations": analysis.limitations,
+    })
+    if not analysis.result_hash or persisted_result_hash != analysis.result_hash:
+        raise HTTPException(409, "O resultado persistido não passou na verificação de integridade.")
+    documents = (await db.execute(select(WorkspaceDocument).where(
+        WorkspaceDocument.tenant_id == user.tenant_id,
+        WorkspaceDocument.id.in_([source.document_id for source in sources]),
+        WorkspaceDocument.deleted_at.is_(None),
+    ))).scalars().all()
+    current = sorted(({
+        "document_id": document.id, "version": document.current_version,
+        "sha256": hashlib.sha256((document.content_text or "").encode()).hexdigest(),
+    } for document in documents), key=lambda item: item["document_id"])
+    if canonical_hash(current) != analysis.snapshot_hash:
+        analysis.status, analysis.error, analysis.revision = "stale", "Documentos alterados depois da análise.", analysis.revision + 1
+        await db.commit()
+        raise HTTPException(409, "Um documento mudou desde a análise. Execute uma nova análise.")
+    analysis.status = "approved" if body.decision == "approve" else "rejected"
+    analysis.reviewed_by_user_id = user.id
+    analysis.review_note = body.note
+    analysis.reviewed_at = datetime.now(timezone.utc)
+    analysis.revision += 1
+    await AuditService.log_action(db, user.tenant_id, user.id, "DOCUMENT_INTELLIGENCE_REVIEWED", "document_intelligence_analyses", analysis.id, {
+        "decision": body.decision, "snapshot_hash": analysis.snapshot_hash,
+    })
+    await db.commit()
+    return _document_intelligence_payload(analysis, sources)
