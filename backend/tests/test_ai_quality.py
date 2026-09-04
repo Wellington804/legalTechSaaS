@@ -28,6 +28,8 @@ from app.services import document_tasks
 from app.services.document_tasks import _needs_pdf_ocr
 from app.services.legal_ai import DocumentSnapshot, EvidenceSource, LegalAIValidationError
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 def gold_content(*, unknown_only=False):
     questions = [{"id": "Q1", "prompt": "O pagamento foi comprovado?", "required": True}]
@@ -724,7 +726,7 @@ class AIQualityTests(unittest.TestCase):
         asyncio.run(scenario())
 
     def test_review_ui_displays_evidence_offsets_locator_and_ocr_without_integrality_claim(self):
-        source = Path("frontend/src/components/workspace/document-intelligence.tsx").read_text("utf-8")
+        source = (REPO_ROOT / "frontend/src/components/workspace/document-intelligence.tsx").read_text("utf-8")
         self.assertIn("offsets {evidence.start}–{evidence.end}", source)
         self.assertIn("source?.locator", source)
         self.assertIn("OCR:", source)
@@ -741,11 +743,11 @@ class AIQualityTests(unittest.TestCase):
         self.assertNotEqual(canonical_hash(original), canonical_hash(changed))
 
     def test_migration_declares_rls_and_reversible_chain(self):
-        migration = Path("backend/alembic/versions/20260904_0026_ai_evaluation_document_intelligence.py").read_text("utf-8")
+        migration = (REPO_ROOT / "backend/alembic/versions/20260904_0026_ai_evaluation_document_intelligence.py").read_text("utf-8")
         self.assertIn('down_revision = "20260904_0025"', migration)
         self.assertIn("FORCE ROW LEVEL SECURITY", migration)
         self.assertIn("def downgrade()", migration)
-        hardening = Path("backend/alembic/versions/20260904_0031_ai_quality_evidence_hardening.py").read_text("utf-8")
+        hardening = (REPO_ROOT / "backend/alembic/versions/20260904_0031_ai_quality_evidence_hardening.py").read_text("utf-8")
         self.assertIn('down_revision = "20260904_0030"', hardening)
         self.assertIn("consent receipts are immutable", hardening)
         self.assertIn("uq_ai_evaluation_cases_approved_name", hardening)
