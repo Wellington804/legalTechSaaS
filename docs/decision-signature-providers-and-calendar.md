@@ -54,6 +54,12 @@ Fluxo seguro:
 3. o provedor confirma por webhook autenticado;
 4. o LexFlow baixa o PDF final, valida tipo/tamanho, faz varredura, grava SHA-256 e o mantém imutável.
 
+A validação local com `pdfsig` confirma a integridade criptográfica e a cobertura
+do PDF, mas confiança e revogação da cadeia ICP-Brasil são estados separados. O
+runtime registra `unverified` até a cadeia vigente, CRL/OCSP e o fluxo real serem
+homologados; o [VALIDAR do ITI](https://validar.iti.gov.br/) continua sendo a
+referência oficial independente para conferência operacional.
+
 A Clicksign confirma publicamente a assinatura ICP-Brasil dentro do domínio com Widget Embedded Premium. Ainda assim, ela só pode ser ativada depois de contratar o plano elegível e o adicional, cadastrar o domínio e homologar a modalidade ICP-Brasil no navegador/SO alvo. Em iPhone/iPad, tokens USB A3 e middleware podem não ser suportados; assinatura remota ICP-Brasil em nuvem depende do certificado e do provedor do usuário. O iframe Autentique documentado não deve ser tratado como substituto comprovado dessa jornada.
 
 ## Calendário bidirecional
@@ -81,3 +87,4 @@ Fontes oficiais de calendário:
 3. Homologar A1, A3 USB e certificado remoto nos navegadores/SOs realmente usados pelo escritório.
 4. Testar webhook duplicado, fora de ordem e atrasado; download final; hash imutável; revogação de credencial; e isolamento entre tenants.
 5. Verificar políticas/termos Google e Microsoft, tela de consentimento e URLs HTTPS públicas antes de ativar OAuth/webhooks.
+6. Instalar e manter as [cadeias vigentes da ICP-Brasil](https://www.gov.br/iti/pt-br/assuntos/repositorio/cadeias-da-icp-brasil), validar revogação/carimbo do tempo e comparar amostras com o VALIDAR do ITI; integridade PAdES local isolada não autoriza marcar confiança como verificada.
