@@ -47,7 +47,7 @@ function totp(secret, offsetSeconds = 0) {
     const page = await context.newPage(); const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(`${base}/dashboard`);
-    await page.getByRole('heading', { name: 'Central do Advogado', exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'Painel Diário', exact: true }).waitFor();
     await page.getByText('Carregando registros…').first().waitFor({ state: 'hidden' });
     await page.keyboard.press('Control+k');
     await page.getByRole('dialog').waitFor();

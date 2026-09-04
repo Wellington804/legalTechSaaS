@@ -81,7 +81,8 @@ class BrandingPostgresTests(unittest.IsolatedAsyncioTestCase):
             stranger = await db.scalar(select(User).where(User.tenant_id == tenant_id, User.id != owner.id))
             document = await db.scalar(select(WorkspaceDocument).where(WorkspaceDocument.tenant_id == tenant_id))
             document_id = document.id
-            published = await api.publish(profile_id, BrandRevision(expected_revision=1), owner, db, owner)
+            with patch.object(api, "render", AsyncMock(return_value=(b"publication-preview", b"%PDF-publication-preview"))):
+                published = await api.publish(profile_id, BrandRevision(expected_revision=1), owner, db, owner)
             self.assertEqual(published["published_version"], 1)
             await _set_tenant_context(db, tenant_id)
             with patch.object(api, "render", AsyncMock(return_value=(b"docx-version-one", b"%PDF-version-one"))) as render:
