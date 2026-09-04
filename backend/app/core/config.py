@@ -1,3 +1,4 @@
+import re
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -107,6 +108,15 @@ class Settings(BaseSettings):
     EVOLUTION_ENABLED: bool = False
     EVOLUTION_GO_URL: str = "http://evolution-go:4000"
     EVOLUTION_API_KEY: str | None = None
+    GOOGLE_CALENDAR_CLIENT_ID: str | None = None
+    GOOGLE_CALENDAR_CLIENT_SECRET: str | None = None
+    GOOGLE_CALENDAR_REDIRECT_URI: str | None = None
+    GOOGLE_CALENDAR_WEBHOOK_URL: str | None = None
+    MICROSOFT_CALENDAR_CLIENT_ID: str | None = None
+    MICROSOFT_CALENDAR_CLIENT_SECRET: str | None = None
+    MICROSOFT_CALENDAR_TENANT: str = "common"
+    MICROSOFT_CALENDAR_REDIRECT_URI: str | None = None
+    MICROSOFT_CALENDAR_WEBHOOK_URL: str | None = None
 
     @property
     def is_hardened_environment(self) -> bool:
@@ -116,7 +126,6 @@ class Settings(BaseSettings):
     def reject_unsafe_deployment_settings(self) -> "Settings":
         if self.SUPPORT_URL:
             import ipaddress
-            import re
             support = urlsplit(self.SUPPORT_URL)
             host = support.hostname or ""
             try:
@@ -131,7 +140,6 @@ class Settings(BaseSettings):
         if self.WEB_PUSH_ENABLED:
             import hmac
             import ipaddress
-            import re
             from cryptography.hazmat.primitives import serialization
             from cryptography.hazmat.primitives.asymmetric import ec
             from app.schemas.push import decode_url_key
@@ -260,8 +268,6 @@ class Settings(BaseSettings):
         ):
             problems.append("Resend enabled without API key, sender and webhook secret")
         if self.RESEND_INBOUND_DOMAIN:
-            import re
-
             inbound_domain = self.RESEND_INBOUND_DOMAIN.casefold().lstrip("@")
             if (
                 not self.RESEND_ENABLED
@@ -276,6 +282,36 @@ class Settings(BaseSettings):
             if not self.EVOLUTION_API_KEY or self.NOTIFICATIONS_DRY_RUN:
                 problems.append("Evolution Go requires its global API key and live notifications")
             # Instance secrets are encrypted per tenant, not shared by all offices.
+        calendar_groups = {
+            "Google": (
+                self.GOOGLE_CALENDAR_CLIENT_ID,
+                self.GOOGLE_CALENDAR_CLIENT_SECRET,
+                self.GOOGLE_CALENDAR_REDIRECT_URI,
+                self.GOOGLE_CALENDAR_WEBHOOK_URL,
+                "/api/v1/integrations/calendar-oauth/google/callback",
+                "/api/v1/integrations/calendar-webhooks/google",
+            ),
+            "Microsoft": (
+                self.MICROSOFT_CALENDAR_CLIENT_ID,
+                self.MICROSOFT_CALENDAR_CLIENT_SECRET,
+                self.MICROSOFT_CALENDAR_REDIRECT_URI,
+                self.MICROSOFT_CALENDAR_WEBHOOK_URL,
+                "/api/v1/integrations/calendar-oauth/microsoft/callback",
+                "/api/v1/integrations/calendar-webhooks/microsoft",
+            ),
+        }
+        for provider, (client_id, client_secret, redirect_uri, webhook_url, callback_path, webhook_path) in calendar_groups.items():
+            values = (client_id, client_secret, redirect_uri, webhook_url)
+            if any(values) and not all(values):
+                problems.append(f"{provider} Calendar OAuth configuration is incomplete")
+            if all(values):
+                public_base = self.FRONTEND_URL.rstrip("/")
+                if redirect_uri != public_base + callback_path:
+                    problems.append(f"{provider} Calendar redirect URI must use the public callback")
+                if webhook_url != public_base + webhook_path:
+                    problems.append(f"{provider} Calendar webhook URL must use the public endpoint")
+        if not re.fullmatch(r"(?:common|organizations|consumers|[0-9a-fA-F-]{36})", self.MICROSOFT_CALENDAR_TENANT):
+            problems.append("MICROSOFT_CALENDAR_TENANT must be common, organizations, consumers, or a tenant UUID")
         if self.UNBOUND_NOTIFICATION_DISPATCH_ENABLED:
             problems.append("unbound notification dispatch cannot be enabled in a hardened environment")
         if self.PROTOTYPE_MODULES_ENABLED:

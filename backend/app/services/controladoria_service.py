@@ -365,13 +365,24 @@ async def record_judicial_event(
     payload: JudicialEventCreate,
     *,
     created_by_user_id: str | None = None,
+    trusted_provider: bool = False,
 ) -> tuple[ControladoriaJudicialEvent, bool]:
     """Persist one source-attributed event without deriving legal effects."""
     require_role(user, CONTROLADORIA_TRIAGE_ROLES)
     case = await get_case(db, user, payload.case_id)
+    require_case_write(user, case)
+    if payload.source_kind != "manual" and not trusted_provider:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Fonte automática exige conector homologado.",
+        )
     if payload.subscription_id:
         subscription = await get_subscription(db, user, payload.subscription_id)
-        if subscription.case_id != case.id or subscription.status == "disabled":
+        if (
+            subscription.case_id != case.id
+            or subscription.source_kind != payload.source_kind
+            or subscription.status == "disabled"
+        ):
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Assinatura nao corresponde ao caso.")
     dedupe_key = event_dedupe_key(case.id, payload)
     existing = await db.scalar(
@@ -461,6 +472,7 @@ async def triage_judicial_event(
 ) -> ControladoriaJudicialEvent:
     require_role(user, CONTROLADORIA_TRIAGE_ROLES)
     event = await get_event(db, user, event_id, for_update=True)
+    require_case_write(user, await get_case(db, user, event.case_id))
     if event.triage_status != "pending":
         if event.triage_status == triage_status:
             return event

@@ -256,6 +256,8 @@ def upgrade() -> None:
         "AND first_approved_by_user_id IS NOT NULL AND first_approved_at IS NOT NULL "
         "AND second_approved_by_user_id IS NOT NULL AND second_approved_at IS NOT NULL "
         "AND first_approval_note IS NOT NULL AND second_approval_note IS NOT NULL "
+        "AND first_approval_calculation_sha256 IS NOT NULL "
+        "AND second_approval_calculation_sha256 IS NOT NULL "
         "AND first_approval_calculation_sha256 = second_approval_calculation_sha256 "
         "AND reviewed_by_user_id = second_approved_by_user_id AND reviewed_at IS NOT NULL "
         "AND first_approved_by_user_id <> second_approved_by_user_id) OR "
@@ -283,6 +285,15 @@ def downgrade() -> None:
              OR EXISTS (
                SELECT 1 FROM controladoria_judicial_events
                WHERE source_kind IN ('djen', 'domicilio', 'tribunal_api')
+             )
+             OR EXISTS (
+               SELECT 1 FROM controladoria_deadline_reviews
+               WHERE approval_policy_version = 2
+                  OR calculation IS NOT NULL
+                  OR rule_id IS NOT NULL
+                  OR first_approved_by_user_id IS NOT NULL
+                  OR second_approved_by_user_id IS NOT NULL
+                  OR source_stale_at IS NOT NULL
              ) THEN
             RAISE EXCEPTION '0027 downgrade blocked: export or remove judicial-source and deadline-engine data first';
           END IF;

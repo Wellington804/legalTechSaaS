@@ -394,6 +394,11 @@ async def create_event(
     db: AsyncSession = Depends(get_db),
     _write: User = Depends(require_tenant_write),
 ):
+    if payload.source_kind != "manual":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Fontes automáticas só podem ser registradas pelo conector homologado.",
+        )
     record, created = await record_judicial_event(db, current_user, payload)
     if not created:
         response.status_code = status.HTTP_200_OK

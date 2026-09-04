@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Response, status
+from fastapi import FastAPI, Request, Response, status
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -10,6 +11,7 @@ from app.core.config import settings
 from app.core.database import engine
 from app.core.observability import init_sentry
 from app.core.redis_cache import cache_manager
+from app.services.calendar_providers import CalendarProviderError
 
 
 init_sentry()
@@ -43,6 +45,12 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
 )
 app.include_router(api_router, prefix=settings.API_V1_STR)
+
+
+@app.exception_handler(CalendarProviderError)
+async def calendar_provider_error(_: Request, exc: CalendarProviderError) -> JSONResponse:
+    code = status.HTTP_409_CONFLICT if exc.conflict or exc.reauthorization_required else status.HTTP_503_SERVICE_UNAVAILABLE
+    return JSONResponse(status_code=code, content={"detail": str(exc)})
 
 
 @app.get("/healthz", include_in_schema=False)

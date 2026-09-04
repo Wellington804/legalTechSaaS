@@ -220,6 +220,8 @@ class ControladoriaDeadlineReview(Base):
             "AND first_approved_by_user_id IS NOT NULL AND first_approved_at IS NOT NULL "
             "AND second_approved_by_user_id IS NOT NULL AND second_approved_at IS NOT NULL "
             "AND first_approval_note IS NOT NULL AND second_approval_note IS NOT NULL "
+            "AND first_approval_calculation_sha256 IS NOT NULL "
+            "AND second_approval_calculation_sha256 IS NOT NULL "
             "AND first_approval_calculation_sha256 = second_approval_calculation_sha256 "
             "AND reviewed_by_user_id = second_approved_by_user_id AND reviewed_at IS NOT NULL "
             "AND first_approved_by_user_id <> second_approved_by_user_id) OR "

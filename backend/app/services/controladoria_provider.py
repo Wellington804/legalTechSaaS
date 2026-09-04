@@ -33,6 +33,10 @@ class JudicialProviderError(RuntimeError):
     """The source could not be safely interpreted; no partial result is valid."""
 
 
+class JudicialProviderRateLimited(JudicialProviderError):
+    """The official source asked the caller to wait for a later polling cycle."""
+
+
 @dataclass(frozen=True)
 class ProviderJudicialEvent:
     source_event_id: str
@@ -220,6 +224,8 @@ class DataJudMonitoringProvider:
                     headers={"Authorization": f"APIKey {self._api_key}"},
                     json={"size": MAX_HITS, "query": {"match": {"numeroProcesso": number}}},
                 )
+            if response.status_code == 429:
+                raise JudicialProviderRateLimited("limite temporario da fonte judicial")
             if not response.is_success or len(response.content) > MAX_RESPONSE_BYTES:
                 raise JudicialProviderError("resposta DataJud invalida")
             hits = response.json()["hits"]["hits"]
@@ -462,7 +468,7 @@ class DjenMonitoringProvider:
             page = int(cursor or "1")
         except ValueError as exc:
             raise JudicialProviderError("cursor DJEN invalido") from exc
-        if not 1 <= page <= 100_000:
+        if not 1 <= page <= 100:
             raise JudicialProviderError("cursor DJEN fora do limite")
         try:
             async with self._client_factory(timeout=20, follow_redirects=False) as client:
@@ -477,6 +483,8 @@ class DjenMonitoringProvider:
                         "meio": "D",
                     },
                 )
+            if response.status_code == 429:
+                raise JudicialProviderRateLimited("limite temporario da fonte DJEN")
             if not response.is_success or len(response.content) > MAX_RESPONSE_BYTES:
                 raise JudicialProviderError("resposta DJEN invalida")
             payload = response.json()
@@ -504,7 +512,7 @@ class DjenMonitoringProvider:
             ]
             if event is not None
         ]
-        return ProviderFetchPage(events=events, next_cursor=str(page + 1) if len(items) == 100 else None)
+        return ProviderFetchPage(events=events, next_cursor=str(page + 1) if len(items) == 100 and page < 100 else None)
 
 
 class CredentialedCommunicationProvider:

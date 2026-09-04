@@ -56,14 +56,14 @@ def closure(day, *, kind="holiday", name="Feriado", scope_kind="national", scope
 
 
 class DeadlineEngineTests(unittest.TestCase):
-    def test_provider_retry_uses_bounded_exponential_backoff(self):
+    def test_provider_retry_uses_bounded_single_backoff(self):
         class Provider:
             def __init__(self):
                 self.calls = 0
 
             async def fetch_page(self, **_kwargs):
                 self.calls += 1
-                if self.calls < 3:
+                if self.calls < 2:
                     raise JudicialProviderError("temporario")
                 return ProviderFetchPage(events=[], next_cursor="cursor-ok")
 
@@ -79,21 +79,19 @@ class DeadlineEngineTests(unittest.TestCase):
             return provider, page, sleep
 
         provider, page, sleep = asyncio.run(run())
-        self.assertEqual(provider.calls, 3)
+        self.assertEqual(provider.calls, 2)
         self.assertEqual(page.next_cursor, "cursor-ok")
-        self.assertEqual([call.args[0] for call in sleep.await_args_list], [1, 2])
+        self.assertEqual([call.args[0] for call in sleep.await_args_list], [1])
 
-    def test_djen_poll_restarts_at_page_one_and_finishes_snapshot(self):
+    def test_djen_poll_resumes_bounded_snapshot_and_restarts_after_completion(self):
         class Provider:
             def __init__(self):
                 self.cursors = []
 
             async def fetch_page(self, **kwargs):
                 self.cursors.append(kwargs["cursor"])
-                return ProviderFetchPage(
-                    events=[kwargs["cursor"] or "page-1"],
-                    next_cursor="2" if kwargs["cursor"] is None else None,
-                )
+                page = int(kwargs["cursor"] or "1")
+                return ProviderFetchPage(events=[f"page-{page}"], next_cursor=str(page + 1) if page < 4 else None)
 
         async def run():
             provider = Provider()
@@ -102,14 +100,21 @@ class DeadlineEngineTests(unittest.TestCase):
                 source_kind="djen",
                 tribunal="tjsp",
                 process_number="00000000000000000000",
-                cursor="stale-page-from-prior-cycle",
+                cursor="2",
             )
             return provider, result
 
         provider, result = asyncio.run(run())
-        self.assertEqual(provider.cursors, [None, "2"])
-        self.assertEqual(result.events, ["page-1", "2"])
-        self.assertIsNone(result.next_cursor)
+        self.assertEqual(provider.cursors, ["2", "3"])
+        self.assertEqual(result.events, ["page-2", "page-3"])
+        self.assertEqual(result.next_cursor, "4")
+
+        provider = Provider()
+        finished = asyncio.run(_fetch_subscription_snapshot(
+            provider, source_kind="djen", tribunal="tjsp",
+            process_number="00000000000000000000", cursor="4",
+        ))
+        self.assertIsNone(finished.next_cursor)
 
     def test_business_days_exclude_weekend_holiday_and_suspension_in_rule_timezone(self):
         result = calculate_deadline(

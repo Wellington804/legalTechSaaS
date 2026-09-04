@@ -19,6 +19,7 @@ from app.services.controladoria_provider import (
     DjenMonitoringProvider,
     EscavadorMonitoringProvider,
     JudicialProviderError,
+    JudicialProviderRateLimited,
     monitoring_provider,
     parse_escavador_callback,
     parse_escavador_movement,
@@ -87,6 +88,24 @@ class ControladoriaServiceTests(unittest.TestCase):
         self.assertFalse(was_duplicate_created)
         self.assertIs(duplicate, created)
         self.assertEqual(duplicate_db.added, [])
+
+    def test_user_cannot_spoof_an_automatic_judicial_source(self):
+        payload = JudicialEventCreate(
+            case_id="case-a",
+            subscription_id="subscription-a",
+            source_kind="djen",
+            source_event_id="official-looking-id",
+            source_url="https://comunicaapi.pje.jus.br/api/v1/comunicacao",
+            title="Intimacao inventada",
+        )
+
+        async def run():
+            with patch.object(service, "get_case", AsyncMock(return_value=self.case)):
+                await service.record_judicial_event(FakeDatabase(), self.user, payload)
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(run())
+        self.assertEqual(caught.exception.status_code, 422)
 
     def test_only_distinct_second_approval_creates_manually_reviewed_deadline_task(self):
         async def run():
@@ -359,12 +378,14 @@ class ControladoriaServiceTests(unittest.TestCase):
 
         async def run():
             db = Database()
-            subscription = SimpleNamespace(case_id="case-a", status="active")
+            subscription = SimpleNamespace(case_id="case-a", source_kind="djen", status="active")
             with (
                 patch.object(service, "get_case", AsyncMock(return_value=self.case)),
                 patch.object(service, "get_subscription", AsyncMock(return_value=subscription)),
             ):
-                event, created = await service.record_judicial_event(db, self.user, payload)
+                event, created = await service.record_judicial_event(
+                    db, self.user, payload, trusted_provider=True
+                )
             return event, created
 
         event, created = asyncio.run(run())
@@ -390,6 +411,35 @@ class ControladoriaServiceTests(unittest.TestCase):
 
         with self.assertRaises(JudicialProviderError):
             asyncio.run(run())
+
+    def test_djen_rate_limit_defers_without_rapid_retry(self):
+        calls = 0
+
+        async def run():
+            nonlocal calls
+
+            def handler(_request: httpx.Request):
+                nonlocal calls
+                calls += 1
+                return httpx.Response(429)
+
+            provider = DjenMonitoringProvider(
+                client_factory=lambda **kwargs: httpx.AsyncClient(
+                    transport=httpx.MockTransport(handler), **kwargs
+                )
+            )
+            from app.services.controladoria_tasks import _fetch_with_backoff
+
+            await _fetch_with_backoff(
+                provider,
+                tribunal="tjsp",
+                process_number="00000000000000000000",
+                cursor=None,
+            )
+
+        with self.assertRaises(JudicialProviderRateLimited):
+            asyncio.run(run())
+        self.assertEqual(calls, 1)
 
     def test_credentialed_sources_fail_closed_until_endpoint_and_token_exist(self):
         config = SimpleNamespace()

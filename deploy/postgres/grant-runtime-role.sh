@@ -33,4 +33,7 @@ GRANT EXECUTE ON FUNCTION controladoria_monitoring_candidates(integer) TO :"app_
 GRANT EXECUTE ON FUNCTION controladoria_escavador_webhook_targets(text, text) TO :"app_user";
 GRANT EXECUTE ON FUNCTION document_lifecycle_candidates(integer) TO :"app_user";
 GRANT EXECUTE ON FUNCTION mark_document_object_deleted(text, text, text) TO :"app_user";
+GRANT EXECUTE ON FUNCTION calendar_webhook_identity(text, text) TO :"app_user";
+GRANT EXECUTE ON FUNCTION calendar_reconciliation_candidates(integer) TO :"app_user";
+GRANT EXECUTE ON FUNCTION autentique_signature_event_candidates(integer) TO :"app_user";
 SQL

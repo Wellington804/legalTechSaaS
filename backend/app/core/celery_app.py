@@ -8,7 +8,7 @@ celery_app = Celery(
     "legaltech_tasks",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
-    include=["app.services.tasks", "app.services.push_tasks", "app.services.routine_tasks", "app.services.controladoria_tasks", "app.services.document_tasks"]
+    include=["app.services.tasks", "app.services.push_tasks", "app.services.routine_tasks", "app.services.controladoria_tasks", "app.services.document_tasks", "app.services.calendar_sync_tasks", "app.services.autentique_tasks"]
 )
 
 celery_app.conf.update(
@@ -28,6 +28,8 @@ celery_app.conf.update(
         "dispatch-web-push": {"task": "push.dispatch_pending", "schedule": 30.0},
         "dispatch-routine-reminders": {"task": "routines.dispatch_reminders", "schedule": 30.0},
         "poll-datajud-monitoring": {"task": "controladoria.poll_datajud", "schedule": 900.0},
+        "reconcile-active-calendars": {"task": "calendar.reconcile_active", "schedule": 900.0},
+        "reconcile-autentique-artifacts": {"task": "autentique.reconcile_signed_artifacts", "schedule": 300.0},
         "purge-document-trash": {"task": "documents.purge_trash", "schedule": 3600.0, "options": {"queue": "documents"}},
         "purge-expired-ai-conversations": {"task": "tasks.purge_expired_ai_conversations", "schedule": 3600.0},
     },

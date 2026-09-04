@@ -65,6 +65,24 @@ fi
 tribunal_connectors=$(value_of TRIBUNAL_SOURCE_CONNECTORS)
 [ "$judicial_provider" != tribunal_api ] || { [ -n "$tribunal_connectors" ] && [ "$tribunal_connectors" != '{}' ]; } || fail "selected tribunal provider has no configured connector"
 
+validate_calendar_oauth() {
+  provider=$1
+  callback_path=$2
+  webhook_path=$3
+  client_id=$(value_of "${provider}_CALENDAR_CLIENT_ID")
+  client_secret=$(value_of "${provider}_CALENDAR_CLIENT_SECRET")
+  redirect_uri=$(value_of "${provider}_CALENDAR_REDIRECT_URI")
+  webhook_url=$(value_of "${provider}_CALENDAR_WEBHOOK_URL")
+  if [ -n "$client_id" ] || [ -n "$client_secret" ] || [ -n "$redirect_uri" ] || [ -n "$webhook_url" ]; then
+    [ -n "$client_id" ] && [ -n "$client_secret" ] && [ -n "$redirect_uri" ] && [ -n "$webhook_url" ] || fail "$provider Calendar OAuth configuration is incomplete"
+    [ "$redirect_uri" = "${frontend_url}${callback_path}" ] || fail "$provider Calendar redirect URI must use the public callback"
+    [ "$webhook_url" = "${frontend_url}${webhook_path}" ] || fail "$provider Calendar webhook URL must use the public endpoint"
+  fi
+}
+validate_calendar_oauth GOOGLE /api/v1/integrations/calendar-oauth/google/callback /api/v1/integrations/calendar-webhooks/google
+validate_calendar_oauth MICROSOFT /api/v1/integrations/calendar-oauth/microsoft/callback /api/v1/integrations/calendar-webhooks/microsoft
+case "$(value_of MICROSOFT_CALENDAR_TENANT)" in ''|common|organizations|consumers|????????-????-????-????-????????????) ;; *) fail "invalid MICROSOFT_CALENDAR_TENANT" ;; esac
+
 if [ "$mode" = go-live ]; then
   require_keys BACKEND_SENTRY_DSN FRONTEND_SENTRY_DSN OPENROUTER_API_KEY OPENROUTER_MODEL RESEND_API_KEY RESEND_FROM_EMAIL RESEND_WEBHOOK_SECRET EVOLUTION_API_KEY WEB_PUSH_VAPID_PUBLIC_KEY WEB_PUSH_VAPID_PRIVATE_KEY WEB_PUSH_VAPID_SUBJECT R2_ACCOUNT_ID R2_BUCKET_NAME R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY BACKUP_DIRECTORY BACKUP_PASSPHRASE_FILE BACKUP_OFFSITE_SSH_DESTINATION BACKUP_OFFSITE_SSH_KEY_PATH
   for flag in AI_ENABLED ACCOUNT_EMAILS_ENABLED RESEND_ENABLED EVOLUTION_ENABLED WEB_PUSH_ENABLED; do

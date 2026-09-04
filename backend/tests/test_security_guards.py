@@ -110,3 +110,33 @@ class SecurityGuardsTests(unittest.TestCase):
                 **safe_settings,
             )
         self.assertIn("no homologated connector", str(caught.exception))
+
+    def test_hardened_calendar_oauth_requires_complete_public_endpoints(self):
+        safe_settings = {
+            "SECRET_KEY": "a" * 64,
+            "COOKIE_SECURE": True,
+            "DATABASE_URL": "postgresql+asyncpg://app:secure-db-pass@db.example.test:5432/legaltech",
+            "REDIS_URL": "redis://:secure-redis-pass@redis.example.test:6379/0",
+            "CORS_ORIGINS": ["https://app.example.test"],
+            "ALLOWED_HOSTS": ["app.example.test"],
+            "FRONTEND_URL": "https://app.example.test",
+            "ACCOUNT_TOKEN_PEPPER": "test-pepper-" * 4,
+            "MFA_ENCRYPTION_KEY": "A" * 43 + "=",
+            "_env_file": None,
+        }
+        with self.assertRaises(ValidationError) as caught:
+            Settings(
+                ENVIRONMENT="production",
+                GOOGLE_CALENDAR_CLIENT_ID="client",
+                **safe_settings,
+            )
+        self.assertIn("Google Calendar OAuth configuration is incomplete", str(caught.exception))
+
+        Settings(
+            ENVIRONMENT="production",
+            GOOGLE_CALENDAR_CLIENT_ID="client",
+            GOOGLE_CALENDAR_CLIENT_SECRET="secret",
+            GOOGLE_CALENDAR_REDIRECT_URI="https://app.example.test/api/v1/integrations/calendar-oauth/google/callback",
+            GOOGLE_CALENDAR_WEBHOOK_URL="https://app.example.test/api/v1/integrations/calendar-webhooks/google",
+            **safe_settings,
+        )

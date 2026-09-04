@@ -17,6 +17,7 @@ from app.services.audit_service import AuditService
 from app.services.controladoria_provider import (
     EscavadorMonitoringProvider,
     JudicialProviderError,
+    JudicialProviderRateLimited,
     ProviderFetchPage,
     monitoring_provider,
     parse_escavador_callback,
@@ -26,22 +27,26 @@ from app.services.push_service import enqueue_user_push
 
 
 logger = logging.getLogger(__name__)
-MAX_DJEN_PAGES_PER_POLL = 100
+MAX_DJEN_PAGES_PER_POLL = 2
 
 
 async def _fetch_with_backoff(provider, *, tribunal: str, process_number: str, cursor: str | None) -> ProviderFetchPage:
     """Bounded provider retry; recurring beat remains the longer recovery path."""
     last_error: Exception | None = None
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             return await provider.fetch_page(
                 tribunal=tribunal,
                 process_number=process_number,
                 cursor=cursor,
             )
+        except JudicialProviderRateLimited:
+            # Official sources require cooldown after HTTP 429. The next
+            # periodic cycle is deliberately later than the DJEN minute.
+            raise
         except JudicialProviderError as exc:
             last_error = exc
-            if attempt < 2:
+            if attempt < 1:
                 await asyncio.sleep(2 ** attempt)
     raise JudicialProviderError("fonte judicial indisponivel apos novas tentativas") from last_error
 
@@ -59,7 +64,7 @@ async def _fetch_subscription_snapshot(
             provider, tribunal=tribunal, process_number=process_number, cursor=cursor
         )
     events = []
-    next_cursor = None
+    next_cursor = cursor
     seen_cursors: set[str] = set()
     for _ in range(MAX_DJEN_PAGES_PER_POLL):
         page = await _fetch_with_backoff(
@@ -75,7 +80,7 @@ async def _fetch_subscription_snapshot(
             raise JudicialProviderError("paginacao DJEN repetida")
         seen_cursors.add(page.next_cursor)
         next_cursor = page.next_cursor
-    raise JudicialProviderError("consulta DJEN excedeu o limite oficial de 10.000 resultados")
+    return ProviderFetchPage(events=events, next_cursor=next_cursor)
 
 
 async def _mark_failed(tenant_id: str, subscription_id: str, code: str) -> None:
@@ -171,6 +176,7 @@ async def _poll_subscription(tenant_id: str, subscription_id: str) -> dict:
                     occurred_at=source_event.occurred_at,
                     retrieved_at=source_event.retrieved_at,
                 ),
+                trusted_provider=True,
             )
             if created:
                 imported += 1
@@ -263,6 +269,7 @@ async def _ingest_escavador_callback(payload: dict) -> dict:
                     occurred_at=delivery.event.occurred_at,
                     retrieved_at=delivery.event.retrieved_at,
                 ),
+                trusted_provider=True,
             )
             matched += 1
             now = datetime.now(timezone.utc)
@@ -304,13 +311,13 @@ async def _poll_controladoria():
     try:
         async with AsyncSessionLocal() as db:
             rows = (await db.execute(text("SELECT * FROM controladoria_monitoring_candidates(50)"))).all()
-        result = {"status": "ok", "checked": 0, "imported": 0, "failed": 0}
+        result = {"status": "ok", "candidates": len(rows), "published": 0}
         for row in rows:
-            result["checked"] += 1
-            outcome = await _poll_subscription_safely(row.tenant_id, row.subscription_id)
-            result["imported"] += outcome["imported"]
-            if outcome["status"] == "failed":
-                result["failed"] += 1
+            try:
+                poll_subscription.delay(row.tenant_id, row.subscription_id)
+                result["published"] += 1
+            except Exception:
+                logger.warning("Judicial monitoring job publication deferred")
         return result
     finally:
         await engine.dispose()
