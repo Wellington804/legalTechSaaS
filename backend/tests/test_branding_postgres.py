@@ -57,7 +57,12 @@ class BrandingPostgresTests(unittest.IsolatedAsyncioTestCase):
             db.add(WorkspaceDocumentVersion(tenant_id=tenant_id, document_id=document.id, version=1, content_text=document.content_text, content_format="plain", created_by_user_id=owner.id))
             await db.commit()
             await _set_tenant_context(db, tenant_id)
-            created = await api.create_profile(BrandCreate(name="Marca do advogado"), owner, db, owner)
+            created = await api.create_profile(
+                BrandCreate(name="Marca do advogado", settings={"header_fields": [], "footer_fields": []}),
+                owner,
+                db,
+                owner,
+            )
             profile_id = created["id"]
             await _set_tenant_context(db, tenant_id)
             with self.assertRaises(HTTPException) as unpublished:

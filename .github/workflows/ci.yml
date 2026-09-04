@@ -33,7 +33,10 @@ jobs:
           cache-dependency-path: backend/requirements.lock
       - run: pip install --require-hashes -r backend/requirements.lock
       - name: Install document renderer and licensed fonts
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-writer fonts-liberation2
+        run: >-
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
+          libreoffice-writer fonts-liberation2 fonts-dejavu fonts-noto-core fonts-lato
+          fonts-crosextra-carlito fonts-crosextra-caladea fonts-croscore
       - name: Audit the hashed Linux dependency lock
         run: |
           python -m venv /tmp/legaltech-pip-audit

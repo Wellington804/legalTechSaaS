@@ -75,7 +75,7 @@ class ConnectedPostgresTests(unittest.IsolatedAsyncioTestCase):
     async def test_branding_authenticated_http_and_real_pdf_word_exports(self):
         a, _ = await self.register()
         b, _ = await self.register()
-        brand = await self.request(a, "POST", "/branding/profiles", 201, json={"name": "Identidade fictícia", "scope": "personal", "settings": {"header_text": "Advocacia — exemplo fictício", "footer_text": "Somente validação técnica"}})
+        brand = await self.request(a, "POST", "/branding/profiles", 201, json={"name": "Identidade fictícia", "scope": "personal", "settings": {"header_text": "Advocacia — exemplo fictício", "footer_text": "Somente validação técnica", "header_fields": [], "footer_fields": []}})
         path = f"/branding/profiles/{brand['id']}"
         await self.request(b, "PUT", path, 404, json={"name": "Ataque", "settings": {}, "expected_revision": 1})
         await self.request(a, "POST", path + "/publish", json={"expected_revision": 1})
