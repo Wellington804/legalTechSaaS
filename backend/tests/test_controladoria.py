@@ -10,8 +10,8 @@ from fastapi import HTTPException
 import httpx
 
 from app.api.v1.endpoints import controladoria
-from app.models.workspace import WorkspaceTask
-from app.schemas.controladoria import JudicialEventCreate
+from app.models.workspace import WorkspaceCase, WorkspaceTask
+from app.schemas.controladoria import JudicialEventCreate, MonitoringSubscriptionFromNumberCreate
 from app.services import controladoria_service as service
 from app.services.controladoria_provider import (
     CredentialedCommunicationProvider,
@@ -61,6 +61,86 @@ class ControladoriaServiceTests(unittest.TestCase):
         self.assertEqual(service.infer_datajud_tribunal(cnj("5", "02")), "trt2")
         self.assertEqual(service.infer_datajud_tribunal(None, "Tribunal de Justiça do Paraná - TJPR"), "tjpr")
         self.assertIsNone(service.infer_datajud_tribunal("invalido", "Tribunal desconhecido"))
+
+    def test_monitoring_from_number_creates_one_canonical_case_for_current_lawyer(self):
+        class Database(FakeDatabase):
+            async def flush(self):
+                await super().flush()
+                for record in self.added:
+                    if isinstance(record, WorkspaceCase) and record.id is None:
+                        record.id = "case-new"
+
+        async def run():
+            db = Database((None,))
+            payload = MonitoringSubscriptionFromNumberCreate(
+                client_id="client-a",
+                process_number="0000000-00.0000.8.26.0000",
+                source_kind="djen",
+            )
+            subscription = SimpleNamespace(id="subscription-new")
+            with (
+                patch.object(service, "get_client", AsyncMock()),
+                patch.object(service, "lock_workspace_tenant", AsyncMock()),
+                patch.object(
+                    service,
+                    "create_monitoring_subscription",
+                    AsyncMock(return_value=(subscription, True)),
+                ) as create_subscription,
+            ):
+                result = await service.create_monitoring_subscription_from_number(
+                    db, self.user, payload, source_kind="djen"
+                )
+            return db, result, create_subscription
+
+        db, (case, case_created, subscription, subscription_created), create_subscription = asyncio.run(run())
+        self.assertTrue(case_created)
+        self.assertTrue(subscription_created)
+        self.assertEqual(case.number, "0000000-00.0000.8.26.0000")
+        self.assertEqual(case.responsible_user_id, self.user.id)
+        self.assertEqual(case.client_id, "client-a")
+        self.assertEqual(case.court, "TJSP")
+        self.assertEqual(subscription.id, "subscription-new")
+        self.assertEqual(len(db.added), 1)
+        self.assertEqual(create_subscription.await_count, 1)
+
+    def test_monitoring_from_number_reuses_an_accessible_case_instead_of_duplicating_it(self):
+        existing_case = SimpleNamespace(
+            id="case-existing",
+            client_id="client-a",
+            responsible_user_id="lawyer-a",
+            archived_at=None,
+            status="open",
+        )
+
+        async def run():
+            db = FakeDatabase((existing_case,))
+            payload = MonitoringSubscriptionFromNumberCreate(
+                client_id="client-a",
+                process_number="00000000000008260000",
+                title="Titulo que nao deve substituir o cadastro",
+            )
+            subscription = SimpleNamespace(id="subscription-existing")
+            with (
+                patch.object(service, "get_client", AsyncMock()),
+                patch.object(service, "lock_workspace_tenant", AsyncMock()),
+                patch.object(service, "get_case", AsyncMock(return_value=existing_case)),
+                patch.object(
+                    service,
+                    "create_monitoring_subscription",
+                    AsyncMock(return_value=(subscription, False)),
+                ),
+            ):
+                result = await service.create_monitoring_subscription_from_number(
+                    db, self.user, payload, source_kind="djen"
+                )
+            return db, result
+
+        db, (case, case_created, subscription, subscription_created) = asyncio.run(run())
+        self.assertIs(case, existing_case)
+        self.assertFalse(case_created)
+        self.assertFalse(subscription_created)
+        self.assertEqual(subscription.id, "subscription-existing")
+        self.assertEqual(db.added, [])
 
     def test_event_deduplication_returns_existing_source_event(self):
         async def run():

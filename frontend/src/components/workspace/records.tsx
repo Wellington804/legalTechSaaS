@@ -53,13 +53,13 @@ export const definitions: Record<string, Definition> = {
     { key: "manually_reviewed", label: "Data e origem conferidas por mim", type: "checkbox" },
   ] },
   library: { title: "Biblioteca jurídica", subtitle: "Acervo privado com fonte e data. Links são referências; o sistema não atesta a vigência ou o entendimento jurídico.", path: "library", columns: ["title", "source_url", "created_at"], fields: [
-    { key: "title", label: "Título", required: true }, { key: "source_url", label: "Fonte (HTTPS)", type: "url", required: true },
+    { key: "title", label: "Título", required: true }, { key: "source_url", label: "Link da fonte", type: "url", required: true },
     { key: "note", label: "Anotações e contexto", type: "textarea" },
     { key: "source_date", label: "Data da fonte", type: "date" },
   ] },
   publications: { title: "Publicações e andamentos", subtitle: "Cada registro conserva origem e data. A confirmação de leitura não cria nem calcula prazos.", path: "publications", columns: ["title", "source_url", "published_at", "acknowledged_at"], fields: [
     { key: "case_id", label: "Caso", relation: "cases", required: true }, { key: "title", label: "Descrição do andamento", required: true },
-    { key: "source_url", label: "Fonte (HTTPS)", type: "url", required: true }, { key: "published_at", label: "Data da publicação", type: "date", required: true },
+    { key: "source_url", label: "Link da fonte", type: "url", required: true }, { key: "published_at", label: "Data da publicação", type: "date", required: true },
   ] },
 };
 const labels: Record<string, string> = { lead: "Novo contato", prospect: "Em atendimento", client: "Cliente", inactive: "Inativo", individual: "Pessoa física", company: "Pessoa jurídica", open: "Aberto", paused: "Suspenso", closed: "Encerrado", archived: "Arquivado", pending: "Pendente", completed: "Concluída", cancelled: "Cancelada", canceled: "Cancelada", active: "Ativa", trial: "Período de teste", past_due: "Pagamento pendente", recorded: "Registrada", queued: "Na fila", sent: "Enviada", delivered: "Entregue", failed: "Falha", posted: "Efetivado", reversed: "Estornado", portal: "Portal", whatsapp: "WhatsApp", email: "E-mail", starter: "Inicial", professional: "Profissional", office: "Escritório", task: "Tarefa", deadline: "Prazo", hearing: "Audiência", judicial_event: "Movimentação judicial", opponent: "Parte contrária", third_party: "Terceiro" };

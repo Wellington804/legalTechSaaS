@@ -13,7 +13,7 @@ from typing import TypeVar
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, status
-from sqlalchemy import and_, or_, select, text, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,6 +37,7 @@ from app.schemas.controladoria import (
     DeadlineSuggestionCreate,
     JudicialEventCreate,
     MonitoringSubscriptionCreate,
+    MonitoringSubscriptionFromNumberCreate,
     SUPPORTED_DATAJUD_TRIBUNALS,
     WorkflowRunCreate,
     WorkflowRunItemUpdate,
@@ -50,8 +51,11 @@ from app.services.controladoria_deadline_engine import (
 )
 from app.services.workspace_service import (
     active_tenant_user,
+    CASE_MANAGER_ROLES,
     case_access_clause,
+    get_client,
     get_case,
+    lock_workspace_tenant,
     require_case_write,
     require_role,
 )
@@ -79,6 +83,11 @@ def normalize_cnj(value: str | None) -> str:
             detail="O caso precisa ter numero CNJ com 20 digitos para monitoramento.",
         )
     return number
+
+
+def format_cnj(value: str) -> str:
+    number = normalize_cnj(value)
+    return f"{number[:7]}-{number[7:9]}.{number[9:13]}.{number[13]}.{number[14:16]}.{number[16:]}"
 
 
 STATE_COURTS = {
@@ -345,6 +354,66 @@ async def create_monitoring_subscription(
             return existing, False
         raise
     return record, True
+
+
+async def create_monitoring_subscription_from_number(
+    db: AsyncSession,
+    user: User,
+    payload: MonitoringSubscriptionFromNumberCreate,
+    *,
+    source_kind: str,
+) -> tuple[WorkspaceCase, bool, ControladoriaMonitoringSubscription, bool]:
+    """Create the accessible case and monitoring subscription in one transaction."""
+    require_role(user, CASE_MANAGER_ROLES)
+    await get_client(db, user, payload.client_id)
+    await lock_workspace_tenant(db, user.tenant_id)
+
+    process_number = normalize_cnj(payload.process_number)
+    tribunal = payload.tribunal or infer_datajud_tribunal(process_number)
+    if not tribunal:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Nao foi possivel identificar o tribunal. Confira o numero CNJ ou informe o tribunal.",
+        )
+    existing = await db.scalar(
+        select(WorkspaceCase)
+        .where(
+            WorkspaceCase.tenant_id == user.tenant_id,
+            func.regexp_replace(func.coalesce(WorkspaceCase.number, ""), "[^0-9]", "", "g")
+            == process_number,
+        )
+        .order_by(WorkspaceCase.created_at.asc())
+        .limit(1)
+    )
+    case_created = existing is None
+    if existing:
+        case = await get_case(db, user, existing.id)
+        require_case_write(user, case)
+        if case.archived_at is not None or case.status == "archived":
+            raise _conflict("Este processo ja esta arquivado. Reative-o antes de iniciar o acompanhamento.")
+        if case.client_id != payload.client_id:
+            raise _conflict("Este numero ja pertence a outro cliente do escritorio.")
+    else:
+        case = WorkspaceCase(
+            tenant_id=user.tenant_id,
+            client_id=payload.client_id,
+            title=payload.title or f"Processo {format_cnj(process_number)}",
+            number=format_cnj(process_number),
+            court=tribunal.upper(),
+            status="open",
+            responsible_user_id=user.id,
+            restricted=False,
+        )
+        db.add(case)
+        await db.flush()
+
+    subscription, subscription_created = await create_monitoring_subscription(
+        db,
+        user,
+        MonitoringSubscriptionCreate(case_id=case.id, source_kind=source_kind, tribunal=tribunal),
+        source_kind=source_kind,
+    )
+    return case, case_created, subscription, subscription_created
 
 
 async def set_subscription_status(

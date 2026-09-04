@@ -40,6 +40,8 @@ from app.schemas.controladoria import (
     JudicialEventResponse,
     JudicialEventTriage,
     MonitoringSubscriptionCreate,
+    MonitoringSubscriptionFromNumberCreate,
+    MonitoringSubscriptionFromNumberResponse,
     MonitoringSubscriptionResponse,
     MonitoringSubscriptionUpdate,
     JudicialProviderStatus,
@@ -60,6 +62,7 @@ from app.services.controladoria_service import (
     create_deadline_rule,
     create_deadline_suggestion,
     create_monitoring_subscription,
+    create_monitoring_subscription_from_number,
     create_workflow_template,
     get_event,
     get_workflow_template,
@@ -76,6 +79,8 @@ from app.services.controladoria_service import (
     workflow_template_steps,
     approve_deadline_and_create_task,
     get_subscription,
+    infer_datajud_tribunal,
+    normalize_cnj,
 )
 from app.services.controladoria_provider import (
     JudicialProviderError,
@@ -290,6 +295,73 @@ async def create_subscription(
         {"case_id": record.case_id, "source_kind": record.source_kind, "tribunal": record.tribunal},
     )
     return MonitoringSubscriptionResponse.model_validate(record)
+
+
+@router.post(
+    "/subscriptions/from-number",
+    response_model=MonitoringSubscriptionFromNumberResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_subscription_from_number(
+    payload: MonitoringSubscriptionFromNumberCreate,
+    response: Response,
+    *,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    _write: User = Depends(require_tenant_write),
+):
+    source_kind = payload.source_kind or settings.JUDICIAL_MONITORING_PROVIDER
+    process_number = normalize_cnj(payload.process_number)
+    tribunal = payload.tribunal or infer_datajud_tribunal(process_number)
+    if not tribunal:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Nao foi possivel identificar o tribunal. Confira o numero CNJ.",
+        )
+    try:
+        monitoring_provider(source_kind, settings, tribunal=tribunal)
+    except JudicialProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Esta fonte de consulta esta temporariamente indisponivel.",
+        ) from exc
+
+    case, case_created, record, subscription_created = await create_monitoring_subscription_from_number(
+        db,
+        current_user,
+        payload,
+        source_kind=source_kind,
+    )
+    if case_created:
+        await AuditService.log_action(
+            db,
+            current_user.tenant_id,
+            current_user.id,
+            "WORKSPACE_CASE_CREATED",
+            "workspace_cases",
+            case.id,
+            {"created_from": "controladoria_monitoring"},
+        )
+    if subscription_created:
+        await AuditService.log_action(
+            db,
+            current_user.tenant_id,
+            current_user.id,
+            "CONTROLADORIA_MONITORING_SUBSCRIBED",
+            "controladoria_monitoring_subscriptions",
+            record.id,
+            {"case_id": case.id, "source_kind": record.source_kind, "tribunal": record.tribunal},
+        )
+    await db.commit()
+    if not case_created and not subscription_created:
+        response.status_code = status.HTTP_200_OK
+    return MonitoringSubscriptionFromNumberResponse(
+        case_id=case.id,
+        case_title=case.title,
+        case_created=case_created,
+        subscription_created=subscription_created,
+        subscription=MonitoringSubscriptionResponse.model_validate(record),
+    )
 
 
 @router.put("/subscriptions/{subscription_id}", response_model=MonitoringSubscriptionResponse)

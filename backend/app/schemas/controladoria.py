@@ -62,6 +62,32 @@ class MonitoringSubscriptionCreate(ControladoriaSchema):
         return normalized
 
 
+class MonitoringSubscriptionFromNumberCreate(ControladoriaSchema):
+    client_id: str = Field(min_length=1, max_length=64)
+    process_number: str = Field(min_length=20, max_length=64)
+    title: str | None = Field(default=None, min_length=2, max_length=300)
+    source_kind: JudicialSourceKind | None = None
+    tribunal: str | None = Field(default=None, min_length=2, max_length=20)
+
+    @field_validator("process_number")
+    @classmethod
+    def valid_process_number(cls, value: str) -> str:
+        normalized = "".join(character for character in value if character.isdigit())
+        if len(normalized) != 20:
+            raise ValueError("numero CNJ deve ter 20 digitos")
+        return normalized
+
+    @field_validator("tribunal")
+    @classmethod
+    def valid_tribunal(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.lower()
+        if normalized not in SUPPORTED_DATAJUD_TRIBUNALS:
+            raise ValueError("tribunal judicial nao suportado")
+        return normalized
+
+
 class MonitoringSubscriptionUpdate(ControladoriaSchema):
     status: Literal["active", "paused", "disabled"]
 
@@ -80,6 +106,14 @@ class MonitoringSubscriptionResponse(ControladoriaSchema):
     last_error_code: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class MonitoringSubscriptionFromNumberResponse(ControladoriaSchema):
+    case_id: str
+    case_title: str
+    case_created: bool
+    subscription_created: bool
+    subscription: MonitoringSubscriptionResponse
 
 
 class JudicialProviderStatus(ControladoriaSchema):
