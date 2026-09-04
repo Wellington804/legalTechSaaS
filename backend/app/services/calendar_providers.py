@@ -351,10 +351,9 @@ class CalendarClient:
 
     async def create_event(self, calendar_id: str, task_id: str, body: dict[str, Any], connection_id: str) -> RemoteEvent:
         if self.provider == "google":
-            event_id = hashlib.sha256(f"{connection_id}:{task_id}".encode()).hexdigest()[:40]
             payload = await self._request(
                 "POST", f"https://www.googleapis.com/calendar/v3/calendars/{quote(calendar_id, safe='')}/events",
-                json_body={"id": event_id, **_google_body(body), "extendedProperties": {"private": {"lexflow_task_id": task_id, "lexflow_connection_id": connection_id}}},
+                json_body={**_google_body(body), "extendedProperties": {"private": {"lexflow_task_id": task_id, "lexflow_connection_id": connection_id}}},
             )
         else:
             payload = await self._request(

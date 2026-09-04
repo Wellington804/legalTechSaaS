@@ -1,3 +1,4 @@
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit
@@ -72,6 +73,39 @@ class CalendarProviderTests(unittest.IsolatedAsyncioTestCase):
             calendars = await CalendarClient("google", "access", http=http).calendars()
         self.assertTrue(calendars[0].can_write)
         self.assertFalse(calendars[1].can_write)
+
+    async def test_google_create_lets_provider_issue_fresh_id_and_keeps_recovery_markers(self):
+        captured = {}
+
+        async def handler(request: httpx.Request):
+            captured.update(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "id": "provider-generated-event",
+                    "etag": '"etag"',
+                    "summary": "Prazo",
+                    "start": {"dateTime": "2026-09-10T12:00:00Z"},
+                },
+            )
+
+        body = {
+            "title": "Prazo",
+            "starts_at": datetime(2026, 9, 10, 12, tzinfo=timezone.utc),
+            "location": "",
+            "notes": "",
+        }
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            remote = await CalendarClient("google", "access", http=http).create_event(
+                "calendar-a", "task-a", body, "connection-a"
+            )
+
+        self.assertEqual(remote.identifier, "provider-generated-event")
+        self.assertNotIn("id", captured)
+        self.assertEqual(
+            captured["extendedProperties"]["private"],
+            {"lexflow_task_id": "task-a", "lexflow_connection_id": "connection-a"},
+        )
 
     async def test_calendar_inventory_paginates_google_with_bounded_page_tokens(self):
         urls = []
