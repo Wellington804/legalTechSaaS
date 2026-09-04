@@ -104,7 +104,7 @@ function totp(secret, offsetSeconds = 0) {
     }
     await page.goto(`${base}/dashboard/assinaturas`);
     await page.waitForURL('**/dashboard/operacoes');
-    await page.getByRole('heading', { name: 'Atendimento e cobranças', exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'Atendimento e honorários', exact: true }).waitFor();
     assert.deepEqual(errors, []);
     const logout = await context.request.post(`${api}/auth/logout`, { headers: origin });
     assert.equal(logout.status(), 204);
