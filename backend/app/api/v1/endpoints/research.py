@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.core.config import settings
 from app.core.database import get_db
@@ -24,6 +25,7 @@ from app.models.workspace import (
     WorkspaceLibraryEntry,
     WorkspacePublication,
     WorkspaceTask,
+    WorkspaceDocumentVersion,
 )
 from app.models.assistant import (
     AIConversation,
@@ -32,11 +34,19 @@ from app.models.assistant import (
     AIEvaluationResult,
     AIEvaluationRun,
     DocumentIntelligenceAnalysis,
+    DocumentIntelligenceConsentReceipt,
     DocumentIntelligenceSource,
 )
 from app.services.ai_provider import AIProviderError, ai_available, generate_text, model_name, provider_name
 from app.services.audit_service import AuditService
-from app.services.ai_quality import EvaluationCaseContent, canonical_hash
+from app.services.ai_quality import (
+    DOCUMENT_INTELLIGENCE_CONSENT_POLICY,
+    EvaluationCaseContent,
+    canonical_hash,
+    consent_receipt_hash,
+    document_provenance_manifest,
+    evaluation_prompt,
+)
 from app.services.document_tasks import run_ai_evaluation, run_document_intelligence
 from app.services.document_text import TextExtractionError, citation_chunks, extract_upload_text
 from app.services.legal_ai import (
@@ -198,6 +208,7 @@ class DocumentIntelligenceReviewInput(BaseModel):
     decision: Literal["approve", "reject"]
     note: str = Field(min_length=3, max_length=1000)
     expected_revision: int = Field(ge=1)
+    acknowledge_partial: StrictBool = False
 
 
 def _conversation_payload(conversation: AIConversation) -> dict:
@@ -824,6 +835,7 @@ def _evaluation_case_payload(row: AIEvaluationCase) -> dict:
     return {
         "id": row.id, "name": row.name, "legal_area": row.legal_area, "version": row.version,
         "status": row.status, "content": row.content, "content_hash": row.content_hash,
+        "created_by_user_id": row.created_by_user_id,
         "reviewed_by_user_id": row.reviewed_by_user_id, "review_note": row.review_note,
         "reviewed_at": row.reviewed_at, "revision": row.revision,
         "created_at": row.created_at, "updated_at": row.updated_at,
@@ -850,11 +862,18 @@ def _evaluation_run_payload(row: AIEvaluationRun, results: list[AIEvaluationResu
 def _document_intelligence_payload(row: DocumentIntelligenceAnalysis, sources: list[DocumentIntelligenceSource]) -> dict:
     return {
         "id": row.id, "case_id": row.case_id, "request_id": row.request_id,
-        "snapshot_hash": row.snapshot_hash, "status": row.status, "provider": row.provider, "model": row.model,
+        "snapshot_hash": row.snapshot_hash, "request_fingerprint": row.request_fingerprint,
+        "status": row.status, "provider": row.provider, "model": row.model,
         "evidence_sources": row.evidence_sources, "result_hash": row.result_hash,
         "classifications": row.classifications, "timeline": row.timeline,
-        "contradiction_groups": row.contradiction_groups, "limitations": row.limitations, "error": row.error,
-        "sources": [{"document_id": item.document_id, "version": item.document_version, "sha256": item.sha256, "title": item.title} for item in sources],
+        "contradiction_groups": row.contradiction_groups, "limitations": row.limitations,
+        "coverage": row.coverage, "error": row.error,
+        "sources": [{
+            "document_id": item.document_id, "version": item.document_version,
+            "sha256": item.sha256, "binary_sha256": item.binary_sha256,
+            "text_sha256": item.text_sha256, "extractor": item.extractor,
+            "ocr_status": item.ocr_status, "title": item.title,
+        } for item in sources],
         "reviewed_by_user_id": row.reviewed_by_user_id, "review_note": row.review_note,
         "reviewed_at": row.reviewed_at, "revision": row.revision,
         "created_at": row.created_at, "updated_at": row.updated_at,
@@ -883,6 +902,13 @@ async def _create_evaluation_case(db: AsyncSession, user, body: EvaluationCaseCr
         if existing.content_hash != content_hash or existing.legal_area != body.legal_area:
             raise HTTPException(409, "Já existe outra versão com este nome e número.")
         return existing, False
+    latest_version = await db.scalar(select(AIEvaluationCase.version).where(
+        AIEvaluationCase.tenant_id == user.tenant_id,
+        AIEvaluationCase.name == body.name,
+    ).order_by(AIEvaluationCase.version.desc()).limit(1).with_for_update())
+    expected_version = (latest_version or 0) + 1
+    if body.version != expected_version:
+        raise HTTPException(409, f"A próxima versão deste corpus deve ser {expected_version}.")
     row = AIEvaluationCase(
         tenant_id=user.tenant_id, name=body.name, legal_area=body.legal_area,
         version=body.version, status="draft", content=content, content_hash=content_hash,
@@ -961,12 +987,20 @@ async def review_evaluation_case(case_id: str, body: EvaluationReviewInput, user
         raise HTTPException(404, "Caso de avaliação não encontrado.")
     if row.revision != body.expected_revision:
         raise HTTPException(409, "O caso mudou durante a revisão.")
+    if row.status != "draft":
+        raise HTTPException(409, "Somente uma versão em rascunho pode ser revisada.")
+    if row.created_by_user_id == user.id:
+        raise HTTPException(409, "A revisão deve ser realizada por outro advogado autorizado.")
     try:
         content = EvaluationCaseContent.model_validate(row.content)
     except ValueError:
         raise HTTPException(409, "O corpus persistido não corresponde ao contrato atual.") from None
     if canonical_hash(content.model_dump(mode="json")) != row.content_hash:
         raise HTTPException(409, "O hash do corpus não confere. A revisão foi bloqueada.")
+    try:
+        evaluation_prompt(content)
+    except AIProviderError:
+        raise HTTPException(422, "O corpus excede o limite seguro do provedor. Divida as fontes antes de aprovar.") from None
     if body.decision == "approve":
         await db.execute(update(AIEvaluationCase).where(
             AIEvaluationCase.tenant_id == user.tenant_id,
@@ -982,7 +1016,11 @@ async def review_evaluation_case(case_id: str, body: EvaluationReviewInput, user
     await AuditService.log_action(db, user.tenant_id, user.id, "AI_EVALUATION_CASE_REVIEWED", "ai_evaluation_cases", row.id, {
         "decision": body.decision, "version": row.version, "content_hash": row.content_hash,
     })
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, "Outra versão deste corpus já foi aprovada.") from None
     return _evaluation_case_payload(row)
 
 
@@ -1080,6 +1118,23 @@ async def _analysis_sources(db: AsyncSession, user, analysis_id: str) -> tuple[D
     return row, sources
 
 
+async def _document_provenance(db: AsyncSession, tenant_id: str, documents: list[WorkspaceDocument]) -> list[dict]:
+    pairs = [(document.id, document.current_version) for document in documents]
+    versions = (await db.execute(select(WorkspaceDocumentVersion).options(load_only(
+        WorkspaceDocumentVersion.document_id, WorkspaceDocumentVersion.version,
+        WorkspaceDocumentVersion.sha256_hash, WorkspaceDocumentVersion.object_key,
+        WorkspaceDocumentVersion.filename, WorkspaceDocumentVersion.ocr_status,
+        WorkspaceDocumentVersion.content_type,
+    )).where(
+        WorkspaceDocumentVersion.tenant_id == tenant_id,
+        or_(*[
+            and_(WorkspaceDocumentVersion.document_id == document_id, WorkspaceDocumentVersion.version == version)
+            for document_id, version in pairs
+        ]),
+    ))).scalars().all() if pairs else []
+    return document_provenance_manifest(documents, versions)
+
+
 @router.post("/cases/{case_id}/document-intelligence")
 async def create_document_intelligence(case_id: str, body: DocumentIntelligenceInput, user: CurrentUser, db: AsyncSession = Depends(get_db)):
     require_role(user, {"admin", "partner", "lawyer"})
@@ -1088,34 +1143,57 @@ async def create_document_intelligence(case_id: str, body: DocumentIntelligenceI
         raise HTTPException(403, "Confirme o envio dos documentos selecionados ao assistente.")
     if not ai_available(settings, "legal"):
         raise HTTPException(503, "A rota jurídica da IA não está configurada.")
+    # Authorization and the exact document snapshot are revalidated even on an
+    # idempotent replay. A tenant-scoped request id alone is not an ACL decision.
+    case, documents = await _case_evidence(db, user, case_id, body.document_ids)
+    manifest = await _document_provenance(db, user.tenant_id, documents)
+    selected_provider, selected_model = provider_name(settings), model_name(settings, "legal")
+    request_fingerprint = canonical_hash({
+        "case_id": case.id, "requested_by_user_id": user.id,
+        "documents": manifest, "provider": selected_provider, "model": selected_model,
+        "purpose": "document_intelligence",
+        "consent_policy": DOCUMENT_INTELLIGENCE_CONSENT_POLICY,
+    })
     request_id = str(body.request_id)
     existing = await db.scalar(select(DocumentIntelligenceAnalysis).where(
         DocumentIntelligenceAnalysis.tenant_id == user.tenant_id,
         DocumentIntelligenceAnalysis.request_id == request_id,
     ))
     if existing:
+        if existing.case_id != case.id or existing.request_fingerprint != request_fingerprint:
+            raise HTTPException(409, "Este request_id já foi usado com outro processo, usuário ou conjunto de documentos.")
         _reenqueue_if_queued(run_document_intelligence, existing, user.tenant_id)
         row, sources = await _analysis_sources(db, user, existing.id)
         return {**_document_intelligence_payload(row, sources), "created": False}
-    case, documents = await _case_evidence(db, user, case_id, body.document_ids)
     await reserve_request(user.tenant_id, "ai", settings.AI_REQUESTS_PER_DAY, 86400)
-    snapshots = sorted(({
-        "document_id": document.id, "version": document.current_version,
-        "sha256": hashlib.sha256((document.content_text or "").encode()).hexdigest(),
-    } for document in documents), key=lambda item: item["document_id"])
+    snapshots = manifest
     analysis = DocumentIntelligenceAnalysis(
         tenant_id=user.tenant_id, case_id=case.id, request_id=request_id,
-        snapshot_hash=canonical_hash(snapshots), status="queued",
-        provider=provider_name(settings), model=model_name(settings, "legal"), requested_by_user_id=user.id,
+        request_fingerprint=request_fingerprint, snapshot_hash=canonical_hash(snapshots), status="queued",
+        provider=selected_provider, model=selected_model, requested_by_user_id=user.id,
     )
     db.add(analysis)
     await db.flush()
+    document_registry = {document.id: document for document in documents}
     sources = [DocumentIntelligenceSource(
-        tenant_id=user.tenant_id, analysis_id=analysis.id, document_id=document.id,
-        document_version=document.current_version,
-        sha256=hashlib.sha256((document.content_text or "").encode()).hexdigest(), title=document.title,
-    ) for document in documents]
+        tenant_id=user.tenant_id, analysis_id=analysis.id, document_id=item["document_id"],
+        document_version=item["version"], sha256=item["text_sha256"],
+        binary_sha256=item["binary_sha256"], text_sha256=item["text_sha256"],
+        extractor=item["extractor"], ocr_status=item["ocr_status"],
+        title=document_registry[item["document_id"]].title,
+    ) for item in manifest]
     db.add_all(sources)
+    receipt = DocumentIntelligenceConsentReceipt(
+        tenant_id=user.tenant_id, analysis_id=analysis.id, case_id=case.id, user_id=user.id,
+        provider=selected_provider, purpose="document_intelligence",
+        policy_version=DOCUMENT_INTELLIGENCE_CONSENT_POLICY, document_manifest=manifest,
+    )
+    receipt.receipt_hash = consent_receipt_hash(
+        analysis_id=analysis.id, case_id=case.id, user_id=user.id,
+        provider=receipt.provider, purpose=receipt.purpose,
+        policy_version=receipt.policy_version, document_manifest=manifest,
+    )
+    db.add(receipt)
     await AuditService.log_action(db, user.tenant_id, user.id, "DOCUMENT_INTELLIGENCE_REQUESTED", "document_intelligence_analyses", analysis.id, {
         "documents": snapshots, "snapshot_hash": analysis.snapshot_hash, "model": analysis.model,
     })
@@ -1129,6 +1207,8 @@ async def create_document_intelligence(case_id: str, body: DocumentIntelligenceI
             DocumentIntelligenceAnalysis.request_id == request_id,
         ))
         if existing:
+            if existing.case_id != case.id or existing.request_fingerprint != request_fingerprint:
+                raise HTTPException(409, "Este request_id conflita com uma solicitação anterior.")
             _reenqueue_if_queued(run_document_intelligence, existing, user.tenant_id)
             existing_row, existing_sources = await _analysis_sources(db, user, existing.id)
             return {**_document_intelligence_payload(existing_row, existing_sources), "created": False}
@@ -1185,6 +1265,7 @@ async def review_document_intelligence(case_id: str, analysis_id: str, body: Doc
         "timeline": analysis.timeline,
         "contradiction_groups": analysis.contradiction_groups,
         "limitations": analysis.limitations,
+        "coverage": analysis.coverage,
     })
     if not analysis.result_hash or persisted_result_hash != analysis.result_hash:
         raise HTTPException(409, "O resultado persistido não passou na verificação de integridade.")
@@ -1194,13 +1275,14 @@ async def review_document_intelligence(case_id: str, analysis_id: str, body: Doc
         WorkspaceDocument.deleted_at.is_(None),
     ))).scalars().all()
     current = sorted(({
-        "document_id": document.id, "version": document.current_version,
-        "sha256": hashlib.sha256((document.content_text or "").encode()).hexdigest(),
-    } for document in documents), key=lambda item: item["document_id"])
+        **item,
+    } for item in await _document_provenance(db, user.tenant_id, documents)), key=lambda item: item["document_id"])
     if canonical_hash(current) != analysis.snapshot_hash:
         analysis.status, analysis.error, analysis.revision = "stale", "Documentos alterados depois da análise.", analysis.revision + 1
         await db.commit()
         raise HTTPException(409, "Um documento mudou desde a análise. Execute uma nova análise.")
+    if body.decision == "approve" and analysis.coverage and analysis.coverage.get("truncated") and not body.acknowledge_partial:
+        raise HTTPException(422, "A análise usou apenas parte do conteúdo. Confirme explicitamente a ressalva de cobertura.")
     analysis.status = "approved" if body.decision == "approve" else "rejected"
     analysis.reviewed_by_user_id = user.id
     analysis.review_note = body.note

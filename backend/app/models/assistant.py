@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, CheckConstraint, Column, DateTime, ForeignKey, ForeignKeyConstraint, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, CheckConstraint, Column, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint, text
 
 from app.core.database import Base
 
@@ -64,6 +64,17 @@ class AIEvaluationCase(Base):
         ForeignKeyConstraint(["tenant_id", "reviewed_by_user_id"], ["users.tenant_id", "users.id"], name="fk_ai_eval_cases_reviewer_tenant"),
         CheckConstraint("status IN ('draft','approved','rejected','retired')", name="ck_ai_evaluation_cases_status"),
         CheckConstraint("version > 0", name="ck_ai_evaluation_cases_version"),
+        CheckConstraint(
+            "(status = 'draft' AND reviewed_by_user_id IS NULL AND reviewed_at IS NULL) "
+            "OR status = 'retired' OR "
+            "(status IN ('approved','rejected') AND reviewed_by_user_id IS NOT NULL "
+            "AND reviewed_at IS NOT NULL AND reviewed_by_user_id <> created_by_user_id)",
+            name="ck_ai_evaluation_cases_independent_review",
+        ),
+        Index(
+            "uq_ai_evaluation_cases_approved_name", "tenant_id", "name", unique=True,
+            postgresql_where=text("status = 'approved'"),
+        ),
     )
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -148,6 +159,7 @@ class DocumentIntelligenceAnalysis(Base):
     tenant_id = Column(String, ForeignKey("tenants.id"), nullable=False, index=True)
     case_id = Column(String, nullable=False, index=True)
     request_id = Column(String(36), nullable=False)
+    request_fingerprint = Column(String(64), nullable=False)
     snapshot_hash = Column(String(64), nullable=False)
     status = Column(String(24), nullable=False, default="queued", index=True)
     provider = Column(String(40), nullable=False)
@@ -158,6 +170,7 @@ class DocumentIntelligenceAnalysis(Base):
     timeline = Column(JSON, nullable=True)
     contradiction_groups = Column(JSON, nullable=True)
     limitations = Column(JSON, nullable=True)
+    coverage = Column(JSON, nullable=True)
     error = Column(String(500), nullable=True)
     requested_by_user_id = Column(String, nullable=False)
     reviewed_by_user_id = Column(String, nullable=True)
@@ -183,5 +196,43 @@ class DocumentIntelligenceSource(Base):
     document_id = Column(String, nullable=False, index=True)
     document_version = Column(Integer, nullable=False)
     sha256 = Column(String(64), nullable=False)
+    binary_sha256 = Column(String(64), nullable=True)
+    text_sha256 = Column(String(64), nullable=False)
+    extractor = Column(String(80), nullable=False)
+    ocr_status = Column(String(24), nullable=False)
     title = Column(String(300), nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class DocumentIntelligenceConsentReceipt(Base):
+    __tablename__ = "document_intelligence_consent_receipts"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_document_intelligence_consent_receipts_tenant_id"),
+        UniqueConstraint("tenant_id", "analysis_id", name="uq_document_intelligence_consent_analysis"),
+        ForeignKeyConstraint(
+            ["tenant_id", "analysis_id"],
+            ["document_intelligence_analyses.tenant_id", "document_intelligence_analyses.id"],
+            name="fk_document_intelligence_consent_analysis_tenant",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id"], ["users.tenant_id", "users.id"],
+            name="fk_document_intelligence_consent_user_tenant", ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "case_id"], ["workspace_cases.tenant_id", "workspace_cases.id"],
+            name="fk_document_intelligence_consent_case_tenant", ondelete="RESTRICT",
+        ),
+    )
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String, ForeignKey("tenants.id"), nullable=False, index=True)
+    analysis_id = Column(String, nullable=False, index=True)
+    case_id = Column(String, nullable=False)
+    user_id = Column(String, nullable=False)
+    provider = Column(String(40), nullable=False)
+    purpose = Column(String(80), nullable=False)
+    policy_version = Column(String(32), nullable=False)
+    document_manifest = Column(JSON, nullable=False)
+    receipt_hash = Column(String(64), nullable=False)
+    consented_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)

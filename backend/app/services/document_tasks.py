@@ -8,7 +8,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import select, text
+from sqlalchemy import and_, or_, select, text
+from sqlalchemy.orm import load_only
 
 from app.core.celery_app import celery_app
 from app.core.config import settings
@@ -19,12 +20,15 @@ from app.models.assistant import (
     AIEvaluationResult,
     AIEvaluationRun,
     DocumentIntelligenceAnalysis,
+    DocumentIntelligenceConsentReceipt,
     DocumentIntelligenceSource,
 )
+from app.models.user import User
 from app.models.workspace import WorkspaceCase, WorkspaceDocument, WorkspaceDocumentUpload, WorkspaceDocumentVersion
 from app.services.ai_provider import AIProviderError, generate_text, model_name, provider_name
 from app.services.ai_quality import (
     DOCUMENT_INTELLIGENCE_SYSTEM_PROMPT,
+    DOCUMENT_INTELLIGENCE_CONSENT_POLICY,
     EVALUATION_SYSTEM_PROMPT,
     DocumentIntelligenceOutput,
     EvaluationCaseContent,
@@ -32,6 +36,8 @@ from app.services.ai_quality import (
     EvaluationOutput,
     aggregate_evaluation_metrics,
     canonical_hash,
+    consent_receipt_hash,
+    document_provenance_manifest,
     document_intelligence_prompt,
     evaluation_prompt,
     evaluation_run_outcome,
@@ -44,7 +50,7 @@ from app.services.audit_service import AuditService
 from app.services.document_storage import DocumentStorageError, delete, object_key, promote, read, scan
 from app.services.document_text import TextExtractionError, extract_upload_text, mark_pdf_pages
 from app.services.legal_ai import build_evidence_bundle
-from app.services.workspace_service import reset_document_review, validate_upload_bytes
+from app.services.workspace_service import case_access_clause, reset_document_review, validate_upload_bytes
 from app.services.push_service import enqueue_user_push
 
 
@@ -87,6 +93,31 @@ def _needs_pdf_ocr(extracted: str | None) -> bool:
     return sparse_page or printable < max(80, 40 * len(pages)) or replacement_ratio > 0.02
 
 
+async def _extract_document_text(content_type: str, content: bytes) -> tuple[str | None, str, str | None]:
+    try:
+        extracted = await asyncio.to_thread(extract_upload_text, content_type, content)
+    except TextExtractionError:
+        extracted = None
+    ocr_status = "not_required"
+    ocr_error = None
+    if content_type.startswith("image/") or (content_type == "application/pdf" and _needs_pdf_ocr(extracted)):
+        ocr_status = "processing"
+        try:
+            ocr_text = await asyncio.to_thread(_ocr, content_type, content)
+            if ocr_text:
+                extracted = ocr_text
+                ocr_status = "complete"
+            else:
+                ocr_status = "failed"
+                ocr_error = "OCR não encontrou texto utilizável."
+        except Exception:
+            # Integrity and malware checks are performed by the caller first.
+            # OCR is a derivative; its failure must not destroy the original.
+            ocr_status = "failed"
+            ocr_error = "OCR indisponível; original preservado para nova tentativa."
+    return extracted, ocr_status, ocr_error
+
+
 async def _upload_row(upload_id: str, tenant_id: str, *, lock: bool = False):
     async with AsyncSessionLocal() as db, db.begin():
         await _set_tenant_context(db, tenant_id)
@@ -119,15 +150,7 @@ async def _process_upload(upload_id: str, tenant_id: str) -> str:
     if content_type != upload["content_type"] or (upload["expected_sha256"] and digest != upload["expected_sha256"]):
         raise DocumentStorageError("Integridade ou formato do arquivo nao confere.")
     await asyncio.to_thread(scan, content)
-    try:
-        extracted = await asyncio.to_thread(extract_upload_text, content_type, content)
-    except TextExtractionError:
-        extracted = None
-    ocr_status = "not_required"
-    if content_type.startswith("image/") or (content_type == "application/pdf" and _needs_pdf_ocr(extracted)):
-        ocr_status = "processing"
-        extracted = await asyncio.to_thread(_ocr, content_type, content)
-        ocr_status = "complete" if extracted else "failed"
+    extracted, ocr_status, ocr_error = await _extract_document_text(content_type, content)
 
     async with AsyncSessionLocal() as db, db.begin():
         await _set_tenant_context(db, tenant_id)
@@ -173,7 +196,7 @@ async def _process_upload(upload_id: str, tenant_id: str) -> str:
             content_text=document.content_text, content_format=document.content_format,
             filename=filename, content_type=content_type, file_size=len(content), sha256_hash=digest,
             object_key=destination, storage_status="available", ocr_status=ocr_status,
-            processing_error="OCR não encontrou texto utilizável." if ocr_status == "failed" else None,
+            processing_error=ocr_error,
             created_by_user_id=upload["created_by_user_id"],
             created_by_portal_grant_id=upload["created_by_portal_grant_id"],
         ))
@@ -258,7 +281,7 @@ def purge_trash():
         asyncio.run(engine.dispose())
 
 
-async def _run_evaluation(run_id: str, tenant_id: str) -> str:
+async def _run_evaluation_impl(run_id: str, tenant_id: str) -> str:
     now = datetime.now(timezone.utc)
     async with AsyncSessionLocal() as db, db.begin():
         await _set_tenant_context(db, tenant_id)
@@ -365,7 +388,79 @@ async def _run_evaluation(run_id: str, tenant_id: str) -> str:
     return run.status
 
 
-async def _run_document_intelligence(analysis_id: str, tenant_id: str) -> str:
+async def _validated_intelligence_context(db, analysis: DocumentIntelligenceAnalysis, tenant_id: str):
+    source_rows = (await db.execute(select(DocumentIntelligenceSource).where(
+        DocumentIntelligenceSource.analysis_id == analysis.id,
+        DocumentIntelligenceSource.tenant_id == tenant_id,
+    ).order_by(DocumentIntelligenceSource.document_id))).scalars().all()
+    documents = (await db.execute(select(WorkspaceDocument).where(
+        WorkspaceDocument.tenant_id == tenant_id,
+        WorkspaceDocument.id.in_([row.document_id for row in source_rows]),
+        WorkspaceDocument.deleted_at.is_(None),
+    ))).scalars().all()
+    versions = (await db.execute(select(WorkspaceDocumentVersion).options(load_only(
+        WorkspaceDocumentVersion.document_id, WorkspaceDocumentVersion.version,
+        WorkspaceDocumentVersion.sha256_hash, WorkspaceDocumentVersion.object_key,
+        WorkspaceDocumentVersion.filename, WorkspaceDocumentVersion.ocr_status,
+        WorkspaceDocumentVersion.content_type,
+    )).where(
+        WorkspaceDocumentVersion.tenant_id == tenant_id,
+        or_(*[
+            and_(WorkspaceDocumentVersion.document_id == row.document_id, WorkspaceDocumentVersion.version == row.document_version)
+            for row in source_rows
+        ]),
+    ))).scalars().all() if source_rows else []
+    manifest = document_provenance_manifest(documents, versions)
+    persisted = [{
+        "document_id": row.document_id, "version": row.document_version,
+        "binary_sha256": row.binary_sha256, "text_sha256": row.text_sha256,
+        "extractor": row.extractor, "ocr_status": row.ocr_status,
+    } for row in source_rows]
+    if len(documents) != len(source_rows) or manifest != persisted or canonical_hash(manifest) != analysis.snapshot_hash:
+        raise AIProviderError("stale document provenance")
+    user = await db.scalar(select(User).where(
+        User.id == analysis.requested_by_user_id,
+        User.tenant_id == tenant_id,
+        User.is_active.is_(True),
+    ))
+    if not user:
+        raise AIProviderError("requesting user is no longer active")
+    case = await db.scalar(select(WorkspaceCase).where(
+        WorkspaceCase.id == analysis.case_id,
+        WorkspaceCase.tenant_id == tenant_id,
+        case_access_clause(user),
+    ))
+    if not case:
+        raise AIProviderError("requesting user no longer has access to the case")
+    receipt = await db.scalar(select(DocumentIntelligenceConsentReceipt).where(
+        DocumentIntelligenceConsentReceipt.analysis_id == analysis.id,
+        DocumentIntelligenceConsentReceipt.tenant_id == tenant_id,
+    ))
+    if (
+        not receipt or receipt.case_id != case.id or receipt.user_id != user.id
+        or receipt.provider != analysis.provider or receipt.purpose != "document_intelligence"
+        or receipt.policy_version != DOCUMENT_INTELLIGENCE_CONSENT_POLICY
+        or receipt.document_manifest != manifest
+    ):
+        raise AIProviderError("missing or stale consent receipt")
+    expected_receipt_hash = consent_receipt_hash(
+        analysis_id=analysis.id, case_id=case.id, user_id=user.id,
+        provider=receipt.provider, purpose=receipt.purpose,
+        policy_version=receipt.policy_version, document_manifest=manifest,
+    )
+    if receipt.receipt_hash != expected_receipt_hash:
+        raise AIProviderError("consent receipt integrity check failed")
+    expected_fingerprint = canonical_hash({
+        "case_id": case.id, "requested_by_user_id": user.id,
+        "documents": manifest, "provider": analysis.provider, "model": analysis.model,
+        "purpose": "document_intelligence", "consent_policy": receipt.policy_version,
+    })
+    if analysis.request_fingerprint != expected_fingerprint:
+        raise AIProviderError("request fingerprint does not match its authorization snapshot")
+    return source_rows, sorted(documents, key=lambda item: item.id), case, user
+
+
+async def _run_document_intelligence_impl(analysis_id: str, tenant_id: str) -> str:
     async with AsyncSessionLocal() as db, db.begin():
         await _set_tenant_context(db, tenant_id)
         analysis = await db.scalar(select(DocumentIntelligenceAnalysis).where(
@@ -374,56 +469,27 @@ async def _run_document_intelligence(analysis_id: str, tenant_id: str) -> str:
         ).with_for_update())
         if not analysis or analysis.status not in {"queued", "processing"}:
             return "ignored"
-        source_rows = (await db.execute(select(DocumentIntelligenceSource).where(
-            DocumentIntelligenceSource.analysis_id == analysis_id,
-            DocumentIntelligenceSource.tenant_id == tenant_id,
-        ).order_by(DocumentIntelligenceSource.document_id))).scalars().all()
-        documents = (await db.execute(select(WorkspaceDocument).where(
-            WorkspaceDocument.tenant_id == tenant_id,
-            WorkspaceDocument.id.in_([row.document_id for row in source_rows]),
-            WorkspaceDocument.deleted_at.is_(None),
-        ))).scalars().all()
-        documents = sorted(documents, key=lambda item: item.id)
-        current_snapshot = sorted(({
-            "document_id": document.id,
-            "version": document.current_version,
-            "sha256": hashlib.sha256((document.content_text or "").encode()).hexdigest(),
-        } for document in documents), key=lambda item: item["document_id"])
-        persisted_snapshot = sorted(({
-            "document_id": row.document_id, "version": row.document_version, "sha256": row.sha256,
-        } for row in source_rows), key=lambda item: item["document_id"])
-        if current_snapshot != persisted_snapshot or canonical_hash(current_snapshot) != analysis.snapshot_hash:
-            analysis.status = "stale"
-            analysis.error = "Documentos alterados antes da análise."
-            return "stale"
+        source_rows, documents, case, user = await _validated_intelligence_context(db, analysis, tenant_id)
         if provider_name(settings) != analysis.provider or model_name(settings, "legal") != analysis.model:
-            analysis.status = "stale"
-            analysis.error = "A rota de IA mudou depois do agendamento."
+            analysis.status, analysis.error = "stale", "A rota de IA mudou depois do agendamento."
             return "stale"
-        case = await db.scalar(select(WorkspaceCase).where(
-            WorkspaceCase.id == analysis.case_id, WorkspaceCase.tenant_id == tenant_id,
-        ))
-        if not case:
-            analysis.status = "failed"
-            analysis.error = "Processo não encontrado."
-            return "failed"
         analysis.status = "processing"
-        requested_by = analysis.requested_by_user_id
+        requested_by = user.id
 
-    try:
-        bundle = build_evidence_bundle(documents, "classificação anexo fatos datas valores partes eventos divergências", max_source_chars=60_000)
-        if not bundle["sources"]:
-            raise AIProviderError("documents have no citable text")
-        raw = await generate_text(
-            system_prompt=DOCUMENT_INTELLIGENCE_SYSTEM_PROMPT,
-            user_prompt=document_intelligence_prompt(case=case, sources=bundle["sources"], snapshots=bundle["snapshots"]),
-            purpose="legal", max_output_tokens=7000, temperature=0,
-            response_schema=DocumentIntelligenceOutput.model_json_schema(),
-        )
-        output = validate_document_intelligence(parse_document_intelligence(raw), bundle["sources"], bundle["snapshots"])
-        status, error = "review_required", None
-    except (AIProviderError, ValueError, TypeError) as exc:
-        output, status, error = None, "failed", (str(exc) or "Falha de análise documental.")[:500]
+    bundle = build_evidence_bundle(
+        documents, "classificação anexo fatos datas valores partes eventos divergências",
+        max_source_chars=40_000,
+    )
+    if not bundle["sources"]:
+        raise AIProviderError("documents have no citable text")
+    prompt = document_intelligence_prompt(case=case, sources=bundle["sources"], snapshots=bundle["snapshots"])
+    raw = await generate_text(
+        system_prompt=DOCUMENT_INTELLIGENCE_SYSTEM_PROMPT,
+        user_prompt=prompt,
+        purpose="legal", max_output_tokens=7000, temperature=0,
+        response_schema=DocumentIntelligenceOutput.model_json_schema(),
+    )
+    output = validate_document_intelligence(parse_document_intelligence(raw), bundle["sources"], bundle["snapshots"])
 
     async with AsyncSessionLocal() as db, db.begin():
         await _set_tenant_context(db, tenant_id)
@@ -431,29 +497,71 @@ async def _run_document_intelligence(analysis_id: str, tenant_id: str) -> str:
             DocumentIntelligenceAnalysis.id == analysis_id,
             DocumentIntelligenceAnalysis.tenant_id == tenant_id,
         ).with_for_update())
-        if not analysis or analysis.status not in {"processing", "queued"}:
+        if not analysis or analysis.status != "processing":
             return "ignored"
-        analysis.status = status
-        analysis.error = error
-        if output:
-            analysis.evidence_sources = [item.model_dump(mode="json") for item in bundle["sources"]]
-            analysis.classifications = [item.model_dump(mode="json") for item in sorted(output.classifications, key=lambda item: item.document_id)]
-            analysis.timeline = [item.model_dump(mode="json") for item in sorted(
-                output.events, key=lambda item: (item.event_date is None, item.event_date.isoformat() if item.event_date else "", item.id),
-            )]
-            analysis.contradiction_groups = [item.model_dump(mode="json") for item in sorted(output.contradiction_groups, key=lambda item: item.id)]
-            analysis.limitations = output.limitations
-            analysis.result_hash = canonical_hash({
-                "evidence_sources": analysis.evidence_sources,
-                "classifications": analysis.classifications,
-                "timeline": analysis.timeline,
-                "contradiction_groups": analysis.contradiction_groups,
-                "limitations": analysis.limitations,
-            })
-        await AuditService.log_action(db, tenant_id, requested_by, "DOCUMENT_INTELLIGENCE_COMPLETED", "document_intelligence_analyses", analysis_id, {
-            "status": status, "review_required": status == "review_required",
+        await _validated_intelligence_context(db, analysis, tenant_id)
+        analysis.status, analysis.error = "review_required", None
+        analysis.evidence_sources = [item.model_dump(mode="json") for item in bundle["sources"]]
+        analysis.classifications = [item.model_dump(mode="json") for item in sorted(output.classifications, key=lambda item: item.document_id)]
+        analysis.timeline = [item.model_dump(mode="json") for item in sorted(
+            output.events, key=lambda item: (item.event_date is None, item.event_date.isoformat() if item.event_date else "", item.id),
+        )]
+        analysis.contradiction_groups = [item.model_dump(mode="json") for item in sorted(output.contradiction_groups, key=lambda item: item.id)]
+        analysis.limitations = output.limitations
+        analysis.coverage = bundle["coverage"]
+        analysis.result_hash = canonical_hash({
+            "evidence_sources": analysis.evidence_sources,
+            "classifications": analysis.classifications,
+            "timeline": analysis.timeline,
+            "contradiction_groups": analysis.contradiction_groups,
+            "limitations": analysis.limitations,
+            "coverage": analysis.coverage,
         })
-    return status
+        await AuditService.log_action(db, tenant_id, requested_by, "DOCUMENT_INTELLIGENCE_COMPLETED", "document_intelligence_analyses", analysis_id, {
+            "status": "review_required", "review_required": True,
+            "coverage": analysis.coverage,
+        })
+    return "review_required"
+
+
+async def _mark_evaluation_failed(run_id: str, tenant_id: str, error: Exception) -> None:
+    async with AsyncSessionLocal() as db, db.begin():
+        await _set_tenant_context(db, tenant_id)
+        run = await db.scalar(select(AIEvaluationRun).where(
+            AIEvaluationRun.id == run_id, AIEvaluationRun.tenant_id == tenant_id,
+        ).with_for_update())
+        if run and run.status in {"queued", "running"}:
+            run.status = "failed"
+            run.error = (str(error) or "Falha inesperada na avaliação.")[:500]
+            run.completed_at = datetime.now(timezone.utc)
+
+
+async def _mark_intelligence_failed(analysis_id: str, tenant_id: str, error: Exception) -> None:
+    async with AsyncSessionLocal() as db, db.begin():
+        await _set_tenant_context(db, tenant_id)
+        analysis = await db.scalar(select(DocumentIntelligenceAnalysis).where(
+            DocumentIntelligenceAnalysis.id == analysis_id,
+            DocumentIntelligenceAnalysis.tenant_id == tenant_id,
+        ).with_for_update())
+        if analysis and analysis.status in {"queued", "processing"}:
+            analysis.status = "failed"
+            analysis.error = (str(error) or "Falha inesperada na análise documental.")[:500]
+
+
+async def _run_evaluation(run_id: str, tenant_id: str) -> str:
+    try:
+        return await _run_evaluation_impl(run_id, tenant_id)
+    except Exception as exc:
+        await _mark_evaluation_failed(run_id, tenant_id, exc)
+        return "failed"
+
+
+async def _run_document_intelligence(analysis_id: str, tenant_id: str) -> str:
+    try:
+        return await _run_document_intelligence_impl(analysis_id, tenant_id)
+    except Exception as exc:
+        await _mark_intelligence_failed(analysis_id, tenant_id, exc)
+        return "failed"
 
 
 @celery_app.task(name="documents.run_ai_evaluation", queue="documents", acks_late=True, reject_on_worker_lost=True, soft_time_limit=270, time_limit=300)

@@ -17,6 +17,7 @@ AUDIT_TEST_DATABASE_URL = os.environ.get("AUDIT_TEST_DATABASE_URL")
 TABLES = {
     "ai_evaluation_cases", "ai_evaluation_runs", "ai_evaluation_results",
     "document_intelligence_analyses", "document_intelligence_sources",
+    "document_intelligence_consent_receipts",
 }
 
 
@@ -39,7 +40,8 @@ class AIQualityPostgresTests(unittest.TestCase):
             rows = await connection.execute(text(
                 "SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname IN "
                 "('ai_evaluation_cases','ai_evaluation_runs','ai_evaluation_results',"
-                "'document_intelligence_analyses','document_intelligence_sources')"
+                "'document_intelligence_analyses','document_intelligence_sources',"
+                "'document_intelligence_consent_receipts')"
             ))
         if role.rolbypassrls or role.rolsuper:
             raise AssertionError("AUDIT_TEST_DATABASE_URL must use a NOBYPASSRLS runtime role")

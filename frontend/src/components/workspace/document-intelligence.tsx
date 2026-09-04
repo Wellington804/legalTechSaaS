@@ -12,6 +12,7 @@ type Analysis = Row & {
   timeline?: Array<{ id: string; event_date?: string; description: string; source_ids: string[] }>;
   contradiction_groups?: Array<{ id: string; topic: string; explanation: string; source_ids: string[] }>;
   limitations?: string[];
+  coverage?: { documents: number; source_characters: number; total_content_characters: number; truncated: boolean };
   error?: string;
   sources: Array<{ document_id: string; title: string; version: number }>;
 };
@@ -20,15 +21,21 @@ export function DocumentIntelligence({ caseId, documents }: { caseId: string; do
   const analyses = useResource<Analysis[]>(`/engagement/cases/${caseId}/document-intelligence`);
   const [selected, setSelected] = useState<string[]>([]);
   const [consent, setConsent] = useState(false);
+  const [partialAcknowledged, setPartialAcknowledged] = useState<Record<string, boolean>>({});
   const usable = documents.filter(document => Boolean(document.content_text));
 
   async function review(item: Analysis, decision: "approve" | "reject") {
+    if (decision === "approve" && item.coverage?.truncated && !partialAcknowledged[item.id]) {
+      window.alert("Confirme que a análise cobre apenas parte do conteúdo antes de aprovar.");
+      return;
+    }
     const note = window.prompt(
       decision === "approve" ? "Registre o que foi conferido" : "Registre o motivo da rejeição",
     )?.trim();
     if (!note) return;
     await api.post(`/engagement/cases/${caseId}/document-intelligence/${item.id}/review`, {
       decision, note, expected_revision: item.revision,
+      acknowledge_partial: Boolean(partialAcknowledged[item.id]),
     });
     analyses.reload();
   }
@@ -54,6 +61,14 @@ export function DocumentIntelligence({ caseId, documents }: { caseId: string; do
       {!!item.timeline?.length && <section><h3 className="text-sm font-medium">Linha do tempo probatória</h3><ol className="mt-1 space-y-2">{item.timeline.map(row => <li key={row.id} className="text-sm"><span className="text-zinc-400">{row.event_date ? dateText(row.event_date) : "Data não determinada"}</span> · {row.description}<span className="block text-xs text-zinc-500">Fontes: {row.source_ids.join(", ")}</span></li>)}</ol></section>}
       {!!item.contradiction_groups?.length && <section><h3 className="text-sm font-medium text-amber-200">Divergências para conferir</h3><div className="mt-1 space-y-2">{item.contradiction_groups.map(row => <p key={row.id} className="text-sm"><strong>{row.topic}</strong>: {row.explanation}<span className="block text-xs text-zinc-500">Fontes: {row.source_ids.join(", ")}</span></p>)}</div></section>}
       {!!item.limitations?.length && <p className="text-xs text-zinc-400">Limitações: {item.limitations.join(" · ")}</p>}
+      {item.coverage && <p className={`text-xs ${item.coverage.truncated ? "text-amber-300" : "text-zinc-400"}`}>
+        Cobertura: {item.coverage.source_characters.toLocaleString("pt-BR")} de {item.coverage.total_content_characters.toLocaleString("pt-BR")} caracteres citáveis
+        {item.coverage.truncated ? " · análise parcial" : " · conteúdo integral disponível ao analisador"}.
+      </p>}
+      {item.status === "review_required" && item.coverage?.truncated && <label className="flex min-h-11 items-center gap-3 rounded-lg border border-amber-500/40 p-3 text-sm text-amber-100">
+        <input type="checkbox" checked={Boolean(partialAcknowledged[item.id])} onChange={event => setPartialAcknowledged(current => ({ ...current, [item.id]: event.target.checked }))} />
+        <span>Estou ciente de que esta análise é parcial e conferi essa limitação.</span>
+      </label>}
       {item.status === "review_required" && <div className="flex flex-wrap gap-2"><Action className={primary} run={() => review(item, "approve")}>Aprovar após conferência</Action><Action className={button} run={() => review(item, "reject")}>Rejeitar análise</Action></div>}
     </article>)}</div>
   </Panel>;
