@@ -11,7 +11,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.dependencies import CurrentUser, require_tenant_write
+from app.core.dependencies import CurrentUser, _set_tenant_context, require_tenant_write
 from app.core.request_body import read_limited_body
 from app.models.operations import FeeContract, FeeRule, Invoice, ProviderCredential, PublicIntake, PublicIntakeConfig, Receivable, SignatureEnvelope, TimeEntry
 from app.models.user import User
@@ -48,6 +48,7 @@ from app.schemas.operations import (
 )
 from app.services.audit_service import AuditService
 from app.services.operations import (
+    SUPPORTED_SIGNATURE_PROVIDERS,
     apply_clicksign_event,
     apply_payment_event,
     apply_signature_event,
@@ -66,11 +67,14 @@ from app.services.operations import (
     get_signature_envelope,
     resolve_public_intake_config,
     resolve_webhook_identity,
+    queue_autentique_event,
     upsert_provider_credential,
     verify_hmac_webhook,
 )
 from app.services.clicksign_provider import CLICKSIGN_BASE_URLS, ClicksignSigner, parse_clicksign_webhook
+from app.services.autentique_provider import AUTENTIQUE_PROVIDERS, AutentiqueSigner, parse_autentique_webhook
 from app.services.document_storage import create_download_url
+from app.services.provider_costs import record_provider_usage
 from app.services.workspace_service import ADMIN_ROLES, FINANCE_ROLES, bounded_limit, case_access_clause, get_case, require_case_write, require_role
 
 
@@ -499,8 +503,10 @@ async def put_provider_credential(
         provider = clean_provider(provider)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Provedor inválido.") from exc
-    if purpose == "signature" and provider not in CLICKSIGN_BASE_URLS:
+    if purpose == "signature" and provider not in SUPPORTED_SIGNATURE_PROVIDERS:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Provedor de assinatura ainda não homologado.")
+    if provider in AUTENTIQUE_PROVIDERS and not body.account_reference.isdecimal():
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Informe o ID numérico da organização Autentique.")
     record = await upsert_provider_credential(db, user, purpose=purpose, provider=provider, body=body)
     await audit(db, request, user.tenant_id, user.id, "OPERATION_PROVIDER_CREDENTIAL_CONFIGURED", "operation_provider_credentials", record.id, {"purpose": purpose, "provider": provider})
     await db.commit()
@@ -528,7 +534,7 @@ async def list_signature_providers(user: CurrentUser, db: AsyncSession = Depends
             ProviderCredential.purpose == "signature",
             ProviderCredential.enabled.is_(True),
             ProviderCredential.api_token_encrypted.is_not(None),
-            ProviderCredential.provider.in_(tuple(CLICKSIGN_BASE_URLS)),
+            ProviderCredential.provider.in_(tuple(SUPPORTED_SIGNATURE_PROVIDERS)),
         )
         .order_by(ProviderCredential.provider, ProviderCredential.account_reference)
     )).all()
@@ -579,12 +585,8 @@ async def create_signature_envelope_endpoint(
     _write: User = Depends(require_tenant_write),
 ):
     require_role(user, FINANCE_ROLES | {"lawyer"})
-    signer = ClicksignSigner(
-        name=body.signer_name,
-        email=str(body.signer_email),
-        cpf=body.signer_cpf,
-        authentication=body.authentication,
-    )
+    signer_type = AutentiqueSigner if body.provider in AUTENTIQUE_PROVIDERS else ClicksignSigner
+    signer = signer_type(name=body.signer_name, email=str(body.signer_email), cpf=body.signer_cpf, authentication=body.authentication)
     envelope, material, credential, duplicate = await create_signature_envelope(
         db,
         user,
@@ -612,6 +614,24 @@ async def create_signature_envelope_endpoint(
     if material is None or credential is None:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Snapshot de assinatura indisponível.")
     dispatch_error = await dispatch_signature_envelope(envelope, credential, material, signer)
+    await _set_tenant_context(db, user.tenant_id)
+    if dispatch_error is None:
+        await record_provider_usage(
+            db,
+            tenant_id=user.tenant_id,
+            provider=envelope.provider,
+            metric="document_created",
+            idempotency_key=f"envelope:{envelope.id}",
+            envelope_id=envelope.id,
+        )
+        await record_provider_usage(
+            db,
+            tenant_id=user.tenant_id,
+            provider=envelope.provider,
+            metric="signature_request_email",
+            idempotency_key=f"email:{envelope.id}",
+            envelope_id=envelope.id,
+        )
     await audit(
         db,
         request,
@@ -639,7 +659,7 @@ async def download_signed_envelope(
     envelope = await get_signature_envelope(db, user, envelope_id)
     if not envelope.signed_file_available:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Documento assinado ainda não está disponível.")
-    filename = envelope.signed_filename or "documento-assinado-clicksign.pdf"
+    filename = envelope.signed_filename or f"documento-assinado-{envelope.provider}.pdf"
     await audit(db, request, user.tenant_id, user.id, "SIGNED_DOCUMENT_DOWNLOADED", "signature_envelopes", envelope.id, {"sha256": envelope.signed_file_hash})
     await db.commit()
     if envelope.signed_object_key:
@@ -681,6 +701,7 @@ async def signature_webhook(
     x_operation_signature: str | None = Header(default=None, alias="X-Operation-Signature", max_length=256),
     content_hmac: str | None = Header(default=None, alias="Content-Hmac", max_length=256),
     x_clicksign_signature: str | None = Header(default=None, alias="X-Clicksign-Signature", max_length=256),
+    x_autentique_signature: str | None = Header(default=None, alias="X-Autentique-Signature", max_length=256),
     event_header: str | None = Header(default=None, alias="Event", max_length=128),
     db: AsyncSession = Depends(get_db),
 ):
@@ -703,6 +724,49 @@ async def signature_webhook(
         envelope, duplicate = await apply_clicksign_event(db, identity, clicksign_event, raw)
         await audit(db, request, identity.tenant_id, None, "SIGNATURE_PROVIDER_EVENT", "signature_envelopes", envelope.id, {"provider": identity.credential.provider, "event": clicksign_event.event_name, "duplicate": duplicate})
         await db.commit()
+        return {"received": True, "duplicate": duplicate}
+    if provider in AUTENTIQUE_PROVIDERS:
+        try:
+            autentique_event = parse_autentique_webhook(raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Payload de webhook inválido.") from exc
+        identity = await webhook_identity_or_401(
+            db,
+            raw,
+            x_autentique_signature,
+            purpose="signature",
+            provider=provider,
+            account_reference=autentique_event.account_reference,
+        )
+        if autentique_event.event_type is None:
+            await record_provider_usage(
+                db,
+                tenant_id=identity.tenant_id,
+                provider=provider,
+                metric="webhook_received",
+                idempotency_key=f"webhook:{autentique_event.event_id}",
+            )
+            await db.commit()
+            return {"received": True, "ignored": True}
+        envelope, queued_event, duplicate = await queue_autentique_event(db, identity, autentique_event, raw)
+        await record_provider_usage(
+            db,
+            tenant_id=identity.tenant_id,
+            provider=provider,
+            metric="webhook_received",
+            idempotency_key=f"webhook:{autentique_event.event_id}",
+            envelope_id=envelope.id,
+        )
+        await audit(db, request, identity.tenant_id, None, "SIGNATURE_PROVIDER_EVENT", "signature_envelopes", envelope.id, {"provider": provider, "event": autentique_event.event_name, "duplicate": duplicate})
+        await db.commit()
+        if queued_event and autentique_event.event_type == "envelope.signed" and not duplicate:
+            try:
+                from app.services.autentique_tasks import process_autentique_signature_event
+
+                process_autentique_signature_event.delay(queued_event.id, identity.tenant_id)
+            except Exception:
+                # Periodic reconciliation picks up the persisted event.
+                pass
         return {"received": True, "duplicate": duplicate}
     if not x_operation_account:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Identidade do webhook ausente.")

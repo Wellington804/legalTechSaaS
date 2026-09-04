@@ -55,6 +55,14 @@ from app.services.clicksign_provider import (
     fetch_clicksign_signed_pdf,
     submit_clicksign_envelope,
 )
+from app.services.autentique_provider import (
+    AUTENTIQUE_PROVIDERS,
+    AutentiqueDispatchError,
+    AutentiqueSigner,
+    AutentiqueWebhook,
+    fetch_autentique_signed_pdf,
+    submit_autentique_document,
+)
 from app.services.document_storage import enabled as document_storage_enabled
 from app.services.document_storage import put as put_document_object
 from app.services.document_storage import read as read_document_object
@@ -64,6 +72,8 @@ from app.services.workspace_service import CASE_MANAGER_ROLES, active_tenant_use
 
 MONEY = Decimal("0.01")
 PUBLIC_INTAKES_PER_MINUTE = 12
+SUPPORTED_SIGNATURE_PROVIDERS = set(CLICKSIGN_BASE_URLS) | set(AUTENTIQUE_PROVIDERS)
+SignatureSigner = ClicksignSigner | AutentiqueSigner
 
 
 def money(value: Decimal) -> Decimal:
@@ -539,10 +549,10 @@ async def create_signature_envelope(
     document_version: int,
     provider: str,
     account_reference: str,
-    signer: ClicksignSigner,
+    signer: SignatureSigner,
     expires_at: datetime | None,
 ) -> tuple[SignatureEnvelope, SignatureMaterial | None, ProviderCredential | None, bool]:
-    if provider not in CLICKSIGN_BASE_URLS:
+    if provider not in SUPPORTED_SIGNATURE_PROVIDERS:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Provedor de assinatura ainda não homologado.")
     request_hash = idempotency_digest(f"signature:{user.tenant_id}", request_key)
     existing = await db.scalar(
@@ -632,14 +642,53 @@ async def dispatch_signature_envelope(
     envelope: SignatureEnvelope,
     credential: ProviderCredential,
     material: SignatureMaterial,
-    signer: ClicksignSigner,
-) -> ClicksignDispatchError | None:
+    signer: SignatureSigner,
+) -> ClicksignDispatchError | AutentiqueDispatchError | None:
     try:
         access_token = decrypt_mfa_secret(credential.api_token_encrypted or "")
     except RuntimeError:
         envelope.dispatch_status = "failed"
         envelope.revision += 1
-        return ClicksignDispatchError("Credencial da Clicksign indisponível.", ambiguous=False)
+        return ClicksignDispatchError("Credencial do provedor de assinatura indisponível.", ambiguous=False)
+    if envelope.provider in AUTENTIQUE_PROVIDERS:
+        try:
+            submission = await submit_autentique_document(
+                access_token=access_token,
+                account_reference=envelope.provider_account_reference,
+                local_envelope_id=envelope.id,
+                filename=material.filename,
+                pdf=material.content,
+                pdf_sha256=material.sha256,
+                signer=AutentiqueSigner(
+                    name=signer.name,
+                    email=signer.email,
+                    cpf=signer.cpf,
+                    authentication=signer.authentication,
+                ),
+                expires_at=envelope.expires_at,
+            )
+        except ValueError as exc:
+            failure = AutentiqueDispatchError(str(exc), ambiguous=False)
+            envelope.dispatch_status = "failed"
+            envelope.revision += 1
+            return failure
+        except AutentiqueDispatchError as exc:
+            _store_provider_ids(
+                envelope,
+                provider_envelope_id=exc.document_id,
+                provider_document_id=exc.document_id,
+            )
+            envelope.dispatch_status = "unknown" if exc.ambiguous else "failed"
+            envelope.revision += 1
+            return exc
+        _store_provider_ids(
+            envelope,
+            provider_envelope_id=submission.document_id,
+            provider_document_id=submission.document_id,
+        )
+        envelope.dispatch_status = "submitted"
+        envelope.revision += 1
+        return None
     try:
         submission = await submit_clicksign_envelope(
             provider=envelope.provider,
@@ -779,7 +828,7 @@ async def _store_signed_artifact(
         if not hmac.compare_digest(envelope.signed_file_hash, signed_hash):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail="A Clicksign retornou conteúdo diferente para um documento assinado já preservado.",
+                detail="O provedor retornou conteúdo diferente para um documento assinado já preservado.",
             )
         return
     await asyncio.to_thread(scan_document_content, pdf)
@@ -790,7 +839,7 @@ async def _store_signed_artifact(
         )
     )
     stem = re.sub(r"[^0-9A-Za-zÀ-ÿ._ -]+", "", document.title if document else "documento").strip(" ._") or "documento"
-    filename = f"{stem[:225]}-assinado-clicksign.pdf"
+    filename = f"{stem[:225]}-assinado-{envelope.provider}.pdf"
     envelope.signed_filename = filename
     envelope.signed_file_size = len(pdf)
     envelope.signed_file_hash = signed_hash
@@ -860,6 +909,7 @@ async def apply_clicksign_event(
                 envelope_id=provider_envelope_id,
                 document_id=provider_document_id,
             )
+            await _set_tenant_context(db, identity.tenant_id)
         except (RuntimeError, ClicksignDispatchError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -900,6 +950,135 @@ async def apply_clicksign_event(
             envelope.declined_at = now
         envelope.revision += 1
     return envelope, False
+
+
+async def queue_autentique_event(
+    db: AsyncSession,
+    identity: WebhookIdentity,
+    event: AutentiqueWebhook,
+    raw: bytes,
+) -> tuple[SignatureEnvelope, SignatureProviderEvent | None, bool]:
+    """Persist an authenticated notification before acknowledging it.
+
+    The worker performs provider queries and PDF download. Rejections are a
+    small local transition and can be applied in this transaction.
+    """
+    if not event.provider_document_id or not event.event_type:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Webhook não identifica o documento.")
+    reference_hash = provider_reference_digest(
+        identity.credential.provider,
+        identity.credential.account_reference,
+        event.provider_document_id,
+    )
+    envelope = await db.scalar(
+        select(SignatureEnvelope)
+        .where(
+            SignatureEnvelope.tenant_id == identity.tenant_id,
+            SignatureEnvelope.provider == identity.credential.provider,
+            SignatureEnvelope.provider_account_reference == identity.credential.account_reference,
+            SignatureEnvelope.provider_document_hash == reference_hash,
+        )
+        .with_for_update()
+    )
+    if not envelope:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Envelope não encontrado.")
+    event_digest = digest(raw)
+    existing = await db.scalar(
+        select(SignatureProviderEvent).where(
+            SignatureProviderEvent.tenant_id == identity.tenant_id,
+            SignatureProviderEvent.provider == identity.credential.provider,
+            SignatureProviderEvent.account_reference == identity.credential.account_reference,
+            or_(
+                SignatureProviderEvent.event_id == event.event_id,
+                SignatureProviderEvent.event_digest == event_digest,
+            ),
+        )
+    )
+    if existing:
+        return envelope, existing, True
+    event_row = SignatureProviderEvent(
+        tenant_id=identity.tenant_id,
+        envelope_id=envelope.id,
+        provider=identity.credential.provider,
+        account_reference=identity.credential.account_reference,
+        event_id=event.event_id,
+        event_digest=event_digest,
+        event_type=event.event_type,
+    )
+    try:
+        async with db.begin_nested():
+            db.add(event_row)
+            await db.flush()
+    except IntegrityError:
+        return envelope, None, True
+    if event.event_type in {"envelope.declined", "envelope.expired"} and envelope.status == "pending":
+        envelope.status = "declined" if event.event_type == "envelope.declined" else "expired"
+        if envelope.status == "declined":
+            envelope.declined_at = datetime.now(timezone.utc)
+        envelope.revision += 1
+    return envelope, event_row, False
+
+
+async def finalize_queued_autentique_event(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    event_id: str,
+) -> str:
+    event_row = await db.scalar(
+        select(SignatureProviderEvent).where(
+            SignatureProviderEvent.tenant_id == tenant_id,
+            SignatureProviderEvent.id == event_id,
+            SignatureProviderEvent.provider == "autentique",
+        )
+    )
+    if not event_row or event_row.event_type != "envelope.signed" or not event_row.envelope_id:
+        return "ignored"
+    envelope = await db.scalar(
+        select(SignatureEnvelope).where(
+            SignatureEnvelope.tenant_id == tenant_id,
+            SignatureEnvelope.id == event_row.envelope_id,
+            SignatureEnvelope.provider == "autentique",
+        )
+    )
+    if not envelope:
+        return "ignored"
+    if envelope.signed_file_available:
+        return "already_finalized"
+    credential = await db.scalar(
+        select(ProviderCredential).where(
+            ProviderCredential.tenant_id == tenant_id,
+            ProviderCredential.purpose == "signature",
+            ProviderCredential.provider == "autentique",
+            ProviderCredential.account_reference == envelope.provider_account_reference,
+            ProviderCredential.enabled.is_(True),
+        )
+    )
+    if not credential or not credential.api_token_encrypted or not envelope.provider_document_id_encrypted:
+        return "credential_unavailable"
+    try:
+        pdf = await fetch_autentique_signed_pdf(
+            access_token=decrypt_mfa_secret(credential.api_token_encrypted),
+            account_reference=credential.account_reference,
+            document_id=decrypt_mfa_secret(envelope.provider_document_id_encrypted),
+        )
+    except (RuntimeError, AutentiqueDispatchError):
+        return "provider_deferred"
+    await _set_tenant_context(db, tenant_id)
+    envelope = await db.scalar(
+        select(SignatureEnvelope)
+        .where(SignatureEnvelope.tenant_id == tenant_id, SignatureEnvelope.id == event_row.envelope_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if not envelope:
+        return "ignored"
+    await _store_signed_artifact(db, envelope, pdf)
+    if envelope.status == "pending":
+        envelope.status = "signed"
+        envelope.signed_at = datetime.now(timezone.utc)
+        envelope.revision += 1
+    return "finalized"
 
 
 async def apply_payment_event(

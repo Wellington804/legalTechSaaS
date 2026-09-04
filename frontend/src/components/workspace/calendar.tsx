@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api-client";
 import { definitions, display, RecordForm, Records, type List, type Row } from "./records";
 import { Action, Field, Page, Panel, State, button, control, dateText, download, errorText, primary, useResource } from "./shared";
+import { CalendarConnections } from "./calendar-connections";
 
 type View = "day" | "three" | "week" | "month" | "list";
 const startOfDay = (date: Date) => { const value = new Date(date); value.setHours(0, 0, 0, 0); return value; };
@@ -52,7 +53,8 @@ export function Agenda() {
         <ol className="list-decimal space-y-1 pl-5 text-xs text-zinc-400"><li>No iPhone, iPad ou Mac, toque em “Assinar no Calendário Apple” e confirme.</li><li>No Google Agenda, abra pelo computador e use “Outros calendários → Do URL”.</li><li>No Outlook, escolha adicionar calendário e assinar pela Web.</li></ol>
       </div>}
       <div className="flex flex-wrap gap-2"><Action className={primary} run={async () => { setFeedError(""); try { const result = await api.post<{ feed_url: string }>("/integrations/calendar-feed", {}); setFeedUrl(result.feed_url); feed.reload(); } catch (reason) { setFeedError(errorText(reason)); } }}>{feed.data?.enabled ? "Gerar novo endereço" : "Criar endereço privado"}</Action>{feed.data?.enabled && <Action run={() => api.delete("/integrations/calendar-feed")} onDone={() => { setFeedUrl(""); feed.reload(); }}>Desativar sincronização</Action>}</div>
-      <p className="text-xs text-zinc-500">A sincronização é somente leitura e cada serviço define seu intervalo de atualização, que pode levar algumas horas. Alterações externas não modificam o LexFlow.</p>
+      <p className="text-xs text-zinc-500">O endereço privado acima é somente leitura e cada serviço define seu intervalo de atualização, que pode levar algumas horas.</p>
+      <CalendarConnections tasks={tasks.data?.items || []} />
     </Panel>}
     <section className="rounded-xl border border-zinc-800 bg-zinc-900/25 p-4 shadow-sm md:p-5">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between"><div><p className="text-sm text-zinc-400">Período exibido</p><h2 className="mt-1 text-xl font-semibold capitalize">{label(anchor, { month: "long", year: "numeric" })}</h2></div><div className="flex max-w-full gap-1 overflow-x-auto rounded-lg bg-zinc-900 p-1">{(["day", "three", "week", "month", "list"] as View[]).map(item => <button key={item} className={`${view === item ? "bg-blue-600 text-white" : "text-zinc-300 hover:bg-zinc-800"} min-h-10 shrink-0 rounded-md px-3 text-sm ${item === "three" ? "sm:hidden" : ""}`} onClick={() => setView(item)}>{({ day: "Dia", three: "3 dias", week: "Semana", month: "Mês", list: "Lista" } as const)[item]}</button>)}</div></div>
