@@ -79,6 +79,8 @@ class EvolutionManagerTests(unittest.TestCase):
         logged_in = {"connected": True, "logged_in": True}
         offline = {"connected": False, "logged_in": False}
         self.assertEqual(evolution_manager.verified_webhook_state("Disconnected", logged_in), "connected")
+        self.assertEqual(evolution_manager.verified_webhook_state("QRCode", logged_in), "connected")
+        self.assertEqual(evolution_manager.verified_webhook_state("QRCode", offline), "pending")
         self.assertEqual(evolution_manager.verified_webhook_state("PairSuccess", offline), "pending")
         self.assertEqual(evolution_manager.verified_webhook_state("LoggedOut", offline), "disconnected")
 

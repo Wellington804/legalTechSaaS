@@ -197,11 +197,14 @@ async def evolution_webhook(request: Request, db: AsyncSession = Depends(get_db)
             raise HTTPException(status_code=401, detail="Invalid webhook credentials")
         previous = channel.whatsapp_connection_state
         data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-        try:
-            provider_state = await evolution_manager.status(decrypt_mfa_secret(channel.evolution_token_encrypted))
-        except (RuntimeError, evolution_manager.EvolutionProviderError):
-            raise HTTPException(status_code=503, detail="Evolution provider unavailable") from None
-        await _set_tenant_context(db, tenant_id)
+        if event == "QRCode":
+            provider_state = {"connected": previous == "connected", "logged_in": previous == "connected"}
+        else:
+            try:
+                provider_state = await evolution_manager.status(decrypt_mfa_secret(channel.evolution_token_encrypted))
+            except (RuntimeError, evolution_manager.EvolutionProviderError):
+                raise HTTPException(status_code=503, detail="Evolution provider unavailable") from None
+            await _set_tenant_context(db, tenant_id)
         channel.whatsapp_connection_state = evolution_manager.verified_webhook_state(event, provider_state)
         if channel.whatsapp_connection_state == "connected":
             channel.whatsapp_enabled = True
