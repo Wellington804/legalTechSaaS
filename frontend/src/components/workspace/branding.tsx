@@ -499,7 +499,7 @@ function BrandEditor({ initial, initialElement, initialMobileTab, capabilities, 
       </main>
 
       {/* Right Column / Collapsible AI Assistant */}
-      <aside className={`${mobileTab === "ai" ? "block" : "hidden"} ${aiExpanded ? "block" : "hidden"} min-w-0 space-y-3 lg:block`}>
+      <aside className={`${mobileTab === "ai" ? "block" : "hidden"} ${aiExpanded ? "lg:block" : "lg:hidden"} min-w-0 space-y-3`}>
         <section className="rounded-2xl border border-blue-900/60 bg-blue-950/20 p-4 shadow-sm">
           <div className="flex items-center justify-between gap-2 border-b border-blue-900/40 pb-2">
             <div className="flex items-center gap-2">
