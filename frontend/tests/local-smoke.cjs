@@ -79,6 +79,7 @@ function totp(secret, offsetSeconds = 0) {
     await page.getByRole('heading', { name: `${label} — caso`, exact: true }).waitFor();
 
     await page.goto(`${base}/dashboard/petitions/editor`);
+    await page.getByRole('button', { name: 'Criar documento', exact: true }).click();
     await page.getByRole('button', { name: 'Começar em branco', exact: true }).click();
     await page.getByLabel('Processo', { exact: true }).selectOption(caseRecord.id);
     await page.getByLabel('Título', { exact: true }).fill(`${label} — documento`);
@@ -86,7 +87,9 @@ function totp(secret, offsetSeconds = 0) {
     const documentSaved = page.waitForResponse(response => response.url().endsWith('/workspace/documents') && response.request().method() === 'POST');
     await page.getByRole('button', { name: 'Salvar documento', exact: true }).click();
     const documentResponse = await documentSaved; assert.equal(documentResponse.status(), 201); const document = await documentResponse.json();
-    await page.reload(); await page.getByText(`${label} — documento`, { exact: false }).waitFor();
+    await page.reload();
+    await page.getByRole('button', { name: 'Criar documento', exact: true }).click();
+    await page.getByText(`${label} — documento`, { exact: false }).waitFor();
 
     const task = await context.request.post(`${api}/workspace/tasks`, { headers: origin, data: { case_id: caseRecord.id, title: `${label} — prazo`, kind: 'deadline', due_at: new Date(Date.now() + 86400000).toISOString(), assigned_user_id: profile.user_id, status: 'pending', manually_reviewed: true } });
     assert.equal(task.status(), 201, await task.text());

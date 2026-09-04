@@ -49,5 +49,5 @@ export function navigationItemForPath(path: string) {
 
 export function isWorkspacePath(path: string) {
   return Boolean(navigationItemForPath(path))
-    || ["/dashboard/pilot", "/dashboard/brand", "/dashboard/financial", "/dashboard/peticoes", "/portal", "/account/access"].includes(path);
+    || ["/dashboard/pilot", "/dashboard/brand", "/dashboard/financial", "/dashboard/peticoes", "/dashboard/assinaturas", "/portal", "/account/access"].includes(path);
 }
