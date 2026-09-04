@@ -5,7 +5,7 @@ import re
 import subprocess
 import tempfile
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import and_, or_, select, text
@@ -55,6 +55,7 @@ from app.services.push_service import enqueue_user_push
 
 
 AI_WORKER_ROLES = {"admin", "partner", "lawyer"}
+AI_WORKER_LEASE_TIMEOUT = timedelta(minutes=15)
 OCR_COVERAGE_LIMITATION = (
     "OCR falho, parcial ou não comprovado; a análise cobre somente o texto efetivamente extraído."
 )
@@ -80,6 +81,14 @@ def _claim_queued_job(row, next_status: str) -> bool:
         return False
     row.status = next_status
     return True
+
+
+def _worker_lease_expired(claimed_at: datetime | None, now: datetime) -> bool:
+    if claimed_at is None:
+        return True
+    if claimed_at.tzinfo is None:
+        claimed_at = claimed_at.replace(tzinfo=timezone.utc)
+    return claimed_at <= now - AI_WORKER_LEASE_TIMEOUT
 
 
 def _analysis_coverage(base: dict, source_rows: list[DocumentIntelligenceSource]) -> dict:
@@ -336,7 +345,26 @@ async def _run_evaluation_impl(run_id: str, tenant_id: str) -> str:
         run = await db.scalar(select(AIEvaluationRun).where(
             AIEvaluationRun.id == run_id, AIEvaluationRun.tenant_id == tenant_id,
         ).with_for_update())
-        if not run or run.status != "queued":
+        if not run:
+            return "ignored"
+        if run.status == "running":
+            if not _worker_lease_expired(run.started_at, now):
+                return "ignored"
+            run.status = "failed"
+            run.error = "Lease do worker expirou; reexecução automática bloqueada para evitar custo duplicado."
+            run.completed_at = now
+            await AuditService.log_action(
+                db, tenant_id, run.requested_by_user_id,
+                "AI_EVALUATION_LEASE_EXPIRED", "ai_evaluation_runs", run.id,
+                {
+                    "previous_status": "running",
+                    "claimed_at": run.started_at.isoformat() if run.started_at else None,
+                    "lease_seconds": int(AI_WORKER_LEASE_TIMEOUT.total_seconds()),
+                    "automatic_retry": False,
+                },
+            )
+            return "failed"
+        if run.status != "queued":
             return "ignored"
         requester = await _authorized_ai_requester(db, tenant_id, run.requested_by_user_id)
         if (
@@ -516,13 +544,33 @@ async def _validated_intelligence_context(db, analysis: DocumentIntelligenceAnal
 
 
 async def _run_document_intelligence_impl(analysis_id: str, tenant_id: str) -> str:
+    now = datetime.now(timezone.utc)
     async with AsyncSessionLocal() as db, db.begin():
         await _set_tenant_context(db, tenant_id)
         analysis = await db.scalar(select(DocumentIntelligenceAnalysis).where(
             DocumentIntelligenceAnalysis.id == analysis_id,
             DocumentIntelligenceAnalysis.tenant_id == tenant_id,
         ).with_for_update())
-        if not analysis or analysis.status != "queued":
+        if not analysis:
+            return "ignored"
+        if analysis.status == "processing":
+            if not _worker_lease_expired(analysis.updated_at, now):
+                return "ignored"
+            analysis.status = "stale"
+            analysis.error = "Lease do worker expirou; reexecução automática bloqueada para evitar custo duplicado."
+            analysis.revision += 1
+            await AuditService.log_action(
+                db, tenant_id, analysis.requested_by_user_id,
+                "DOCUMENT_INTELLIGENCE_LEASE_EXPIRED", "document_intelligence_analyses", analysis.id,
+                {
+                    "previous_status": "processing",
+                    "claimed_at": analysis.updated_at.isoformat() if analysis.updated_at else None,
+                    "lease_seconds": int(AI_WORKER_LEASE_TIMEOUT.total_seconds()),
+                    "automatic_retry": False,
+                },
+            )
+            return "stale"
+        if analysis.status != "queued":
             return "ignored"
         source_rows, documents, case, user = await _validated_intelligence_context(db, analysis, tenant_id)
         if provider_name(settings) != analysis.provider or model_name(settings, "legal") != analysis.model:
@@ -530,6 +578,7 @@ async def _run_document_intelligence_impl(analysis_id: str, tenant_id: str) -> s
             return "stale"
         if not _claim_queued_job(analysis, "processing"):
             return "ignored"
+        analysis.updated_at = now
         requested_by = user.id
 
     bundle = build_evidence_bundle(

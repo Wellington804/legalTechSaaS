@@ -7,14 +7,15 @@ import { display, type Row } from "./records";
 
 type LiteralEvidence = { source_id: string; quote: string; normalized_quote: string; start: number; end: number };
 type FieldEvidence = { field: string; value: string; evidence: LiteralEvidence };
+type ReviewEvidence = { field?: string; value?: string; evidence: LiteralEvidence };
 type EvidenceSource = { id: string; locator: string; excerpt: string };
 
 type Analysis = Row & {
   status: string;
   revision: number;
   classifications?: Array<{ document_id: string; category: string; confidence: number; source_ids: string[]; evidence?: LiteralEvidence[] }>;
-  timeline?: Array<{ id: string; event_date?: string; description: string; source_ids: string[]; evidence?: FieldEvidence[] }>;
-  contradiction_groups?: Array<{ id: string; topic: string; explanation: string; source_ids: string[]; evidence?: FieldEvidence[] }>;
+  timeline?: Array<{ id: string; event_date?: string; description: string; parties?: string[]; amount?: string; source_ids: string[]; evidence?: FieldEvidence[] }>;
+  contradiction_groups?: Array<{ id: string; topic: string; explanation: string; statements?: string[]; source_ids: string[]; evidence?: FieldEvidence[] }>;
   evidence_sources?: EvidenceSource[];
   limitations?: string[];
   coverage?: { documents: number; source_characters: number; total_content_characters: number; truncated: boolean; partial?: boolean; ocr_incomplete_documents?: string[]; scope?: string };
@@ -26,12 +27,13 @@ function isPartial(item: Analysis) {
   return Boolean(item.coverage?.partial || item.coverage?.truncated);
 }
 
-function EvidenceDetails({ items, registry }: { items: LiteralEvidence[]; registry: EvidenceSource[] }) {
+function EvidenceDetails({ items, registry }: { items: ReviewEvidence[]; registry: EvidenceSource[] }) {
   if (!items.length) return null;
   return <ul className="mt-2 space-y-2 border-l border-zinc-700 pl-3">
-    {items.map((evidence, index) => {
+    {items.map(({ evidence, field, value }, index) => {
       const source = registry.find(item => item.id === evidence.source_id);
       return <li key={`${evidence.source_id}-${evidence.start}-${evidence.end}-${index}`} className="text-xs text-zinc-400">
+        {field && value && <span className="block font-medium text-zinc-300">{display(field)}: {value}</span>}
         <q className="block text-zinc-200">{evidence.quote}</q>
         <span>{source?.locator || evidence.source_id} · offsets {evidence.start}–{evidence.end} · fonte {evidence.source_id}</span>
       </li>;
@@ -82,9 +84,9 @@ export function DocumentIntelligence({ caseId, documents }: { caseId: string; do
         {source.title} · OCR: {display(source.ocr_status || "unknown")} · extrator: {display(source.extractor || "unknown")}
       </li>)}</ul>
       {item.error && <p role="alert" className="text-sm text-amber-300">{item.error}</p>}
-      {!!item.classifications?.length && <section><h3 className="text-sm font-medium">Classificação dos anexos</h3><ul className="mt-1 space-y-3 text-sm text-zinc-300">{item.classifications.map(row => <li key={row.document_id}>{item.sources.find(source => source.document_id === row.document_id)?.title || row.document_id}: {display(row.category)} · {Math.round(row.confidence * 100)}%<EvidenceDetails items={row.evidence || []} registry={item.evidence_sources || []} /></li>)}</ul></section>}
-      {!!item.timeline?.length && <section><h3 className="text-sm font-medium">Linha do tempo probatória</h3><ol className="mt-1 space-y-3">{item.timeline.map(row => <li key={row.id} className="text-sm"><span className="text-zinc-400">{row.event_date ? dateText(row.event_date) : "Data não determinada"}</span> · {row.description}<EvidenceDetails items={(row.evidence || []).map(entry => entry.evidence)} registry={item.evidence_sources || []} /></li>)}</ol></section>}
-      {!!item.contradiction_groups?.length && <section><h3 className="text-sm font-medium text-amber-200">Divergências para conferir</h3><div className="mt-1 space-y-3">{item.contradiction_groups.map(row => <div key={row.id} className="text-sm"><strong>{row.topic}</strong>: {row.explanation}<EvidenceDetails items={(row.evidence || []).map(entry => entry.evidence)} registry={item.evidence_sources || []} /></div>)}</div></section>}
+      {!!item.classifications?.length && <section><h3 className="text-sm font-medium">Classificação dos anexos</h3><ul className="mt-1 space-y-3 text-sm text-zinc-300">{item.classifications.map(row => <li key={row.document_id}>{item.sources.find(source => source.document_id === row.document_id)?.title || row.document_id}: {display(row.category)} · {Math.round(row.confidence * 100)}%<EvidenceDetails items={(row.evidence || []).map(evidence => ({ evidence }))} registry={item.evidence_sources || []} /></li>)}</ul></section>}
+      {!!item.timeline?.length && <section><h3 className="text-sm font-medium">Linha do tempo probatória</h3><ol className="mt-1 space-y-3">{item.timeline.map(row => <li key={row.id} className="text-sm"><span className="text-zinc-400">{row.event_date ? dateText(row.event_date) : "Data não determinada"}</span> · {row.description}{!!row.parties?.length && <span className="block text-xs text-zinc-400">Partes: {row.parties.join(", ")}</span>}{row.amount && <span className="block text-xs text-zinc-400">Valor: {row.amount}</span>}<EvidenceDetails items={row.evidence || []} registry={item.evidence_sources || []} /></li>)}</ol></section>}
+      {!!item.contradiction_groups?.length && <section><h3 className="text-sm font-medium text-amber-200">Divergências para conferir</h3><div className="mt-1 space-y-3">{item.contradiction_groups.map(row => <div key={row.id} className="text-sm"><strong>{row.topic}</strong>: {row.explanation}{!!row.statements?.length && <ul className="mt-1 list-disc pl-5 text-xs text-zinc-300">{row.statements.map((statement, index) => <li key={`${row.id}-statement-${index}`}>{statement}</li>)}</ul>}<EvidenceDetails items={row.evidence || []} registry={item.evidence_sources || []} /></div>)}</div></section>}
       {!!item.limitations?.length && <p className="text-xs text-zinc-400">Limitações: {item.limitations.join(" · ")}</p>}
       {item.coverage && <p className={`text-xs ${isPartial(item) ? "text-amber-300" : "text-zinc-400"}`}>
         Cobertura: {item.coverage.source_characters.toLocaleString("pt-BR")} de {item.coverage.total_content_characters.toLocaleString("pt-BR")} caracteres citáveis
