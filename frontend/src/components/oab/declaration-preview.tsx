@@ -121,7 +121,7 @@ export function DeclarationPreview() {
         <div className="mt-8 pt-4 border-t border-zinc-200 flex items-center justify-between font-sans">
           <div className="flex items-center space-x-1.5 text-[10px] text-emerald-700 bg-emerald-50 px-2 py-1 rounded">
             <ShieldCheck className="w-3.5 h-3.5" />
-            <span>Hash SHA-256 Validado</span>
+            <span>Integridade do documento validada</span>
           </div>
 
           <div className="flex space-x-2">

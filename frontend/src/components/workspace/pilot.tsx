@@ -34,7 +34,7 @@ export function Pilot() {
       <Panel title="Acompanhamento do piloto" collapsibleOnMobile>
         <p className="text-sm">Acesso: {display(data.subscription.status)} · termina em {dateText(data.subscription.ends_at)}{data.subscription.days_remaining != null && ` · ${data.subscription.days_remaining} dias restantes`}</p>
         {!data.subscription.write_allowed && <p className="text-sm text-amber-300">Gravações indisponíveis neste período. Consulte o responsável pelo piloto para regularizar o acesso.</p>}
-        <p className="text-xs text-zinc-400">Versão {data.release} · último relato {dateText(data.weekly.last_report_at)} · próxima revisão {dateText(data.weekly.next_review_at)}.</p>
+        <p className="text-xs text-zinc-400">Último relato {dateText(data.weekly.last_report_at)} · próxima revisão {dateText(data.weekly.next_review_at)}.</p>
         {data.support_url ? <a href={data.support_url} target="_blank" rel="noopener noreferrer" className={button}>Abrir suporte</a> : <p className="text-xs text-zinc-400">Registre o relato abaixo para receber acompanhamento durante o piloto.</p>}
       </Panel>
       <Panel title="Seu primeiro atendimento">
@@ -43,7 +43,7 @@ export function Pilot() {
       </Panel>
       <Panel title="Regras deste piloto" collapsibleOnMobile>
         <ul className="list-disc space-y-2 pl-5 text-sm"><li>Use apenas dados autorizados e controlados pelo advogado participante.</li><li>Confira andamentos, intimações e prazos na fonte oficial.</li><li>Não compartilhe links do portal ou da agenda fora dos destinatários previstos.</li><li>Relate dificuldades e resultados ao menos uma vez por semana.</li></ul>
-        <p className="text-xs text-zinc-400">Conexão segura: {data.security.https_configured ? "ativa" : "pendente"} · e-mail verificado: {data.security.email_verified ? "sim" : "não"} · ambiente: {data.security.environment}.</p>
+        <p className="text-xs text-zinc-400">Conexão segura: {data.security.https_configured ? "ativa" : "pendente"} · e-mail verificado: {data.security.email_verified ? "sim" : "não"}.</p>
       </Panel>
     </>}
     <div id="feedback" className="scroll-mt-20"><Panel title="Relatar problema ou revisar a semana">
@@ -63,7 +63,7 @@ export function Pilot() {
         <DraftNotice dirty={draft.dirty} /><State error={error} /><button className={primary}>{busy ? "Registrando…" : "Registrar relato"}</button>
       </fieldset></form>{notice && <p role="status" className="text-sm text-green-300">{notice}</p>}
     </Panel></div>
-    <Panel title="Meus relatos"><State loading={reports.loading} error={reports.error} empty={!reports.data?.items.length} />{reports.data?.items.map(report => <article key={report.id} className="space-y-1 border-b border-zinc-800 pb-3"><p className="text-xs text-zinc-400">{report.kind === "weekly" ? "Revisão semanal" : "Problema"} · {dateText(report.created_at)} · {report.release}</p><p className="text-sm whitespace-pre-wrap">{report.message}</p></article>)}</Panel>
+    <Panel title="Meus relatos"><State loading={reports.loading} error={reports.error} empty={!reports.data?.items.length} />{reports.data?.items.map(report => <article key={report.id} className="space-y-1 border-b border-zinc-800 pb-3"><p className="text-xs text-zinc-400">{report.kind === "weekly" ? "Revisão semanal" : "Problema"} · {dateText(report.created_at)}</p><p className="text-sm whitespace-pre-wrap">{report.message}</p></article>)}</Panel>
     {admin && <Panel title="Acompanhamento do escritório"><State loading={team.loading} error={team.error} empty={!team.data?.items.length} /><div className="grid gap-3 sm:grid-cols-3"><p className="rounded-lg border border-zinc-800 p-3 text-sm">Relatos: <strong>{team.data?.summary.total || 0}</strong></p><p className="rounded-lg border border-zinc-800 p-3 text-sm">Problemas: <strong>{team.data?.summary.problems || 0}</strong></p><p className="rounded-lg border border-zinc-800 p-3 text-sm">Revisões semanais: <strong>{team.data?.summary.weekly_reviews || 0}</strong></p></div>{team.data?.items.map(report => <article key={report.id} className="space-y-1 border-b border-zinc-800 py-3"><p className="text-xs text-zinc-400">{report.user_name} · {report.kind === "weekly" ? "Revisão semanal" : "Problema"} · {dateText(report.created_at)} · {areas[report.area as keyof typeof areas] || report.area}</p><p className="whitespace-pre-wrap text-sm">{report.message}</p></article>)}</Panel>}
   </Page>;
 }

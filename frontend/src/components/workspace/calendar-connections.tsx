@@ -112,7 +112,7 @@ export function CalendarConnections({ tasks }: { tasks: TaskChoice[] }) {
   const conflicts = useResource<{ items: SyncConflict[] }>("/integrations/calendar-oauth/conflicts/pending");
   return <section className="space-y-3 border-t border-zinc-800 pt-4">
     <div><h3 className="font-medium">Google Agenda e Microsoft Outlook</h3><p className="mt-1 text-sm text-zinc-400">Só os compromissos escolhidos são enviados. Se o mesmo item mudar nos dois lados, você decide qual versão manter. Uma exclusão externa nunca apaga um prazo jurídico automaticamente.</p></div>
-    <aside className="rounded-lg border border-zinc-800 bg-zinc-950/30 p-3 text-xs leading-relaxed text-zinc-400"><span className="font-medium text-zinc-300">Dados enviados ao provedor:</span> título, data e hora, local, observações e os dados necessários para manter o vínculo. O LexFlow consulta apenas a agenda escolhida.</aside>
+    <aside className="rounded-lg border border-zinc-800 bg-zinc-950/30 p-3 text-xs leading-relaxed text-zinc-400"><span className="font-medium text-zinc-300">Dados compartilhados com a agenda:</span> título, data e hora, local, observações e os dados necessários para manter o vínculo. O LexFlow consulta apenas a agenda escolhida.</aside>
     <State loading={connections.loading} error={connections.error} />
     <div className="grid gap-3 lg:grid-cols-2">{(["google", "microsoft"] as Provider[]).map(provider => <ConnectionCard key={provider} provider={provider} connection={connections.data?.items.find(item => item.provider === provider)} tasks={tasks} />)}</div>
     {Boolean(conflicts.data?.items.length) && <div className="space-y-3 rounded-lg border border-amber-800 bg-amber-950/15 p-3">

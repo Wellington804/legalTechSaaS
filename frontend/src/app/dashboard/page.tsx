@@ -245,7 +245,7 @@ export default function DashboardPage() {
 
     <section className="grid gap-4 lg:grid-cols-[1.2fr_.8fr]">
       <Panel title="Atividade recente" description="Atualizações em linguagem direta."><State loading={activity.loading} error={activity.error} empty={!activity.loading && !activity.data?.items.length} />{activity.data?.items.map(item => <Link key={`${item.area}:${item.id}`} href={item.href} className="block rounded-lg p-3 hover:bg-zinc-800/60"><p className="text-sm font-medium">{item.message}</p><p className="mt-1 text-xs text-zinc-400">{item.area} · {dateText(item.created_at)}</p></Link>)}</Panel>
-      <Panel title="Pergunte ao LexFlow" description="Assistência opcional; nada é executado sem confirmação."><button className={`${primary} justify-start gap-2`} onClick={() => window.dispatchEvent(new CustomEvent(OPEN_AI_EVENT, { detail: { prompt: "Organize minhas pendências persistidas sem inventar prazos ou providências." } }))}><Bot aria-hidden="true" size={18} /> Abrir assistente</button></Panel>
+      <Panel title="Pergunte ao LexFlow" description="Assistência opcional; nada é executado sem confirmação."><button className={`${primary} justify-start gap-2`} onClick={() => window.dispatchEvent(new CustomEvent(OPEN_AI_EVENT))}><Bot aria-hidden="true" size={18} /> Abrir assistente</button></Panel>
     </section>
 
     <RoutineAttention />

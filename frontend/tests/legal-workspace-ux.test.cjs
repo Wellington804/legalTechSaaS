@@ -14,6 +14,8 @@ test("legal workspaces keep technical setup out of the main flow", () => {
   assert.match(controladoria, /Novo número/);
   assert.doesNotMatch(controladoria, /Fontes judiciais e homologação/);
   assert.doesNotMatch(controladoria, /JSON\.stringify/);
+  assert.match(controladoria, /providerLabels\[provider\.source_kind\]/);
+  assert.doesNotMatch(controladoria, /\{provider\.label\}/);
   assert.match(library, /detail: \{ contextKind: "library" \}/);
   assert.doesNotMatch(library, /prompt:/);
 });

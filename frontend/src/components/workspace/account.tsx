@@ -69,11 +69,11 @@ export function Account() {
       </Panel>}
 
       {section === "security" && <>
-        <Panel title="Autenticação em dois fatores">
-          <p className="text-sm text-zinc-400">{profile.data.mfa_enabled ? "MFA ativado." : "MFA não ativado."} {profile.data.mfa_required && "Obrigatório para acessar dados do escritório neste ambiente."}</p>
+        <Panel title="Verificação em duas etapas">
+          <p className="text-sm text-zinc-400">{profile.data.mfa_enabled ? "Proteção ativada." : "Proteção não ativada."} {profile.data.mfa_required && "Obrigatória para acessar os dados do escritório."}</p>
           {!profile.data.mfa_enabled && <Action run={async () => setMfa(await api.post<Row>("/account/mfa/setup", {}))}>Configurar aplicativo autenticador</Action>}
           {mfa && <div className="space-y-3"><p className="text-xs text-amber-300">Cadastre esta chave no autenticador. Não compartilhe nem envie por e-mail.</p><code className="block break-all bg-zinc-950 p-3 text-sm">{mfa.secret}</code>
-            <form className="flex flex-wrap gap-2" onSubmit={async event => { event.preventDefault(); const code = new FormData(event.currentTarget).get("code"); try { const result = await api.post<{ recovery_codes?: string[] }>("/account/mfa/confirm", { code }); setCodes(result.recovery_codes || []); setMfa(null); profile.reload(); setMessage("MFA confirmado. Guarde os códigos de recuperação em local seguro."); } catch (err) { setError(errorText(err)); } }}><input className={`${control} max-w-xs`} name="code" aria-label="Código do autenticador" autoComplete="one-time-code" inputMode="numeric" required pattern="[0-9]{6}" /><button className={primary}>Confirmar MFA</button></form>
+            <form className="flex flex-wrap gap-2" onSubmit={async event => { event.preventDefault(); const code = new FormData(event.currentTarget).get("code"); try { const result = await api.post<{ recovery_codes?: string[] }>("/account/mfa/confirm", { code }); setCodes(result.recovery_codes || []); setMfa(null); profile.reload(); setMessage("Verificação confirmada. Guarde os códigos de recuperação em local seguro."); } catch (err) { setError(errorText(err)); } }}><input className={`${control} max-w-xs`} name="code" aria-label="Código do autenticador" autoComplete="one-time-code" inputMode="numeric" required pattern="[0-9]{6}" /><button className={primary}>Confirmar verificação</button></form>
           </div>}
           {codes.length > 0 && <pre className="whitespace-pre-wrap break-all text-sm">{codes.join("\n")}</pre>}
         </Panel>

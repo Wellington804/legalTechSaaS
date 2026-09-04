@@ -740,11 +740,12 @@ class AIQualityTests(unittest.TestCase):
 
         asyncio.run(scenario())
 
-    def test_review_ui_displays_evidence_offsets_locator_and_ocr_without_integrality_claim(self):
+    def test_review_ui_displays_evidence_without_technical_ocr_copy_or_integrality_claim(self):
         source = (REPO_ROOT / "frontend/src/components/workspace/document-intelligence.tsx").read_text("utf-8")
         self.assertIn("offsets {evidence.start}–{evidence.end}", source)
         self.assertIn("source?.locator", source)
-        self.assertIn("OCR:", source)
+        self.assertNotIn("OCR:", source)
+        self.assertIn("texto incompleto; confira o original", source)
         self.assertIn("{display(field)}: {value}", source)
         self.assertIn("Partes: {row.parties.join", source)
         self.assertIn("Valor: {row.amount}", source)

@@ -14,11 +14,11 @@ const startOfWeek = (date: Date) => { const value = startOfDay(date); value.setD
 const label = (date: Date, options: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat("pt-BR", options).format(date);
 
 function taskStyle(task: Row) {
-  if (task.status === "completed") return "border-emerald-700 bg-emerald-950/35 text-emerald-100";
-  if (task.due_at && new Date(task.due_at) < new Date()) return "border-red-700 bg-red-950/35 text-red-100";
-  if (task.kind === "deadline" && !task.manually_reviewed) return "border-amber-700 bg-amber-950/35 text-amber-100";
+  if (task.status === "completed") return "border-emerald-700 bg-emerald-950/40 text-emerald-100";
+  if (task.due_at && new Date(task.due_at) < new Date()) return "border-red-700 bg-red-950/30 text-red-200";
+  if (task.kind === "deadline" && !task.manually_reviewed) return "border-amber-700 bg-amber-950/25 text-amber-100";
   if (task.kind === "hearing") return "border-violet-700 bg-violet-950/35 text-violet-100";
-  return "border-blue-700 bg-blue-950/35 text-blue-100";
+  return "border-blue-700 bg-blue-950/40 text-blue-100";
 }
 
 export function Agenda() {

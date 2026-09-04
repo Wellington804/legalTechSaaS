@@ -11,11 +11,20 @@ from sqlalchemy.dialects import postgresql
 from app.schemas.workspace import CaseCreate, CaseUpdate, ClientCreate, ClientImport, DocumentFolderCreate, DocumentFolderUpdate, DocumentUpdate, LedgerEntryCreate, ManualPaymentCreate, TaskCreate, TaskUpdate, normalize_phone
 from app.services.document_storage import object_key, quarantine_key
 from app.services.workspace_service import case_access_clause, document_version_bytes, require_finance_role, validate_upload_bytes
-from app.api.v1.endpoints.workspace import daily_priority_items, daily_time_context, priority_actions, summarize_task_dates, task_values_match
+from app.api.v1.endpoints.workspace import daily_priority_items, daily_time_context, ensure_unique_case_number, priority_actions, summarize_task_dates, task_values_match
 from app.models.workspace import WorkspaceTask
 
 
 class WorkspaceSchemaTests(unittest.TestCase):
+    def test_cnj_case_number_is_unique_inside_the_tenant(self):
+        class Database:
+            async def scalar(self, _statement):
+                return "existing-case"
+
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(ensure_unique_case_number(Database(), "tenant-a", "0000000-00.0000.8.26.0000"))
+        self.assertEqual(caught.exception.status_code, 409)
+
     def test_requests_reject_unknown_fields_and_whitespace_names(self):
         with self.assertRaises(ValidationError):
             ClientCreate(name="Cliente", stage="client", invented=True)

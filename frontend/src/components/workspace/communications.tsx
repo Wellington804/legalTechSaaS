@@ -90,10 +90,11 @@ export function Communications() {
         setWhatsapp(current => current?.status === latest.status && current.connected === latest.connected && current.number === latest.number && current.last_checked_at === latest.last_checked_at && current.verification_unavailable === latest.verification_unavailable ? current : latest);
         setConnectionUnavailable(Boolean(latest.verification_unavailable));
         if (latest.connected) { setQrCode(""); return; }
+        if (latest.status !== "pending") { setQrCode(""); return; }
         if (latest.status === "pending" && admin) {
           try {
             const result = await api.get<{ qr_code?: string }>("/engagement/whatsapp/qr");
-            if (!cancelled && result.qr_code) setQrCode(current => current === result.qr_code ? current : result.qr_code || "");
+            if (!cancelled) setQrCode(result.qr_code || "");
           } catch { if (!cancelled && !qrCode) setConnectionUnavailable(true); }
         }
       } catch { if (!cancelled) setConnectionUnavailable(true); }
@@ -103,7 +104,7 @@ export function Communications() {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [admin, qrCode, whatsapp?.connected, whatsapp?.status]);
 
-  const connectionStage = whatsapp?.connected ? "connected" : qrCode ? "qr_ready" : connectionUnavailable ? "unavailable" : whatsapp?.status === "pending" ? "generating" : "disconnected";
+  const connectionStage = whatsapp?.connected ? "connected" : whatsapp?.status === "pending" && qrCode ? "qr_ready" : connectionUnavailable ? "unavailable" : whatsapp?.status === "pending" ? "generating" : "disconnected";
   const statusText = channels.loading && !whatsapp ? "Verificando conexão" : connectionStage === "connected" ? "Conectado" : connectionStage === "qr_ready" ? "QR Code pronto" : connectionStage === "generating" ? "Gerando QR Code" : connectionStage === "unavailable" ? "Temporariamente indisponível" : "Desconectado";
 
   async function connect(kind: "connect" | "reconnect" | "refresh") {
@@ -115,9 +116,11 @@ export function Communications() {
       if (kind !== "refresh") {
         const started = result as { whatsapp?: WhatsAppStatus; qr_code?: string };
         setWhatsapp(started.whatsapp || { status: "pending", connected: false });
+        setQrCode(started.qr_code || "");
+      } else {
+        setQrCode(result.qr_code || "");
       }
-      if (result.qr_code) setQrCode(result.qr_code);
-      setMessage(result.qr_code ? "QR Code pronto para leitura." : "Conexão iniciada. O QR Code aparecerá aqui.");
+      setMessage(result.qr_code ? "QR Code pronto para leitura." : kind === "refresh" ? "O QR Code ainda não está disponível. Tente novamente em instantes." : "Conexão iniciada. O QR Code aparecerá aqui.");
     } catch {
       setConnectionUnavailable(true);
       setConnectionError(kind === "refresh" ? "Não foi possível atualizar o QR Code. Tente novamente." : "Não foi possível iniciar a conexão. Tente novamente em instantes.");

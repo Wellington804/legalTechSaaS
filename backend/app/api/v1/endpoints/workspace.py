@@ -127,6 +127,20 @@ def conflict(message: str = "Registro foi alterado por outra sessao.") -> HTTPEx
     return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message)
 
 
+async def ensure_unique_case_number(db: AsyncSession, tenant_id: str, number: str | None, *, excluding_id: str | None = None) -> None:
+    digits = "".join(character for character in number or "" if character.isdigit())
+    if len(digits) != 20:
+        return
+    statement = select(WorkspaceCase.id).where(
+        WorkspaceCase.tenant_id == tenant_id,
+        func.regexp_replace(func.coalesce(WorkspaceCase.number, ""), "[^0-9]", "", "g") == digits,
+    )
+    if excluding_id:
+        statement = statement.where(WorkspaceCase.id != excluding_id)
+    if await db.scalar(statement.limit(1)):
+        raise conflict("Este numero CNJ ja esta cadastrado no escritorio.")
+
+
 def task_values_match(task: WorkspaceTask, values: dict) -> bool:
     return all(getattr(task, field) == value for field, value in values.items())
 
@@ -422,10 +436,12 @@ async def create_case(
     _write: User = Depends(require_tenant_write),
 ):
     require_role(current_user, CASE_MANAGER_ROLES)
+    await lock_workspace_tenant(db, current_user.tenant_id)
     await get_client(db, current_user, payload.client_id)
     responsible_user = await active_tenant_user(db, current_user.tenant_id, payload.responsible_user_id)
     if responsible_user.role not in CASE_MANAGER_ROLES:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Responsavel deve ser advogado, socio ou administrador.")
+    await ensure_unique_case_number(db, current_user.tenant_id, payload.number)
     case = WorkspaceCase(tenant_id=current_user.tenant_id, **payload.model_dump())
     db.add(case)
     await db.flush()
@@ -474,6 +490,7 @@ async def update_case(
     db: AsyncSession = Depends(get_db),
     _write: User = Depends(require_tenant_write),
 ):
+    await lock_workspace_tenant(db, current_user.tenant_id)
     case = await get_case(db, current_user, case_id, for_update=True)
     require_case_write(current_user, case)
     if case.revision != payload.expected_revision:
@@ -481,6 +498,8 @@ async def update_case(
     changes = payload.model_dump(exclude_unset=True, exclude={"expected_revision"})
     if not changes:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Nenhuma alteracao informada.")
+    if "number" in changes:
+        await ensure_unique_case_number(db, current_user.tenant_id, changes["number"], excluding_id=case.id)
     if "responsible_user_id" in changes and changes["responsible_user_id"] is not None:
         responsible_user = await active_tenant_user(db, current_user.tenant_id, changes["responsible_user_id"])
         if responsible_user.role not in CASE_MANAGER_ROLES:

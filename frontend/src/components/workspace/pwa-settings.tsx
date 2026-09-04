@@ -89,7 +89,7 @@ export function PwaSettings() {
         : pwa.ios ? <p className="text-sm text-zinc-300">No iPhone ou iPad: abra no Safari, toque em Compartilhar → Adicionar à Tela de Início. Abra pelo ícone para ativar as notificações (iOS/iPadOS 16.4 ou superior).</p>
         : pwa.installPrompt ? <button type="button" className={button} disabled={busy} onClick={() => run(pwa.install)}>Instalar LexFlow</button>
         : <p className="text-sm text-zinc-400">No menu do navegador, procure “Instalar aplicativo” ou “Adicionar à tela inicial”. A disponibilidade depende do navegador.</p>}
-      {!pwa.supported && <p className="text-sm text-amber-300">Instalação e notificações precisam de um navegador compatível e de conexão HTTPS. Localhost funciona apenas no computador de desenvolvimento.</p>}
+      {!pwa.supported && <p className="text-sm text-amber-300">Este navegador não oferece instalação e notificações. Tente uma versão recente do Safari, Chrome ou Edge.</p>}
     </div>
     <State loading={loading} error={error || pwa.error} />
     {message && <p role="status" className="text-sm text-green-300">{message}</p>}
@@ -97,7 +97,7 @@ export function PwaSettings() {
       <p className="text-sm">Receba alertas genéricos de tarefas atribuídas e atualizações do portal, mesmo com o app fechado. Nomes, processos e conteúdo de mensagens não aparecem na tela bloqueada.</p>
       <p className="text-xs text-zinc-400">O sistema pode pedir login ao abrir um alerta. Sair da conta desativa os alertas desta sessão. Notificações não substituem a conferência de prazos; a entrega depende da conexão e das permissões do aparelho.</p>
       {!capabilities.enabled && <p className="text-sm text-amber-300">As notificações ainda não estão disponíveis. Tente novamente mais tarde.</p>}
-      {!supportsPush && <p className="text-sm text-zinc-400">Este navegador não oferece Web Push. No iPhone/iPad, tente pelo aplicativo adicionado à Tela de Início.</p>}
+      {!supportsPush && <p className="text-sm text-zinc-400">Este navegador não oferece notificações. No iPhone ou iPad, tente pelo aplicativo adicionado à Tela de Início.</p>}
       {permission === "denied" && <p className="text-sm text-amber-300">Notificações bloqueadas neste navegador. Libere a permissão nas configurações do site e recarregue esta página.</p>}
       {currentDevice ? <p className="text-sm text-green-300">Este dispositivo está ativo: {currentDevice.label}. Válido até {dateText(currentDevice.expires_at)}.</p>
         : <form className="space-y-3" onSubmit={event => { event.preventDefault(); void run(subscribe); }}>

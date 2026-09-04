@@ -71,9 +71,10 @@ export function Controladoria() {
           client_id: values.get("client_id"), process_number: values.get("process_number"),
           title: values.get("title") || null, source_kind: values.get("source_kind"),
         });
+        const state = subscriptionStatus[result.subscription.status].toLocaleLowerCase("pt-BR");
         setRefreshNotice(result.case_created
-          ? `O processo “${result.case_title}” foi cadastrado e entrou em acompanhamento.`
-          : `O processo “${result.case_title}” já estava cadastrado e está em acompanhamento.`);
+          ? `O processo “${result.case_title}” foi cadastrado com ${state}.`
+          : `O processo “${result.case_title}” já estava cadastrado e está com ${state}.`);
         cases.reload();
       } else {
         await api.post("/controladoria/subscriptions", { case_id: values.get("case_id"), source_kind: values.get("source_kind") });
@@ -107,9 +108,9 @@ export function Controladoria() {
           <Field label="Nome do processo (opcional)"><input name="title" className={control} minLength={2} maxLength={300} placeholder="Ex.: Cumprimento de sentença — Cliente" /></Field>
           <p className="text-xs text-zinc-400">Se o número ainda não existir no escritório, o processo será cadastrado para o cliente escolhido e ficará sob sua responsabilidade.</p>
         </>}
-        <details className="border-t border-zinc-800 pt-2"><summary className="min-h-11 cursor-pointer content-center text-sm font-medium text-blue-300">Escolher fonte de consulta</summary><div className="mt-2 max-w-md">{providers.data && <Field label="Fonte"><select name="source_kind" className={control} required defaultValue="djen">{providers.data.map(provider => <option key={provider.source_kind} value={provider.source_kind} disabled={!provider.configured}>{provider.label}{provider.configured ? "" : " · indisponível"}</option>)}</select></Field>}</div></details>
+        <details className="border-t border-zinc-800 pt-2"><summary className="min-h-11 cursor-pointer content-center text-sm font-medium text-blue-300">Escolher fonte de consulta</summary><div className="mt-2 max-w-md">{providers.data && <Field label="Fonte"><select name="source_kind" className={control} required defaultValue="djen">{providers.data.map(provider => <option key={provider.source_kind} value={provider.source_kind} disabled={!provider.configured}>{providerLabels[provider.source_kind]}{provider.configured ? "" : " · indisponível"}</option>)}</select></Field>}</div></details>
         <State error={createError || cases.error || clients.error || (providers.error ? "As fontes de consulta estão indisponíveis no momento." : "")} />
-        <div className="flex flex-wrap gap-2"><button disabled={busy || Boolean(providers.error)} className={primary}>{busy ? "Salvando…" : providers.loading ? "Carregando…" : "Iniciar acompanhamento"}</button><button type="button" className={button} onClick={() => { setCreating(null); setCreateError(""); }}>Cancelar</button></div>
+        <div className="flex flex-wrap gap-2"><button disabled={busy || providers.loading || !providers.data?.length || Boolean(providers.error)} className={primary}>{busy ? "Salvando…" : providers.loading ? "Carregando…" : "Iniciar acompanhamento"}</button><button type="button" className={button} onClick={() => { setCreating(null); setCreateError(""); }}>Cancelar</button></div>
       </fieldset></form>}
       <State loading={subscriptions.loading} error={subscriptions.error} />
       {refreshNotice && <p role="status" className="text-sm text-emerald-300">{refreshNotice}</p>}

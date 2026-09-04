@@ -15,7 +15,7 @@ test("calendar UI offers revocable Google and Microsoft OAuth plus explicit task
   assert.match(source, /iPhone ou iPad/);
   assert.match(source, /expected_local_revision: conflict\.local\.revision/);
   assert.match(source, /expected_remote_hash: conflict\.remote_hash/);
-  assert.match(source, /Dados enviados ao provedor/);
+  assert.match(source, /Dados compartilhados com a agenda/);
   assert.match(source, /Versão no LexFlow/);
   assert.match(source, /Versão na agenda externa/);
   assert.match(source, /reason instanceof ApiError && reason\.status === 409/);

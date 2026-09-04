@@ -125,7 +125,7 @@ function browserPushFixture() {
     assert.equal(devices.length, 0);
     enabled = false; await page.goto(base + "/dashboard/account");
     await page.getByRole("button", { name: "Aplicativo", exact: true }).click();
-    await page.getByText(/Web Push ainda não está habilitado/).waitFor();
+    await page.getByText(/As notificações ainda não estão disponíveis/).waitFor();
     await page.getByLabel(/Quero receber notificações neste dispositivo/).check(); assert.equal(await enable.isEnabled(), false);
     await page.evaluate(() => {
       const fixture = window.pushFixture;
@@ -135,9 +135,9 @@ function browserPushFixture() {
     });
     await page.getByRole("button", { name: "Salvei, atualizar agora", exact: true }).waitFor();
     await page.getByRole("button", { name: "Perfil", exact: true }).click();
-    await page.getByLabel("Nome", { exact: true }).fill("Rascunho não salvo");
+    await page.getByLabel("Nome da conta", { exact: true }).fill("Rascunho não salvo");
     await page.getByRole("button", { name: "Mais tarde", exact: true }).click();
-    assert.equal(await page.getByLabel("Nome", { exact: true }).inputValue(), "Rascunho não salvo");
+    assert.equal(await page.getByLabel("Nome da conta", { exact: true }).inputValue(), "Rascunho não salvo");
     assert.deepEqual(await page.evaluate(() => window.pushFixture.messages), []);
     const ios = await context.newPage();
     await ios.addInitScript(() => Object.defineProperty(navigator, "userAgent", { value: "iPhone OS 17 Safari" }));

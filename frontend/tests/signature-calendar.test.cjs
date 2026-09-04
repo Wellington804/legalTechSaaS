@@ -23,6 +23,10 @@ test("calendar UI exposes a native Apple webcal subscription", () => {
   assert.match(source, /replace\(\/\^https\?:\/i, "webcal:"\)/);
   assert.match(source, /Assinar no Calendário Apple/);
   assert.match(source, /somente leitura/);
+  assert.match(source, /bg-blue-950\/40/);
+  assert.match(source, /bg-emerald-950\/40/);
+  assert.match(source, /bg-amber-950\/25/);
+  assert.doesNotMatch(source, /bg-(?:blue|emerald|amber)-950\/35/);
 });
 
 test("communications preserves WhatsApp state and keeps setup details out of lawyer-facing pages", () => {
@@ -34,6 +38,7 @@ test("communications preserves WhatsApp state and keeps setup details out of law
   assert.doesNotMatch(communications, /channels\.reload\(\)/);
   assert.doesNotMatch(communications, /VPS|Resend|credenciais/i);
   assert.match(communications, /Temporariamente indisponível/);
+  assert.match(communications, /setQrCode\(result\.qr_code \|\| ""\)/);
   assert.match(communications, /max-h-\[28rem\].*overflow-y-auto/);
   assert.match(operations, /export function OperationsSettings/);
   assert.match(integrations, /<OperationsSettings \/>/);

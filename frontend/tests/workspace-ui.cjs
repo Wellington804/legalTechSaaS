@@ -178,6 +178,8 @@ function fixtureApi() {
     if (method === "GET" && path === "/api/v1/integrations/calendar-feed") return json(route, 200, {
       enabled: false, created_at: null,
     });
+    if (method === "GET" && path === "/api/v1/integrations/calendar-oauth/status") return json(route, 200, list([]));
+    if (method === "GET" && path === "/api/v1/integrations/calendar-oauth/conflicts/pending") return json(route, 200, list([]));
     if (method === "POST" && path === "/api/v1/engagement/whatsapp/connect") {
       state.whatsapp = { status: "pending", connected: false, number: null, last_checked_at: new Date().toISOString() };
       return json(route, 200, { whatsapp: state.whatsapp, qr_code: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" });
@@ -545,6 +547,9 @@ if (require.main === module) (async () => {
       "/dashboard", "/dashboard/crm", "/dashboard/tracker", "/dashboard/cases/case-a",
       "/dashboard/petitions/editor", "/dashboard/account", "/dashboard/communications", "/dashboard/assistant",
     ]) await assertNoHorizontalOverflow(page, path);
+    const mobileComposer = await page.getByLabel("Mensagem para o Copiloto", { exact: true }).boundingBox();
+    const mobileNavigation = await page.getByRole("navigation", { name: "Navegação principal" }).boundingBox();
+    assert.ok(mobileComposer && mobileNavigation && mobileComposer.y + mobileComposer.height <= mobileNavigation.y, "o campo do Copiloto permanece visível acima da navegação móvel");
 
     api.state.needsSecuritySetup = true;
     const securityPage = await context.newPage();
