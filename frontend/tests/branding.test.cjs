@@ -9,8 +9,10 @@ require.extensions[".ts"] = (module, filename) => module._compile(ts.transpileMo
 
 test("reference analysis only proposes known typed settings, never asset IDs or arbitrary keys", () => {
   const { BRAND_FONT_FAMILIES, identifiedBrandSettings, defaultBrandSettings, brandSettingLabels, exportFilename, moveBrandLayerToEdge, reorderBrandLayer, requiredBrandMargins } = require("../src/lib/branding.ts");
-  assert.ok(BRAND_FONT_FAMILIES.length > 3);
+  assert.equal(BRAND_FONT_FAMILIES.length, 23);
   assert.ok(BRAND_FONT_FAMILIES.includes("Noto Serif"));
+  assert.ok(BRAND_FONT_FAMILIES.includes("Arial"));
+  assert.ok(BRAND_FONT_FAMILIES.includes("Noto Serif Display"));
   assert.deepEqual(Object.keys(defaultBrandSettings).sort(), Object.keys(brandSettingLabels).sort());
   assert.deepEqual(identifiedBrandSettings(JSON.parse('{"body_size_pt":12,"header_text":"Escritório","page_numbers":true,"logo_asset_id":"foreign-profile","watermark_asset_id":"https://remote.test","constructor":{},"__proto__":{},"font_family":42,"script":"alert(1)"}')), {
     body_size_pt: 12, header_text: "Escritório", page_numbers: true,

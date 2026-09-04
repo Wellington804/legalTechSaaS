@@ -45,6 +45,16 @@ _FONT_FILES = {
     "Caladea": "Caladea-Regular.ttf",
     "Lato": "Lato-Regular.ttf",
     "Tinos": "Tinos-Regular.ttf",
+    "Arial": "Arimo-Regular.ttf",
+    "Calibri": "Carlito-Regular.ttf",
+    "Cambria": "Caladea-Regular.ttf",
+    "Courier New": "Cousine-Regular.ttf",
+    "Times New Roman": "Tinos-Regular.ttf",
+    "DejaVu Sans Condensed": "DejaVuSansCondensed.ttf",
+    "DejaVu Serif Condensed": "DejaVuSerifCondensed.ttf",
+    "Noto Sans Display": "NotoSansDisplay-Regular.ttf",
+    "Noto Serif Display": "NotoSerifDisplay-Regular.ttf",
+    "Noto Sans Mono": "NotoSansMono-Regular.ttf",
 }
 _FONT_DIRECTORIES = (
     Path("/usr/share/fonts/truetype/liberation2"), Path("/usr/share/fonts/truetype/liberation"),

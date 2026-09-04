@@ -9,6 +9,9 @@ Font = Literal[
     "DejaVu Serif", "DejaVu Sans", "DejaVu Sans Mono",
     "Noto Serif", "Noto Sans", "Noto Mono",
     "Carlito", "Caladea", "Lato", "Tinos",
+    "Arial", "Calibri", "Cambria", "Courier New", "Times New Roman",
+    "DejaVu Sans Condensed", "DejaVu Serif Condensed",
+    "Noto Sans Display", "Noto Serif Display", "Noto Sans Mono",
 ]
 FONT_FAMILIES = get_args(Font)
 Alignment = Literal["left", "center", "right"]

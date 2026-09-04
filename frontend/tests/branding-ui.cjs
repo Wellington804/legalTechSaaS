@@ -5,7 +5,7 @@ const ts = require("typescript");
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const { fixtureApi } = require("./workspace-ui.cjs");
 require.extensions[".ts"] = (module, filename) => module._compile(ts.transpileModule(readFileSync(filename, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, filename);
-const { defaultBrandSettings } = require("../src/lib/branding.ts");
+const { BRAND_FONT_FAMILIES, defaultBrandSettings } = require("../src/lib/branding.ts");
 
 const base = process.env.WORKSPACE_UI_URL || "http://127.0.0.1:3000";
 const origin = new URL(base).origin;
@@ -34,7 +34,7 @@ async function overflow(page) {
     { key: "professional_address", label: "Endereço profissional", value: "Rua Um, 10", source: "Perfil profissional", complete: true },
     { key: "office_name", label: "Nome do escritório", value: "Silva Advocacia", source: "Cadastro do escritório", complete: true },
   ] };
-  const band = { id: "top-band", kind: "rectangle", role: "decoration", label: "Faixa superior", x_percent: 0, y_percent: 1, width_percent: 100, height_percent: 14,
+  const band = { id: "top-band", kind: "rectangle", role: "decoration", label: "Faixa superior", x_percent: 8, y_percent: 1, width_percent: 84, height_percent: 14,
     rotation_deg: 0, opacity: 1, visible: true, locked: false, image_contrast: 1, z_index: 0, page_scope: "all", color: "#17324D", asset_id: null, text: "", binding: null,
     icon: "none", font_family: "Liberation Sans", font_size_pt: 8, font_weight: "normal", alignment: "left", letter_spacing_pt: 0, uppercase: false, line_thickness_pt: 1 };
   const brand = { id: "brand-a", name: "Identidade Ana", scope: "personal", owner_user_id: "user-a", revision: 1,
@@ -49,7 +49,7 @@ async function overflow(page) {
       let body = null; try { body = request.postDataJSON(); } catch {}
       calls.push({ path, method, body });
       const json = (payload, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(payload) });
-      if (method === "GET" && path.endsWith("/capabilities")) return json({ fonts: ["Liberation Serif", "Liberation Sans", "Lato"], pdf_available: true, ai_available: true, image_ai_available: false });
+      if (method === "GET" && path.endsWith("/capabilities")) return json({ fonts: BRAND_FONT_FAMILIES, pdf_available: true, ai_available: true, image_ai_available: false });
       if (method === "GET" && path === "/api/v1/branding/profiles") return json({ items: [brand] });
       if (method === "GET" && path.endsWith("/professional-data")) return json(professional);
       if (method === "GET" && path.endsWith("/assets")) return json({ items: assets });
@@ -74,6 +74,30 @@ async function overflow(page) {
     assert.deepEqual(await overflow(page), []);
 
     await page.getByRole("button", { name: /Camadas visuais/ }).click();
+    assert.equal(await page.getByText("23 fontes disponíveis", { exact: false }).count(), 0, "font help belongs to visual direction, not layers");
+    const paper = page.locator("[data-brand-paper]"); const initialPaper = await paper.boundingBox();
+    await page.getByRole("button", { name: "Aumentar zoom" }).click();
+    const zoomedPaper = await paper.boundingBox();
+    assert.ok(zoomedPaper.width > initialPaper.width * 1.2, "zoom enlarges the actual paper");
+    await page.getByRole("button", { name: "Ajustar pré-visualização à tela" }).click();
+    await page.locator('[data-brand-layer="top-band"]').click();
+    assert.equal(await page.getByRole("button", { name: "Excluir elemento" }).isVisible(), true);
+    await page.locator('[data-brand-layer="top-band"]').press("Delete");
+    await page.locator('[role="status"]', { hasText: "Salvo" }).waitFor();
+    assert.equal(brand.settings.layout_layers.length, 0);
+    const undoSaved = page.waitForResponse(response => response.request().method() === "PUT" && new URL(response.url()).pathname.endsWith("/branding/profiles/brand-a"));
+    await page.getByRole("button", { name: "Desfazer" }).click();
+    await undoSaved;
+    assert.equal(brand.settings.layout_layers.length, 1);
+    await page.locator('[data-brand-layer="top-band"]').click();
+    const positionSaved = page.waitForResponse(response => response.request().method() === "PUT" && new URL(response.url()).pathname.endsWith("/branding/profiles/brand-a"));
+    await page.getByRole("button", { name: "Direita", exact: true }).click();
+    await positionSaved;
+    assert.equal(brand.settings.layout_layers[0].x_percent, 16);
+    const layerName = page.getByLabel("Nome da camada");
+    await layerName.fill("Faixa superior X"); await layerName.press("Backspace");
+    assert.equal(brand.settings.layout_layers.length, 1, "Backspace in an input never deletes the layer");
+    await layerName.fill("Faixa superior");
     await page.getByRole("button", { name: "Ocultar Faixa superior" }).click();
     await page.locator('[role="status"]', { hasText: "Salvo" }).waitFor();
     assert.equal(brand.settings.layout_layers[0].visible, false);
@@ -83,6 +107,9 @@ async function overflow(page) {
     await page.getByRole("button", { name: "Aplicar área segura" }).click();
     await page.locator('[role="status"]', { hasText: "Salvo" }).waitFor();
     assert.equal(brand.settings.margin_top_mm, 49);
+
+    await page.getByRole("button", { name: /Direção visual/ }).click();
+    await page.getByText("23 fontes disponíveis", { exact: false }).waitFor();
 
     await page.getByLabel("Nome da identidade").fill("Identidade Ana revisada");
     await page.locator('[role="status"]', { hasText: "Salvo" }).waitFor();

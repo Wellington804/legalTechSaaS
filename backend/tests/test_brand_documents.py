@@ -1,8 +1,10 @@
 """Run: python -m unittest tests.test_brand_documents -v (PDF gate uses LibreOffice)."""
 import io
 import shutil
+import tempfile
 import unittest
 import zipfile
+from pathlib import Path
 from unittest.mock import patch
 
 from docx import Document
@@ -57,6 +59,20 @@ def pdf_bytes(customize=None, pages=1):
 
 
 class BrandReferenceTests(unittest.TestCase):
+    def test_new_font_aliases_resolve_to_packaged_files(self):
+        expected = {
+            "Arial": "Arimo-Regular.ttf", "Calibri": "Carlito-Regular.ttf", "Cambria": "Caladea-Regular.ttf",
+            "Courier New": "Cousine-Regular.ttf", "Times New Roman": "Tinos-Regular.ttf",
+            "DejaVu Sans Condensed": "DejaVuSansCondensed.ttf", "DejaVu Serif Condensed": "DejaVuSerifCondensed.ttf",
+            "Noto Sans Display": "NotoSansDisplay-Regular.ttf", "Noto Serif Display": "NotoSerifDisplay-Regular.ttf",
+            "Noto Sans Mono": "NotoSansMono-Regular.ttf",
+        }
+        self.assertEqual({family: brand._FONT_FILES[family] for family in expected}, expected)
+        with tempfile.TemporaryDirectory() as directory, patch.object(brand, "_FONT_DIRECTORIES", (Path(directory),)):
+            for filename in expected.values():
+                Path(directory, filename).touch()
+            self.assertTrue(all(brand._font_file(family) for family in expected))
+
     def test_composed_layers_reserve_body_area_and_ignore_watermark(self):
         settings = {"layout_mode": "composed", "paper_size": "A4", "margin_top_mm": 30, "margin_bottom_mm": 25,
                     "layout_layers": [

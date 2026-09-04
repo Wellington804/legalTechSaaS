@@ -8,8 +8,8 @@ import {
 } from "@/lib/branding";
 
 const alignments = { left: "text-left", center: "text-center", right: "text-right" } as const;
-const serifFamilies = new Set(["Liberation Serif", "DejaVu Serif", "Noto Serif", "Caladea", "Tinos"]);
-const monoFamilies = new Set(["Liberation Mono", "DejaVu Sans Mono", "Noto Mono"]);
+const serifFamilies = new Set(["Liberation Serif", "DejaVu Serif", "DejaVu Serif Condensed", "Noto Serif", "Noto Serif Display", "Caladea", "Cambria", "Tinos", "Times New Roman"]);
+const monoFamilies = new Set(["Liberation Mono", "DejaVu Sans Mono", "Noto Mono", "Noto Sans Mono", "Cousine", "Courier New"]);
 const family = (name: string) => {
   const safe = BRAND_FONT_FAMILIES.includes(name as BrandFontFamily) ? name : "Liberation Serif";
   const fallback = monoFamilies.has(safe) ? "ui-monospace, Consolas, monospace" : serifFamilies.has(safe) ? "ui-serif, Georgia, serif" : "ui-sans-serif, Arial, sans-serif";
@@ -50,10 +50,10 @@ function LayerContent({ layer, assets, compact }: { layer: BrandLayer; assets: B
   </span>;
 }
 
-export function BrandLivePreview({ name, settings, documentType = "general", professionalData, assets = [], compact = false, referenceOverlay, selectedLayerId, onSelectLayer, onClearSelection, onChangeLayer, showSafeArea = false }: {
+export function BrandLivePreview({ name, settings, documentType = "general", professionalData, assets = [], compact = false, referenceOverlay, selectedLayerId, onSelectLayer, onClearSelection, onChangeLayer, onDeleteLayer, showSafeArea = false, zoom = 100 }: {
   name: string; settings: BrandSettings; documentType?: DocumentType; professionalData?: ProfessionalData; assets?: BrandAsset[]; compact?: boolean;
   referenceOverlay?: { assetId: string; page: number; opacity: number; blendMode?: CSSProperties["mixBlendMode"] };
-  selectedLayerId?: string; onSelectLayer?: (id: string) => void; onClearSelection?: () => void; onChangeLayer?: (layer: BrandLayer) => void; showSafeArea?: boolean;
+  selectedLayerId?: string; onSelectLayer?: (id: string) => void; onClearSelection?: () => void; onChangeLayer?: (layer: BrandLayer) => void; onDeleteLayer?: (id: string) => void; showSafeArea?: boolean; zoom?: number;
 }) {
   const tokens = materializeBrandText(settings, professionalData); const sample = samples[documentType];
   const logo = assets.find(asset => asset.id === tokens.logo_asset_id); const watermark = assets.find(asset => asset.id === tokens.watermark_asset_id); const background = assets.find(asset => asset.id === tokens.background_asset_id);
@@ -63,6 +63,7 @@ export function BrandLivePreview({ name, settings, documentType = "general", pro
   const startEdit = (event: ReactPointerEvent<HTMLElement>, layer: BrandLayer, mode: "move" | "nw" | "ne" | "sw" | "se" | "rotate" = "move") => {
     if (!onChangeLayer || compact || layer.locked) return;
     event.preventDefault(); event.stopPropagation(); onSelectLayer?.(layer.id);
+    (event.currentTarget.closest("[data-brand-layer]") as HTMLElement | null)?.focus({ preventScroll: true });
     const paper = event.currentTarget.closest("[data-brand-paper]")?.getBoundingClientRect(); if (!paper) return;
     const origin = { x: event.clientX, y: event.clientY, left: layer.x_percent, top: layer.y_percent, width: layer.width_percent, height: layer.height_percent };
     const move = (pointer: PointerEvent) => {
@@ -89,16 +90,22 @@ export function BrandLivePreview({ name, settings, documentType = "general", pro
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", stop, { once: true });
   };
   const keyboardMove = (event: KeyboardEvent<HTMLDivElement>, layer: BrandLayer) => {
+    if (event.key === "Escape") { onClearSelection?.(); return; }
+    if (event.key === "Delete" || event.key === "Backspace") {
+      if (!layer.locked && onDeleteLayer) { event.preventDefault(); onDeleteLayer(layer.id); }
+      return;
+    }
     if (!onChangeLayer || layer.locked) return;
     const amount = event.shiftKey ? 2 : .5; let x = layer.x_percent; let y = layer.y_percent;
-    if (event.key === "Escape") { onClearSelection?.(); return; }
     if (event.key === "ArrowLeft") x -= amount; else if (event.key === "ArrowRight") x += amount; else if (event.key === "ArrowUp") y -= amount; else if (event.key === "ArrowDown") y += amount; else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelectLayer?.(layer.id); return; } else return;
     event.preventDefault(); onChangeLayer({ ...layer, x_percent: clamp(x, 0, 100 - layer.width_percent), y_percent: clamp(y, 0, 100 - layer.height_percent) });
   };
   return <section aria-label={`Pré-visualização da identidade para ${documentTypeLabels[documentType]}`} className="min-w-0 space-y-2">
     {!compact && <div><h3 className="text-sm font-semibold">Documento em tempo real</h3><p className="text-xs text-zinc-400">Amostra visual de {documentTypeLabels[documentType].toLocaleLowerCase("pt-BR")}. Confira também o PDF real.</p></div>}
-    <div data-brand-paper onPointerDown={() => onClearSelection?.()} className={`paper-shadow-3d relative mx-auto aspect-[210/297] w-full overflow-hidden text-zinc-900 ${compact ? "max-w-[15rem]" : "max-w-[36rem]"}`}
-      style={{ fontFamily: family(tokens.font_family), color: tokens.text_color, backgroundColor: tokens.paper_color, padding: `${Math.min(tokens.margin_top_mm / 2.97, 28)}% ${Math.min(tokens.margin_right_mm / 2.1, 24)}% ${Math.min(tokens.margin_bottom_mm / 2.97, 28)}% ${Math.min(tokens.margin_left_mm / 2.1, 24)}%` }}>
+    <div className={compact ? "" : "overflow-x-auto overflow-y-visible pb-2"}>
+    <div className={`relative mx-auto aspect-[210/297] ${compact ? "w-full max-w-[15rem]" : ""}`} style={compact ? undefined : { width: `${zoom}%`, maxWidth: `${36 * zoom / 100}rem` }}>
+    <div data-brand-paper onPointerDown={() => onClearSelection?.()} className="paper-shadow-3d absolute left-0 top-0 h-full w-full overflow-hidden text-zinc-900"
+      style={{ fontFamily: family(tokens.font_family), color: tokens.text_color, backgroundColor: tokens.paper_color, padding: `${Math.min(tokens.margin_top_mm / 2.97, 28)}% ${Math.min(tokens.margin_right_mm / 2.1, 24)}% ${Math.min(tokens.margin_bottom_mm / 2.97, 28)}% ${Math.min(tokens.margin_left_mm / 2.1, 24)}%`, width: compact ? "100%" : `${10000 / zoom}%`, height: compact ? "100%" : `${10000 / zoom}%`, transform: compact ? undefined : `scale(${zoom / 100})`, transformOrigin: "top left" }}>
       {exact && background && <PrivateBrandImage asset={background} alt="Fundo fiel do papel timbrado" className="pointer-events-none absolute inset-0 h-full w-full object-fill" />}
       {!exact && !composed && <header className={`absolute left-[8%] right-[8%] min-h-[9%] pb-2 whitespace-pre-line ${alignments[tokens.header_alignment]}`} style={{ top: `${(logo ? tokens.logo_top_mm : tokens.header_top_mm) / 2.97}%`, borderColor: tokens.accent_color, fontFamily: family(tokens.utility_font_family), fontSize: `${Math.max(5, tokens.header_font_size_pt * (compact ? .42 : .6))}px`, letterSpacing: `${tokens.header_letter_spacing_pt}px`, textTransform: tokens.header_uppercase ? "uppercase" : undefined }}>
         <PrivateBrandImage asset={logo} alt="Logotipo selecionado" className={`mb-1 max-h-12 max-w-[45%] object-contain ${tokens.header_alignment === "center" ? "mx-auto" : tokens.header_alignment === "right" ? "ml-auto" : ""}`} />
@@ -108,6 +115,7 @@ export function BrandLivePreview({ name, settings, documentType = "general", pro
       {showSafeArea && !compact && <div aria-hidden="true" className="pointer-events-none absolute border border-dashed border-emerald-600/70" style={{ left: `${tokens.margin_left_mm / 2.1}%`, right: `${tokens.margin_right_mm / 2.1}%`, top: `${tokens.margin_top_mm / 2.97}%`, bottom: `${tokens.margin_bottom_mm / 2.97}%`, zIndex: 110 }}><span className="absolute left-1 top-1 rounded bg-emerald-700/90 px-1 text-[7px] text-white">Área segura do texto</span></div>}
       {guides.x && <span aria-hidden="true" className="pointer-events-none absolute bottom-0 left-1/2 top-0 border-l border-blue-500" style={{ zIndex: 119 }} />}{guides.y && <span aria-hidden="true" className="pointer-events-none absolute left-0 right-0 top-1/2 border-t border-blue-500" style={{ zIndex: 119 }} />}
       {composed && tokens.layout_layers.filter(layer => layer.page_scope !== "continuation" && layer.visible !== false).sort((a, b) => a.z_index - b.z_index).map(layer => <div key={layer.id}
+        data-brand-layer={layer.id}
         role={onSelectLayer && !compact ? "button" : undefined} tabIndex={onSelectLayer && !compact ? 0 : undefined} aria-label={onSelectLayer && !compact ? `Editar ${layer.label}${layer.locked ? " (bloqueada)" : ""}` : undefined}
         onClick={event => { event.stopPropagation(); onSelectLayer?.(layer.id); }} onKeyDown={event => keyboardMove(event, layer)} onPointerDown={event => startEdit(event, layer)}
         className={`absolute ${onSelectLayer && !compact ? layer.locked ? "cursor-default" : "cursor-move touch-none" : "pointer-events-none"} ${selectedLayerId === layer.id ? "outline outline-2 outline-blue-500 outline-offset-1" : ""}`}
@@ -119,6 +127,8 @@ export function BrandLivePreview({ name, settings, documentType = "general", pro
       {!exact && !composed && <footer className={`absolute left-[8%] right-[8%] pt-2 whitespace-pre-line ${alignments[tokens.footer_alignment]}`} style={{ bottom: `${tokens.footer_bottom_mm / 2.97}%`, borderColor: tokens.accent_color, fontFamily: family(tokens.utility_font_family), fontSize: `${Math.max(5, tokens.footer_font_size_pt * (compact ? .38 : .55))}px`, letterSpacing: `${tokens.footer_letter_spacing_pt}px`, textTransform: tokens.footer_uppercase ? "uppercase" : undefined }}>{tokens.footer_divider && <span className={`mb-2 block ${tokens.footer_alignment === "center" ? "mx-auto" : tokens.footer_alignment === "right" ? "ml-auto" : ""}`} style={{ width: `${tokens.footer_divider_width_percent}%`, borderTop: `${Math.max(1, tokens.footer_divider_thickness_pt)}px solid ${tokens.accent_color}` }} />}{tokens.footer_text || "Informações profissionais"}{tokens.page_numbers && <span className="float-right">1</span>}</footer>}
       {composed && tokens.page_numbers && <span className="absolute bottom-[1.5%] right-[2%] text-[7px]">1</span>}{exact && tokens.page_numbers && <span className="absolute bottom-[2%] right-[3%] text-[7px]">1</span>}
       {!!referenceOverlay?.opacity && <PrivateBrandImage endpoint={`/branding/assets/${referenceOverlay.assetId}/pages/${referenceOverlay.page}`} alt="Comparação com a referência" className="pointer-events-none absolute inset-0 h-full w-full object-fill" style={{ opacity: referenceOverlay.opacity, mixBlendMode: referenceOverlay.blendMode }} />}
+    </div>
+    </div>
     </div>
   </section>;
 }

@@ -2,6 +2,9 @@ export const BRAND_FONT_FAMILIES = [
   "Liberation Serif", "Liberation Sans", "Liberation Mono",
   "DejaVu Serif", "DejaVu Sans", "DejaVu Sans Mono",
   "Noto Serif", "Noto Sans", "Noto Mono", "Carlito", "Caladea", "Lato", "Tinos",
+  "Arial", "Calibri", "Cambria", "Courier New", "Times New Roman",
+  "DejaVu Sans Condensed", "DejaVu Serif Condensed",
+  "Noto Sans Display", "Noto Serif Display", "Noto Sans Mono",
 ] as const;
 
 export type BrandFontFamily = (typeof BRAND_FONT_FAMILIES)[number];

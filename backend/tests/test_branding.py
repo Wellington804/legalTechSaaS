@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from app.api.v1.endpoints.branding import brand_assets, can_edit, check_revision, download_asset, materialize_professional_text, settings_for_document, validate_professional_overrides
 from app.models.branding import BrandProfile
-from app.schemas.branding import BrandCreate, BrandSettings, BrandUpdate
+from app.schemas.branding import FONT_FAMILIES, BrandCreate, BrandSettings, BrandUpdate
 from app.schemas.workspace import DocumentCreate
 
 
@@ -23,6 +23,8 @@ class BrandingTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValidationError):
             BrandUpdate(name="ok", settings={})
         self.assertEqual(BrandSettings(font_family="Noto Serif", heading_font_family="Lato").font_family, "Noto Serif")
+        self.assertEqual(BrandSettings(font_family="Arial", heading_font_family="Noto Sans Display").heading_font_family, "Noto Sans Display")
+        self.assertEqual(len(FONT_FAMILIES), 23)
         self.assertEqual(BrandSettings(paper_color="#ede7dd").paper_color, "#EDE7DD")
         with self.assertRaises(ValidationError):
             BrandSettings(paper_color="#202020", text_color="#202020")
