@@ -91,6 +91,46 @@ def _worker_lease_expired(claimed_at: datetime | None, now: datetime) -> bool:
     return claimed_at <= now - AI_WORKER_LEASE_TIMEOUT
 
 
+async def _evaluation_lease_status(db, run: AIEvaluationRun, tenant_id: str, now: datetime) -> str:
+    if not _worker_lease_expired(run.started_at, now):
+        return "lease_active"
+    run.status = "failed"
+    run.error = "Lease do worker expirou; reexecução automática bloqueada para evitar custo duplicado."
+    run.completed_at = now
+    await AuditService.log_action(
+        db, tenant_id, run.requested_by_user_id,
+        "AI_EVALUATION_LEASE_EXPIRED", "ai_evaluation_runs", run.id,
+        {
+            "previous_status": "running",
+            "claimed_at": run.started_at.isoformat() if run.started_at else None,
+            "lease_seconds": int(AI_WORKER_LEASE_TIMEOUT.total_seconds()),
+            "automatic_retry": False,
+        },
+    )
+    return "failed"
+
+
+async def _intelligence_lease_status(
+    db, analysis: DocumentIntelligenceAnalysis, tenant_id: str, now: datetime,
+) -> str:
+    if not _worker_lease_expired(analysis.updated_at, now):
+        return "lease_active"
+    analysis.status = "stale"
+    analysis.error = "Lease do worker expirou; reexecução automática bloqueada para evitar custo duplicado."
+    analysis.revision += 1
+    await AuditService.log_action(
+        db, tenant_id, analysis.requested_by_user_id,
+        "DOCUMENT_INTELLIGENCE_LEASE_EXPIRED", "document_intelligence_analyses", analysis.id,
+        {
+            "previous_status": "processing",
+            "claimed_at": analysis.updated_at.isoformat() if analysis.updated_at else None,
+            "lease_seconds": int(AI_WORKER_LEASE_TIMEOUT.total_seconds()),
+            "automatic_retry": False,
+        },
+    )
+    return "stale"
+
+
 def _analysis_coverage(base: dict, source_rows: list[DocumentIntelligenceSource]) -> dict:
     ocr_incomplete = [
         row.document_id for row in source_rows
@@ -348,22 +388,7 @@ async def _run_evaluation_impl(run_id: str, tenant_id: str) -> str:
         if not run:
             return "ignored"
         if run.status == "running":
-            if not _worker_lease_expired(run.started_at, now):
-                return "ignored"
-            run.status = "failed"
-            run.error = "Lease do worker expirou; reexecução automática bloqueada para evitar custo duplicado."
-            run.completed_at = now
-            await AuditService.log_action(
-                db, tenant_id, run.requested_by_user_id,
-                "AI_EVALUATION_LEASE_EXPIRED", "ai_evaluation_runs", run.id,
-                {
-                    "previous_status": "running",
-                    "claimed_at": run.started_at.isoformat() if run.started_at else None,
-                    "lease_seconds": int(AI_WORKER_LEASE_TIMEOUT.total_seconds()),
-                    "automatic_retry": False,
-                },
-            )
-            return "failed"
+            return await _evaluation_lease_status(db, run, tenant_id, now)
         if run.status != "queued":
             return "ignored"
         requester = await _authorized_ai_requester(db, tenant_id, run.requested_by_user_id)
@@ -554,22 +579,7 @@ async def _run_document_intelligence_impl(analysis_id: str, tenant_id: str) -> s
         if not analysis:
             return "ignored"
         if analysis.status == "processing":
-            if not _worker_lease_expired(analysis.updated_at, now):
-                return "ignored"
-            analysis.status = "stale"
-            analysis.error = "Lease do worker expirou; reexecução automática bloqueada para evitar custo duplicado."
-            analysis.revision += 1
-            await AuditService.log_action(
-                db, tenant_id, analysis.requested_by_user_id,
-                "DOCUMENT_INTELLIGENCE_LEASE_EXPIRED", "document_intelligence_analyses", analysis.id,
-                {
-                    "previous_status": "processing",
-                    "claimed_at": analysis.updated_at.isoformat() if analysis.updated_at else None,
-                    "lease_seconds": int(AI_WORKER_LEASE_TIMEOUT.total_seconds()),
-                    "automatic_retry": False,
-                },
-            )
-            return "stale"
+            return await _intelligence_lease_status(db, analysis, tenant_id, now)
         if analysis.status != "queued":
             return "ignored"
         source_rows, documents, case, user = await _validated_intelligence_context(db, analysis, tenant_id)
@@ -603,6 +613,7 @@ async def _run_document_intelligence_impl(analysis_id: str, tenant_id: str) -> s
         await _validated_intelligence_context(db, analysis, tenant_id)
         analysis.coverage = coverage
         analysis.limitations = _coverage_limitations([], coverage)
+        analysis.updated_at = now
 
     raw = await generate_text(
         system_prompt=DOCUMENT_INTELLIGENCE_SYSTEM_PROMPT,
@@ -685,10 +696,59 @@ async def _run_document_intelligence(analysis_id: str, tenant_id: str) -> str:
         return "failed"
 
 
+async def _check_evaluation_lease(run_id: str, tenant_id: str) -> str:
+    async with AsyncSessionLocal() as db, db.begin():
+        await _set_tenant_context(db, tenant_id)
+        run = await db.scalar(select(AIEvaluationRun).where(
+            AIEvaluationRun.id == run_id, AIEvaluationRun.tenant_id == tenant_id,
+        ).with_for_update())
+        if not run or run.status != "running":
+            return "ignored"
+        return await _evaluation_lease_status(db, run, tenant_id, datetime.now(timezone.utc))
+
+
+async def _check_intelligence_lease(analysis_id: str, tenant_id: str) -> str:
+    async with AsyncSessionLocal() as db, db.begin():
+        await _set_tenant_context(db, tenant_id)
+        analysis = await db.scalar(select(DocumentIntelligenceAnalysis).where(
+            DocumentIntelligenceAnalysis.id == analysis_id,
+            DocumentIntelligenceAnalysis.tenant_id == tenant_id,
+        ).with_for_update())
+        if not analysis or analysis.status != "processing":
+            return "ignored"
+        return await _intelligence_lease_status(db, analysis, tenant_id, datetime.now(timezone.utc))
+
+
+LEASE_CHECK_COUNTDOWN = int(AI_WORKER_LEASE_TIMEOUT.total_seconds()) + 1
+
+
+@celery_app.task(name="documents.check_ai_evaluation_lease", queue="documents", acks_late=True)
+def check_ai_evaluation_lease(run_id: str, tenant_id: str):
+    try:
+        return asyncio.run(_check_evaluation_lease(run_id, tenant_id))
+    finally:
+        asyncio.run(engine.dispose())
+
+
+@celery_app.task(name="documents.check_intelligence_lease", queue="documents", acks_late=True)
+def check_intelligence_lease(analysis_id: str, tenant_id: str):
+    try:
+        return asyncio.run(_check_intelligence_lease(analysis_id, tenant_id))
+    finally:
+        asyncio.run(engine.dispose())
+
+
 @celery_app.task(name="documents.run_ai_evaluation", queue="documents", acks_late=True, reject_on_worker_lost=True, soft_time_limit=270, time_limit=300)
 def run_ai_evaluation(run_id: str, tenant_id: str):
     try:
-        return asyncio.run(_run_evaluation(run_id, tenant_id))
+        result = asyncio.run(_run_evaluation(run_id, tenant_id))
+        if result == "lease_active":
+            check_ai_evaluation_lease.apply_async(
+                args=[run_id, tenant_id], countdown=LEASE_CHECK_COUNTDOWN,
+                task_id=f"ai-evaluation-lease-check:{tenant_id}:{run_id}",
+            )
+            return "deferred"
+        return result
     finally:
         asyncio.run(engine.dispose())
 
@@ -696,6 +756,13 @@ def run_ai_evaluation(run_id: str, tenant_id: str):
 @celery_app.task(name="documents.run_intelligence", queue="documents", acks_late=True, reject_on_worker_lost=True, soft_time_limit=270, time_limit=300)
 def run_document_intelligence(analysis_id: str, tenant_id: str):
     try:
-        return asyncio.run(_run_document_intelligence(analysis_id, tenant_id))
+        result = asyncio.run(_run_document_intelligence(analysis_id, tenant_id))
+        if result == "lease_active":
+            check_intelligence_lease.apply_async(
+                args=[analysis_id, tenant_id], countdown=LEASE_CHECK_COUNTDOWN,
+                task_id=f"document-intelligence-lease-check:{tenant_id}:{analysis_id}",
+            )
+            return "deferred"
+        return result
     finally:
         asyncio.run(engine.dispose())

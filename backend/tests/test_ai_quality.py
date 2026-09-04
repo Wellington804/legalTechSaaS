@@ -117,7 +117,7 @@ class AIQualityTests(unittest.TestCase):
                 patch.object(document_tasks, "_set_tenant_context", AsyncMock()),
                 patch.object(document_tasks, "generate_text", AsyncMock()) as provider,
             ):
-                self.assertEqual(await document_tasks._run_evaluation_impl("r1", "t1"), "ignored")
+                self.assertEqual(await document_tasks._run_evaluation_impl("r1", "t1"), "lease_active")
                 provider.assert_not_awaited()
             analysis = SimpleNamespace(status="processing", updated_at=now)
             with (
@@ -125,7 +125,69 @@ class AIQualityTests(unittest.TestCase):
                 patch.object(document_tasks, "_set_tenant_context", AsyncMock()),
                 patch.object(document_tasks, "generate_text", AsyncMock()) as provider,
             ):
-                self.assertEqual(await document_tasks._run_document_intelligence_impl("a1", "t1"), "ignored")
+                self.assertEqual(await document_tasks._run_document_intelligence_impl("a1", "t1"), "lease_active")
+                provider.assert_not_awaited()
+
+        asyncio.run(scenario())
+
+    def test_recent_lease_redelivery_schedules_one_provider_free_follow_up(self):
+        with (
+            patch.object(document_tasks, "_run_evaluation", AsyncMock(return_value="lease_active")),
+            patch.object(document_tasks.check_ai_evaluation_lease, "apply_async") as schedule,
+            patch.object(document_tasks, "engine", SimpleNamespace(dispose=AsyncMock())),
+        ):
+            self.assertEqual(document_tasks.run_ai_evaluation.run("r1", "t1"), "deferred")
+            schedule.assert_called_once_with(
+                args=["r1", "t1"], countdown=document_tasks.LEASE_CHECK_COUNTDOWN,
+                task_id="ai-evaluation-lease-check:t1:r1",
+            )
+
+        with (
+            patch.object(document_tasks, "_run_document_intelligence", AsyncMock(return_value="lease_active")),
+            patch.object(document_tasks.check_intelligence_lease, "apply_async") as schedule,
+            patch.object(document_tasks, "engine", SimpleNamespace(dispose=AsyncMock())),
+        ):
+            self.assertEqual(document_tasks.run_document_intelligence.run("a1", "t1"), "deferred")
+            schedule.assert_called_once_with(
+                args=["a1", "t1"], countdown=document_tasks.LEASE_CHECK_COUNTDOWN,
+                task_id="document-intelligence-lease-check:t1:a1",
+            )
+
+    def test_completed_job_is_ignored_by_lease_follow_up_without_provider(self):
+        class FakeSession:
+            def __init__(self, row):
+                self.scalar = AsyncMock(return_value=row)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def begin(self):
+                return self
+
+        async def scenario():
+            with (
+                patch.object(
+                    document_tasks, "AsyncSessionLocal",
+                    return_value=FakeSession(SimpleNamespace(status="completed")),
+                ),
+                patch.object(document_tasks, "_set_tenant_context", AsyncMock()),
+                patch.object(document_tasks, "generate_text", AsyncMock()) as provider,
+            ):
+                self.assertEqual(await document_tasks._check_evaluation_lease("r1", "t1"), "ignored")
+                provider.assert_not_awaited()
+
+            with (
+                patch.object(
+                    document_tasks, "AsyncSessionLocal",
+                    return_value=FakeSession(SimpleNamespace(status="approved")),
+                ),
+                patch.object(document_tasks, "_set_tenant_context", AsyncMock()),
+                patch.object(document_tasks, "generate_text", AsyncMock()) as provider,
+            ):
+                self.assertEqual(await document_tasks._check_intelligence_lease("a1", "t1"), "ignored")
                 provider.assert_not_awaited()
 
         asyncio.run(scenario())
@@ -156,7 +218,7 @@ class AIQualityTests(unittest.TestCase):
                 patch.object(document_tasks.AuditService, "log_action", AsyncMock()) as audit,
                 patch.object(document_tasks, "generate_text", AsyncMock()) as provider,
             ):
-                self.assertEqual(await document_tasks._run_evaluation_impl("r1", "t1"), "failed")
+                self.assertEqual(await document_tasks._check_evaluation_lease("r1", "t1"), "failed")
                 provider.assert_not_awaited()
                 self.assertEqual(evaluation.status, "failed")
                 self.assertFalse(audit.await_args.args[6]["automatic_retry"])
@@ -171,7 +233,7 @@ class AIQualityTests(unittest.TestCase):
                 patch.object(document_tasks.AuditService, "log_action", AsyncMock()) as audit,
                 patch.object(document_tasks, "generate_text", AsyncMock()) as provider,
             ):
-                self.assertEqual(await document_tasks._run_document_intelligence_impl("a1", "t1"), "stale")
+                self.assertEqual(await document_tasks._check_intelligence_lease("a1", "t1"), "stale")
                 provider.assert_not_awaited()
                 self.assertEqual((analysis.status, analysis.revision), ("stale", 4))
                 self.assertFalse(audit.await_args.args[6]["automatic_retry"])
