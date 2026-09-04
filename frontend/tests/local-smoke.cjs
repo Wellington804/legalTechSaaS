@@ -69,6 +69,7 @@ function totp(secret, offsetSeconds = 0) {
     await page.goto(`${base}/dashboard/tracker`);
     await page.getByRole('button', { name: 'Novo processo', exact: true }).click();
     await page.getByLabel('Cliente', { exact: true }).selectOption(client.id);
+    await page.getByLabel('Responsável', { exact: true }).selectOption(profile.user_id);
     await page.getByLabel('Assunto do processo').fill(`${label} — caso`);
     const caseSaved = page.waitForResponse(response => response.url().endsWith('/workspace/cases') && response.request().method() === 'POST');
     await page.getByRole('button', { name: 'Salvar processo', exact: true }).click();
