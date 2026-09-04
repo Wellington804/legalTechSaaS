@@ -37,4 +37,5 @@ GRANT EXECUTE ON FUNCTION calendar_webhook_identity(text, text) TO :"app_user";
 GRANT EXECUTE ON FUNCTION calendar_reconciliation_candidates(integer) TO :"app_user";
 GRANT EXECUTE ON FUNCTION autentique_signature_event_candidates(integer) TO :"app_user";
 GRANT EXECUTE ON FUNCTION clicksign_signature_event_candidates(integer) TO :"app_user";
+GRANT EXECUTE ON FUNCTION purge_expired_ai_conversations(integer) TO :"app_user";
 SQL

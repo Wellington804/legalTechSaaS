@@ -80,6 +80,21 @@ def claims_for(draft: str, statuses: dict[str, tuple[str, list[dict]]] | None = 
 
 
 class AIQualityTests(unittest.TestCase):
+    def test_isolated_runner_disposes_engine_on_the_same_event_loop(self):
+        loops = []
+
+        async def work():
+            loops.append(asyncio.get_running_loop())
+            return "done"
+
+        async def dispose():
+            loops.append(asyncio.get_running_loop())
+
+        with patch.object(document_tasks, "engine", SimpleNamespace(dispose=dispose)):
+            self.assertEqual(asyncio.run(document_tasks._run_isolated(work())), "done")
+
+        self.assertIs(loops[0], loops[1])
+
     def test_worker_requires_legal_role_and_current_tenant_write_access(self):
         async def scenario():
             paralegal = SimpleNamespace(id="u1", tenant_id="t1", role="paralegal")

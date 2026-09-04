@@ -61,6 +61,15 @@ OCR_COVERAGE_LIMITATION = (
 )
 
 
+async def _run_isolated(awaitable):
+    try:
+        return await awaitable
+    finally:
+        # Celery opens a new event loop per synchronous task invocation. Dispose
+        # asyncpg connections before that same loop closes.
+        await engine.dispose()
+
+
 async def _authorized_ai_requester(db, tenant_id: str, user_id: str) -> User:
     user = await db.scalar(select(User).where(
         User.id == user_id,
@@ -344,14 +353,12 @@ async def _fail_upload(upload_id: str, tenant_id: str, message: str) -> None:
 @celery_app.task(bind=True, name="documents.process_upload", queue="documents", acks_late=True, reject_on_worker_lost=True, max_retries=3, soft_time_limit=270, time_limit=300)
 def process_upload(self, upload_id: str, tenant_id: str):
     try:
-        return asyncio.run(_process_upload(upload_id, tenant_id))
+        return asyncio.run(_run_isolated(_process_upload(upload_id, tenant_id)))
     except Exception as exc:
         if self.request.retries < self.max_retries and not "bloqueado pelo antivirus" in str(exc).lower():
             raise self.retry(exc=exc, countdown=30 * (self.request.retries + 1))
-        asyncio.run(_fail_upload(upload_id, tenant_id, str(exc) or "Falha no processamento seguro."))
+        asyncio.run(_run_isolated(_fail_upload(upload_id, tenant_id, str(exc) or "Falha no processamento seguro.")))
         return "failed"
-    finally:
-        asyncio.run(engine.dispose())
 
 
 async def _lifecycle_candidates() -> list[tuple[str, str, str]]:
@@ -366,16 +373,17 @@ async def _purge_candidate(tenant_id: str, document_id: str, key: str) -> bool:
         return bool(await db.scalar(text("SELECT mark_document_object_deleted(:tenant, :document, :key)"), {"tenant": tenant_id, "document": document_id, "key": key}))
 
 
+async def _purge_trash() -> dict[str, int]:
+    candidates = await _lifecycle_candidates()
+    purged = 0
+    for candidate in candidates:
+        purged += int(await _purge_candidate(*candidate))
+    return {"candidates": len(candidates), "purged": purged}
+
+
 @celery_app.task(name="documents.purge_trash", queue="documents", soft_time_limit=240, time_limit=270)
 def purge_trash():
-    candidates = asyncio.run(_lifecycle_candidates())
-    purged = 0
-    try:
-        for candidate in candidates:
-            purged += int(asyncio.run(_purge_candidate(*candidate)))
-        return {"candidates": len(candidates), "purged": purged}
-    finally:
-        asyncio.run(engine.dispose())
+    return asyncio.run(_run_isolated(_purge_trash()))
 
 
 async def _run_evaluation_impl(run_id: str, tenant_id: str) -> str:
@@ -724,45 +732,33 @@ LEASE_CHECK_COUNTDOWN = int(AI_WORKER_LEASE_TIMEOUT.total_seconds()) + 1
 
 @celery_app.task(name="documents.check_ai_evaluation_lease", queue="documents", acks_late=True)
 def check_ai_evaluation_lease(run_id: str, tenant_id: str):
-    try:
-        return asyncio.run(_check_evaluation_lease(run_id, tenant_id))
-    finally:
-        asyncio.run(engine.dispose())
+    return asyncio.run(_run_isolated(_check_evaluation_lease(run_id, tenant_id)))
 
 
 @celery_app.task(name="documents.check_intelligence_lease", queue="documents", acks_late=True)
 def check_intelligence_lease(analysis_id: str, tenant_id: str):
-    try:
-        return asyncio.run(_check_intelligence_lease(analysis_id, tenant_id))
-    finally:
-        asyncio.run(engine.dispose())
+    return asyncio.run(_run_isolated(_check_intelligence_lease(analysis_id, tenant_id)))
 
 
 @celery_app.task(name="documents.run_ai_evaluation", queue="documents", acks_late=True, reject_on_worker_lost=True, soft_time_limit=270, time_limit=300)
 def run_ai_evaluation(run_id: str, tenant_id: str):
-    try:
-        result = asyncio.run(_run_evaluation(run_id, tenant_id))
-        if result == "lease_active":
-            check_ai_evaluation_lease.apply_async(
-                args=[run_id, tenant_id], countdown=LEASE_CHECK_COUNTDOWN,
-                task_id=f"ai-evaluation-lease-check:{tenant_id}:{run_id}",
-            )
-            return "deferred"
-        return result
-    finally:
-        asyncio.run(engine.dispose())
+    result = asyncio.run(_run_isolated(_run_evaluation(run_id, tenant_id)))
+    if result == "lease_active":
+        check_ai_evaluation_lease.apply_async(
+            args=[run_id, tenant_id], countdown=LEASE_CHECK_COUNTDOWN,
+            task_id=f"ai-evaluation-lease-check:{tenant_id}:{run_id}",
+        )
+        return "deferred"
+    return result
 
 
 @celery_app.task(name="documents.run_intelligence", queue="documents", acks_late=True, reject_on_worker_lost=True, soft_time_limit=270, time_limit=300)
 def run_document_intelligence(analysis_id: str, tenant_id: str):
-    try:
-        result = asyncio.run(_run_document_intelligence(analysis_id, tenant_id))
-        if result == "lease_active":
-            check_intelligence_lease.apply_async(
-                args=[analysis_id, tenant_id], countdown=LEASE_CHECK_COUNTDOWN,
-                task_id=f"document-intelligence-lease-check:{tenant_id}:{analysis_id}",
-            )
-            return "deferred"
-        return result
-    finally:
-        asyncio.run(engine.dispose())
+    result = asyncio.run(_run_isolated(_run_document_intelligence(analysis_id, tenant_id)))
+    if result == "lease_active":
+        check_intelligence_lease.apply_async(
+            args=[analysis_id, tenant_id], countdown=LEASE_CHECK_COUNTDOWN,
+            task_id=f"document-intelligence-lease-check:{tenant_id}:{analysis_id}",
+        )
+        return "deferred"
+    return result

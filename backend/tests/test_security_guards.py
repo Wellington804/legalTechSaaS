@@ -1,5 +1,6 @@
 import asyncio
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi import HTTPException
@@ -15,6 +16,15 @@ class NoQueryDatabase:
 
 
 class SecurityGuardsTests(unittest.TestCase):
+    def test_runtime_role_can_purge_expired_ai_conversations(self):
+        grant_script = (
+            Path(__file__).resolve().parents[2] / "deploy" / "postgres" / "grant-runtime-role.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'GRANT EXECUTE ON FUNCTION purge_expired_ai_conversations(integer) TO :"app_user";',
+            grant_script,
+        )
+
     def test_hardened_environment_rejects_prototype_modules(self):
         safe_settings = {
             "SECRET_KEY": "a" * 64,
