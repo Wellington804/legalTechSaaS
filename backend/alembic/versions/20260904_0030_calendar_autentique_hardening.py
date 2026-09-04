@@ -82,10 +82,42 @@ def upgrade() -> None:
         """
     )
     op.execute("REVOKE ALL ON FUNCTION autentique_signature_event_candidates(integer) FROM PUBLIC")
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION clicksign_signature_event_candidates(request_limit integer)
+        RETURNS TABLE(tenant_id text, event_id text)
+        LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public AS $$
+        SELECT event.tenant_id, event.id
+        FROM public.signature_provider_events event
+        JOIN public.signature_envelopes envelope
+          ON envelope.tenant_id = event.tenant_id
+         AND envelope.id = event.envelope_id
+         AND envelope.provider = event.provider
+         AND envelope.provider_account_reference = event.account_reference
+        WHERE event.provider IN ('clicksign', 'clicksign-sandbox')
+          AND event.event_type = 'envelope.signed'
+          AND (
+              envelope.signed_file_hash IS NULL
+              OR envelope.signed_validation_status IS DISTINCT FROM 'valid_integrity'
+          )
+          AND envelope.signed_validation_status IS DISTINCT FROM 'invalid'
+        ORDER BY event.received_at, event.id
+        LIMIT LEAST(GREATEST(request_limit, 1), 500)
+        $$
+        """
+    )
+    op.execute("REVOKE ALL ON FUNCTION clicksign_signature_event_candidates(integer) FROM PUBLIC")
 
 
 def downgrade() -> None:
     connection = op.get_bind()
+    # FORCE RLS also applies to the table owner.  Alembic runs this gate in the
+    # same transaction as the downgrade: an exception deliberately leaves the
+    # temporary ALTERs uncommitted so rollback restores the original policies.
+    connection.execute(sa.text("ALTER TABLE signature_envelopes NO FORCE ROW LEVEL SECURITY"))
+    connection.execute(sa.text("ALTER TABLE signature_envelopes DISABLE ROW LEVEL SECURITY"))
+    connection.execute(sa.text("ALTER TABLE calendar_task_links NO FORCE ROW LEVEL SECURITY"))
+    connection.execute(sa.text("ALTER TABLE calendar_task_links DISABLE ROW LEVEL SECURITY"))
     validation_evidence = connection.execute(
         sa.text(
             """
@@ -109,6 +141,11 @@ def downgrade() -> None:
         raise RuntimeError(
             "Downgrade 20260904_0030 bloqueado: preserve evidências de validação e remoções de calendário pendentes."
         )
+    connection.execute(sa.text("ALTER TABLE signature_envelopes ENABLE ROW LEVEL SECURITY"))
+    connection.execute(sa.text("ALTER TABLE signature_envelopes FORCE ROW LEVEL SECURITY"))
+    connection.execute(sa.text("ALTER TABLE calendar_task_links ENABLE ROW LEVEL SECURITY"))
+    connection.execute(sa.text("ALTER TABLE calendar_task_links FORCE ROW LEVEL SECURITY"))
+    op.execute("DROP FUNCTION clicksign_signature_event_candidates(integer)")
     op.execute(
         """
         CREATE OR REPLACE FUNCTION autentique_signature_event_candidates(request_limit integer)

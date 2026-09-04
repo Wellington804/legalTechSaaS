@@ -22,6 +22,8 @@ test("calendar UI offers revocable Google and Microsoft OAuth plus explicit task
   assert.match(source, /setStale\(true\)/);
   assert.match(source, /onReload\(\)/);
   assert.match(source, /disabled=\{busy \|\| stale\}/);
+  assert.match(source, /snapshotVersion = `\$\{conflict\.remote_hash\}:\$\{conflict\.local\.revision \?\? conflict\.local_revision\}`/);
+  assert.match(source, /useEffect\(\(\) => \{ setStale\(false\); setError\(""\); \}, \[snapshotVersion\]\)/);
   assert.match(source, /removido, selecione para reativar/);
   assert.match(source, />Reativar<\/Action>/);
   assert.doesNotMatch(source, /client_secret|icloud_password|caldav_password/i);

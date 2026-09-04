@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, ApiError } from "@/lib/api-client";
 import { Action, State, button, dateText, errorText, primary, useResource } from "./shared";
 
@@ -56,6 +56,8 @@ function ConflictActions({ conflict, onReload }: { conflict: SyncConflict; onRel
   const [busy, setBusy] = useState(false);
   const [stale, setStale] = useState(false);
   const [error, setError] = useState("");
+  const snapshotVersion = `${conflict.remote_hash}:${conflict.local.revision ?? conflict.local_revision}`;
+  useEffect(() => { setStale(false); setError(""); }, [snapshotVersion]);
   const resolve = async (resolution: "accept_remote" | "keep_local") => {
     setBusy(true); setError("");
     try {

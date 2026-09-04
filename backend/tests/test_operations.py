@@ -18,6 +18,7 @@ from app.services.operations import (
     FixedHostHttpClient,
     apply_clicksign_event,
     document_version_digest,
+    finalize_queued_clicksign_event,
     idempotency_digest,
     money,
     provider_reference_digest,
@@ -180,6 +181,63 @@ class SignatureLegacyRevalidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(result, envelope)
         self.assertEqual(envelope.signed_validation_status, "valid_integrity")
         fetch.assert_awaited_once()
+
+    async def test_periodic_clicksign_finalizer_downloads_and_revalidates_without_new_webhook(self):
+        pdf = b"%PDF-1.7\nsigned"
+        event_row = SignatureProviderEvent(
+            id="event-row-1",
+            tenant_id="tenant-a",
+            envelope_id="env-1",
+            provider="clicksign",
+            account_reference="account-a",
+            event_id="provider-event-1",
+            event_digest="c" * 64,
+            event_type="envelope.signed",
+        )
+        envelope = SignatureEnvelope(
+            id="env-1",
+            tenant_id="tenant-a",
+            document_id="doc-1",
+            document_version=1,
+            document_hash="a" * 64,
+            provider="clicksign",
+            provider_account_reference="account-a",
+            provider_envelope_id_encrypted=encrypt_mfa_secret("provider-envelope"),
+            provider_document_id_encrypted=encrypt_mfa_secret("provider-document"),
+            signed_file_hash=hashlib.sha256(pdf).hexdigest(),
+            signed_validation_status="unavailable",
+            status="signed",
+            revision=4,
+        )
+        credential = SimpleNamespace(
+            api_token_encrypted=encrypt_mfa_secret("provider-token"),
+            account_reference="account-a",
+        )
+
+        async def validate(_db, target, content):
+            self.assertEqual(content, pdf)
+            target.signed_validation_status = "valid_integrity"
+            return True
+
+        fetch = AsyncMock(return_value=pdf)
+        with patch("app.services.operations.fetch_clicksign_signed_pdf", fetch), patch(
+            "app.services.operations._store_signed_artifact", side_effect=validate
+        ), patch("app.services.operations._set_tenant_context", AsyncMock()):
+            result = await finalize_queued_clicksign_event(
+                ScalarDB([event_row, envelope, credential, envelope]),
+                tenant_id="tenant-a",
+                event_id=event_row.id,
+            )
+
+        self.assertEqual(result, "finalized")
+        self.assertEqual(envelope.signed_validation_status, "valid_integrity")
+        self.assertEqual(envelope.revision, 5)
+        fetch.assert_awaited_once_with(
+            provider="clicksign",
+            access_token="provider-token",
+            envelope_id="provider-envelope",
+            document_id="provider-document",
+        )
 
 
 if __name__ == "__main__":

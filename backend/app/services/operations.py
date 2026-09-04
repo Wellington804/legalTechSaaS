@@ -1048,17 +1048,18 @@ async def queue_autentique_event(
     return envelope, event_row, False
 
 
-async def finalize_queued_autentique_event(
+async def _finalize_queued_signature_event(
     db: AsyncSession,
     *,
     tenant_id: str,
     event_id: str,
+    allowed_providers: set[str],
 ) -> str:
     event_row = await db.scalar(
         select(SignatureProviderEvent).where(
             SignatureProviderEvent.tenant_id == tenant_id,
             SignatureProviderEvent.id == event_id,
-            SignatureProviderEvent.provider == "autentique",
+            SignatureProviderEvent.provider.in_(allowed_providers),
         )
     )
     if not event_row or event_row.event_type != "envelope.signed" or not event_row.envelope_id:
@@ -1067,7 +1068,8 @@ async def finalize_queued_autentique_event(
         select(SignatureEnvelope).where(
             SignatureEnvelope.tenant_id == tenant_id,
             SignatureEnvelope.id == event_row.envelope_id,
-            SignatureEnvelope.provider == "autentique",
+            SignatureEnvelope.provider == event_row.provider,
+            SignatureEnvelope.provider_account_reference == event_row.account_reference,
         )
     )
     if not envelope:
@@ -1078,7 +1080,7 @@ async def finalize_queued_autentique_event(
         select(ProviderCredential).where(
             ProviderCredential.tenant_id == tenant_id,
             ProviderCredential.purpose == "signature",
-            ProviderCredential.provider == "autentique",
+            ProviderCredential.provider == event_row.provider,
             ProviderCredential.account_reference == envelope.provider_account_reference,
             ProviderCredential.enabled.is_(True),
         )
@@ -1086,30 +1088,77 @@ async def finalize_queued_autentique_event(
     if not credential or not credential.api_token_encrypted or not envelope.provider_document_id_encrypted:
         return "credential_unavailable"
     try:
-        pdf = await fetch_autentique_signed_pdf(
-            access_token=decrypt_mfa_secret(credential.api_token_encrypted),
-            account_reference=credential.account_reference,
-            document_id=decrypt_mfa_secret(envelope.provider_document_id_encrypted),
-        )
-    except (RuntimeError, AutentiqueDispatchError):
+        access_token = decrypt_mfa_secret(credential.api_token_encrypted)
+        document_id = decrypt_mfa_secret(envelope.provider_document_id_encrypted)
+        if event_row.provider in AUTENTIQUE_PROVIDERS:
+            pdf = await fetch_autentique_signed_pdf(
+                access_token=access_token,
+                account_reference=credential.account_reference,
+                document_id=document_id,
+            )
+        else:
+            if not envelope.provider_envelope_id_encrypted:
+                return "credential_unavailable"
+            pdf = await fetch_clicksign_signed_pdf(
+                provider=event_row.provider,
+                access_token=access_token,
+                envelope_id=decrypt_mfa_secret(envelope.provider_envelope_id_encrypted),
+                document_id=document_id,
+            )
+    except (RuntimeError, AutentiqueDispatchError, ClicksignDispatchError):
         return "provider_deferred"
     await _set_tenant_context(db, tenant_id)
     envelope = await db.scalar(
         select(SignatureEnvelope)
-        .where(SignatureEnvelope.tenant_id == tenant_id, SignatureEnvelope.id == event_row.envelope_id)
+        .where(
+            SignatureEnvelope.tenant_id == tenant_id,
+            SignatureEnvelope.id == event_row.envelope_id,
+            SignatureEnvelope.provider == event_row.provider,
+            SignatureEnvelope.provider_account_reference == event_row.account_reference,
+        )
         .with_for_update()
         .execution_options(populate_existing=True)
     )
     if not envelope:
         return "ignored"
+    if envelope.signed_file_available:
+        return "already_finalized"
     if not await _store_signed_artifact(db, envelope, pdf):
         envelope.revision += 1
         return "validation_failed" if envelope.signed_validation_status == "invalid" else "validation_deferred"
     if envelope.status == "pending":
         envelope.status = "signed"
         envelope.signed_at = datetime.now(timezone.utc)
-        envelope.revision += 1
+    envelope.revision += 1
     return "finalized"
+
+
+async def finalize_queued_autentique_event(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    event_id: str,
+) -> str:
+    return await _finalize_queued_signature_event(
+        db,
+        tenant_id=tenant_id,
+        event_id=event_id,
+        allowed_providers=set(AUTENTIQUE_PROVIDERS),
+    )
+
+
+async def finalize_queued_clicksign_event(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    event_id: str,
+) -> str:
+    return await _finalize_queued_signature_event(
+        db,
+        tenant_id=tenant_id,
+        event_id=event_id,
+        allowed_providers=set(CLICKSIGN_BASE_URLS),
+    )
 
 
 async def apply_payment_event(

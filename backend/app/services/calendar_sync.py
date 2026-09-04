@@ -470,6 +470,15 @@ async def select_tasks(db: AsyncSession, user: User, connection: CalendarConnect
             db.add(link)
         elif link.status == "tombstoned":
             link.status = "active"
+            # A tombstone means the previously bound provider event was
+            # confirmed deleted.  Never recycle its identity, ETag or
+            # snapshots: the next reconciliation must issue a clean create.
+            link.provider_event_id_encrypted = None
+            link.provider_event_hash = None
+            link.provider_etag = None
+            link.last_local_hash = None
+            link.last_remote_hash = None
+            link.last_synced_at = None
         elif link.status == "delete_pending":
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -658,6 +667,11 @@ def _apply_remote(task: WorkspaceTask, remote: RemoteEvent) -> None:
     task.revision += 1
 
 
+def _single_recoverable_remote(candidates: list[RemoteEvent]) -> RemoteEvent | None:
+    active = [remote for remote in candidates if not remote.deleted]
+    return active[0] if len(active) == 1 else None
+
+
 async def synchronize_connection(db: AsyncSession, tenant_id: str, connection_id: str) -> dict[str, int]:
     """Synchronize one explicit task allowlist. Provider data outside it is discarded."""
     await _set_tenant_context(db, tenant_id)
@@ -721,10 +735,9 @@ async def synchronize_connection(db: AsyncSession, tenant_id: str, connection_id
     for link in links:
         if link.provider_event_id_encrypted or link.status != "active":
             continue
-        candidates = candidates_by_task.get(link.task_id, [])
-        if len(candidates) != 1:
+        remote = _single_recoverable_remote(candidates_by_task.get(link.task_id, []))
+        if remote is None:
             continue
-        remote = candidates[0]
         task = tasks.get(link.task_id)
         link.provider_event_id_encrypted = encrypt_mfa_secret(remote.identifier)
         link.provider_event_hash = digest(remote.identifier)

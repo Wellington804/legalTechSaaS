@@ -18,6 +18,7 @@ from app.services.calendar_sync import (
     _pkce,
     _record_conflict,
     _serialize_remote,
+    _single_recoverable_remote,
     _task_audit_state,
     complete_oauth,
     conflict_payload,
@@ -316,6 +317,12 @@ class CalendarOAuthTests(unittest.IsolatedAsyncioTestCase):
             connection_id="connection-a",
             task_id="task-a",
             status="tombstoned",
+            provider_event_id_encrypted=encrypt_mfa_secret("deleted-event"),
+            provider_event_hash=digest("deleted-event"),
+            provider_etag='"deleted-etag"',
+            last_local_hash="a" * 64,
+            last_remote_hash="b" * 64,
+            last_synced_at=datetime.now(timezone.utc),
         )
         db = FakeDB([link])
 
@@ -326,6 +333,12 @@ class CalendarOAuthTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, [link])
         self.assertEqual(link.status, "active")
+        self.assertIsNone(link.provider_event_id_encrypted)
+        self.assertIsNone(link.provider_event_hash)
+        self.assertIsNone(link.provider_etag)
+        self.assertIsNone(link.last_local_hash)
+        self.assertIsNone(link.last_remote_hash)
+        self.assertIsNone(link.last_synced_at)
         self.assertEqual(db.commits, 1)
         audit = next(item for item in db.added if item.__class__.__name__ == "AuditLog")
         self.assertEqual(audit.user_id, user.id)
@@ -336,6 +349,24 @@ class CalendarOAuthTests(unittest.IsolatedAsyncioTestCase):
             audit.details["changes"]["status"],
             {"before": "tombstoned", "after": "active"},
         )
+        self.assertEqual(
+            audit.details["changes"]["provider_event_bound"],
+            {"before": True, "after": False},
+        )
+
+    def test_deleted_remote_marker_is_never_reused_after_reactivation(self):
+        deleted = RemoteEvent("deleted-event", '"etag-old"', True, None, None, None, None)
+        active = RemoteEvent(
+            "new-event",
+            '"etag-new"',
+            False,
+            "Audiência",
+            datetime(2026, 9, 10, 12, tzinfo=timezone.utc),
+            None,
+            None,
+        )
+        self.assertIsNone(_single_recoverable_remote([deleted]))
+        self.assertIs(_single_recoverable_remote([deleted, active]), active)
 
     async def test_calendar_audit_records_safe_before_after_without_tokens_or_raw_notes(self):
         connection = CalendarConnection(
