@@ -84,7 +84,9 @@ validate_calendar_oauth MICROSOFT /api/v1/integrations/calendar-oauth/microsoft/
 case "$(value_of MICROSOFT_CALENDAR_TENANT)" in ''|common|organizations|consumers|????????-????-????-????-????????????) ;; *) fail "invalid MICROSOFT_CALENDAR_TENANT" ;; esac
 
 if [ "$mode" = go-live ]; then
-  require_keys BACKEND_SENTRY_DSN FRONTEND_SENTRY_DSN OPENROUTER_API_KEY OPENROUTER_MODEL RESEND_API_KEY RESEND_FROM_EMAIL RESEND_WEBHOOK_SECRET EVOLUTION_API_KEY WEB_PUSH_VAPID_PUBLIC_KEY WEB_PUSH_VAPID_PRIVATE_KEY WEB_PUSH_VAPID_SUBJECT R2_ACCOUNT_ID R2_BUCKET_NAME R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY BACKUP_DIRECTORY BACKUP_PASSPHRASE_FILE BACKUP_OFFSITE_SSH_DESTINATION BACKUP_OFFSITE_SSH_KEY_PATH
+  # Backup credentials live only in /etc/legaltech/ops.env. The systemd
+  # production-health gate validates backup age/checksum after this app-env gate.
+  require_keys BACKEND_SENTRY_DSN FRONTEND_SENTRY_DSN OPENROUTER_API_KEY OPENROUTER_MODEL RESEND_API_KEY RESEND_FROM_EMAIL RESEND_WEBHOOK_SECRET EVOLUTION_API_KEY WEB_PUSH_VAPID_PUBLIC_KEY WEB_PUSH_VAPID_PRIVATE_KEY WEB_PUSH_VAPID_SUBJECT R2_ACCOUNT_ID R2_BUCKET_NAME R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY
   for flag in AI_ENABLED ACCOUNT_EMAILS_ENABLED RESEND_ENABLED EVOLUTION_ENABLED WEB_PUSH_ENABLED; do
     [ "$(value_of "$flag")" = true ] || fail "$flag must be true only after its homologation evidence is recorded"
   done

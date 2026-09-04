@@ -109,6 +109,10 @@ Antes do corte que ativa IA, e-mail, WhatsApp e Web Push, rode o gate estrito. E
 sudo systemctl start legaltech-production-health.service
 ```
 
+O primeiro comando valida apenas o ambiente da aplicação. Os segredos `BACKUP_*`
+continuam exclusivamente em `/etc/legaltech/ops.env`; o segundo comando valida o
+backup cifrado, checksum, idade, workers, outboxes, storage e volumes.
+
 A política de retenção, pedidos de titular e resposta a incidente estão em [Privacidade, retenção e incidentes](privacidade-lgpd.md).
 
 ## Resposta a falhas
