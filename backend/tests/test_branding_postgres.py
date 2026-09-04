@@ -58,7 +58,10 @@ class BrandingPostgresTests(unittest.IsolatedAsyncioTestCase):
             await db.commit()
             await _set_tenant_context(db, tenant_id)
             created = await api.create_profile(
-                BrandCreate(name="Marca do advogado", settings={"header_fields": [], "footer_fields": []}),
+                BrandCreate(
+                    name="Marca do advogado",
+                    settings={"header_fields": ["professional_name"], "footer_fields": []},
+                ),
                 owner,
                 db,
                 owner,
