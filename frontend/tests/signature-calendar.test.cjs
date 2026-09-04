@@ -12,6 +12,9 @@ test("signature UI requests ICP-Brasil through Clicksign without collecting cert
   assert.match(source, /setRequestKey\(crypto\.randomUUID\(\)\)/);
   assert.match(source, /signature-envelopes\/\$\{item\.id\}\/download/);
   assert.match(source, /window\.location\.origin}\/api\/v1\/operations\/webhooks\/signatures/);
+  assert.match(source, /Integridade PAdES validada/);
+  assert.match(source, /confiança e revogação da cadeia ICP-Brasil não confirmadas/);
+  assert.match(source, /não passou na validação PAdES e não foi promovido/);
   assert.doesNotMatch(source, /name=["'](?:pin|pfx|certificate_password)["']/i);
 });
 

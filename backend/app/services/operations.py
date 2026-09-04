@@ -67,6 +67,7 @@ from app.services.document_storage import enabled as document_storage_enabled
 from app.services.document_storage import put as put_document_object
 from app.services.document_storage import read as read_document_object
 from app.services.document_storage import scan as scan_document_content
+from app.services.pades_validation import validate_pades_pdf
 from app.services.workspace_service import CASE_MANAGER_ROLES, active_tenant_user, get_case, get_client, get_document, lock_workspace_tenant, require_case_write
 
 
@@ -598,6 +599,7 @@ async def create_signature_envelope(
         request_hash=request_hash,
         provider=provider,
         provider_account_reference=account_reference,
+        signature_authentication=signer.authentication,
         dispatch_status="unknown",
         expires_at=expires_at,
         created_by_user_id=user.id,
@@ -822,7 +824,7 @@ async def _store_signed_artifact(
     db: AsyncSession,
     envelope: SignatureEnvelope,
     pdf: bytes,
-) -> None:
+) -> bool:
     signed_hash = digest(pdf)
     if envelope.signed_file_hash:
         if not hmac.compare_digest(envelope.signed_file_hash, signed_hash):
@@ -830,7 +832,18 @@ async def _store_signed_artifact(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="O provedor retornou conteúdo diferente para um documento assinado já preservado.",
             )
-        return
+        if envelope.signed_validation_status == "valid_integrity":
+            return True
+    validation = await asyncio.to_thread(validate_pades_pdf, pdf)
+    envelope.signed_validation_status = validation.status
+    envelope.signed_certificate_trust = validation.certificate_trust
+    envelope.signed_validation_report_encrypted = encrypt_mfa_secret(validation.report_json())
+    envelope.signed_validated_at = datetime.now(timezone.utc)
+    envelope.signed_signature_count = len(validation.signatures)
+    if not validation.integrity_valid:
+        return False
+    if envelope.signed_file_hash:
+        return True
     await asyncio.to_thread(scan_document_content, pdf)
     document = await db.scalar(
         select(WorkspaceDocument).where(
@@ -850,6 +863,7 @@ async def _store_signed_artifact(
         envelope.signed_file_content = None
     else:
         envelope.signed_file_content = pdf
+    return True
 
 
 async def apply_clicksign_event(
@@ -933,9 +947,17 @@ async def apply_clicksign_event(
             await db.flush()
     except IntegrityError:
         return envelope, True
+    signed_pdf_valid = False
     if event.event_type == "envelope.signed" and signed_pdf is not None:
-        await _store_signed_artifact(db, envelope, signed_pdf)
+        signed_pdf_valid = await _store_signed_artifact(db, envelope, signed_pdf)
+        if not signed_pdf_valid and envelope.signed_validation_status == "unavailable":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Validação PAdES temporariamente indisponível; o webhook deve ser reenviado.",
+            )
     if event.event_type and envelope.status == "pending":
+        if event.event_type == "envelope.signed" and not signed_pdf_valid:
+            return envelope, False
         envelope.status = {
             "envelope.signed": "signed",
             "envelope.declined": "declined",
@@ -1073,7 +1095,9 @@ async def finalize_queued_autentique_event(
     )
     if not envelope:
         return "ignored"
-    await _store_signed_artifact(db, envelope, pdf)
+    if not await _store_signed_artifact(db, envelope, pdf):
+        envelope.revision += 1
+        return "validation_failed" if envelope.signed_validation_status == "invalid" else "validation_deferred"
     if envelope.status == "pending":
         envelope.status = "signed"
         envelope.signed_at = datetime.now(timezone.utc)

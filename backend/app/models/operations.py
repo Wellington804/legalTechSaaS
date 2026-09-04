@@ -343,7 +343,23 @@ class SignatureEnvelope(Base):
         ),
         CheckConstraint("status IN ('pending', 'signed', 'declined', 'expired')", name="ck_signature_envelopes_status"),
         CheckConstraint("dispatch_status IN ('not_dispatched', 'submitted', 'unknown', 'failed')", name="ck_signature_envelopes_dispatch"),
+        CheckConstraint(
+            "signature_authentication IS NULL OR signature_authentication IN ('email', 'icp_brasil')",
+            name="ck_signature_envelopes_authentication",
+        ),
         CheckConstraint("signed_file_size IS NULL OR signed_file_size > 0", name="ck_signature_envelopes_signed_file_size"),
+        CheckConstraint(
+            "signed_validation_status IS NULL OR signed_validation_status IN ('valid_integrity', 'invalid', 'unavailable')",
+            name="ck_signature_envelopes_validation_status",
+        ),
+        CheckConstraint(
+            "signed_certificate_trust IS NULL OR signed_certificate_trust IN ('trusted', 'unverified', 'invalid', 'unavailable')",
+            name="ck_signature_envelopes_certificate_trust",
+        ),
+        CheckConstraint(
+            "signed_signature_count IS NULL OR signed_signature_count >= 0",
+            name="ck_signature_envelopes_signature_count",
+        ),
     )
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -354,6 +370,7 @@ class SignatureEnvelope(Base):
     request_hash = Column(String(64), nullable=True)
     provider = Column(String(32), nullable=False)
     provider_account_reference = Column(String(128), nullable=False)
+    signature_authentication = Column(String(16), nullable=True)
     provider_envelope_hash = Column(String(64), nullable=True)
     provider_document_hash = Column(String(64), nullable=True)
     provider_envelope_id_encrypted = Column(Text, nullable=True)
@@ -368,6 +385,11 @@ class SignatureEnvelope(Base):
     signed_object_key = Column(String(512), nullable=True, unique=True)
     signed_file_size = Column(Integer, nullable=True)
     signed_file_hash = Column(String(64), nullable=True)
+    signed_validation_status = Column(String(24), nullable=True)
+    signed_certificate_trust = Column(String(16), nullable=True)
+    signed_validation_report_encrypted = Column(Text, nullable=True)
+    signed_validated_at = Column(DateTime(timezone=True), nullable=True)
+    signed_signature_count = Column(Integer, nullable=True)
     revision = Column(Integer, nullable=False, default=1)
     created_by_user_id = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)

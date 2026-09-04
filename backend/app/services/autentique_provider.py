@@ -168,20 +168,37 @@ def parse_autentique_webhook(raw: bytes) -> AutentiqueWebhook:
     event_id, event_name = event.get("id"), event.get("type")
     organization = event.get("organization")
     account = organization.get("id") if isinstance(organization, dict) else organization
-    object_data = event.get("data", {}).get("object") if isinstance(event.get("data"), dict) else None
-    document_id = object_data.get("id") if isinstance(object_data, dict) else None
-    if isinstance(event_name, str) and event_name.startswith("signature.") and isinstance(object_data, dict):
-        document_id = object_data.get("document") or object_data.get("document_id") or document_id
+    data = event.get("data")
+    if not isinstance(data, dict):
+        raise ValueError("invalid Autentique event data")
+    # Current Autentique webhooks document exactly two resource shapes:
+    # document events wrap a document object, while signature events place the
+    # signature fields directly in data and use object="signature".
+    raw_object = data.get("object")
+    document_shape = isinstance(raw_object, dict)
+    signature_shape = raw_object == "signature"
+    if not document_shape and not signature_shape:
+        raise ValueError("invalid Autentique event object")
+    if event_name == "document.finished" and not document_shape:
+        raise ValueError("invalid Autentique document event")
+    if event_name == "signature.rejected" and not signature_shape:
+        raise ValueError("invalid Autentique signature event")
+    object_data = raw_object if document_shape else data
+    document_id = object_data.get("id") if document_shape else None
+    if isinstance(event_name, str) and event_name.startswith("signature."):
+        document_id = object_data.get("document") or object_data.get("document_id")
         if isinstance(document_id, dict):
             document_id = document_id.get("id")
-    account = str(account) if isinstance(account, (str, int)) else None
-    if not all(isinstance(value, str) and value for value in (event_id, event_name, account)):
+    account = str(account) if isinstance(account, str) or (isinstance(account, int) and not isinstance(account, bool)) else None
+    if not all(isinstance(value, str) and 0 < len(value) <= 256 for value in (event_id, event_name, account)):
         raise ValueError("missing Autentique webhook identity")
+    if document_id is not None and (not isinstance(document_id, str) or not document_id or len(document_id) > 512):
+        raise ValueError("invalid Autentique document identity")
     mapped = {
         "document.finished": "envelope.signed",
         "signature.rejected": "envelope.declined",
     }.get(event_name)
-    return AutentiqueWebhook(account, event_id, event_name, mapped, document_id if isinstance(document_id, str) else None)
+    return AutentiqueWebhook(account, event_id, event_name, mapped, document_id)
 
 
 def _signed_url(document: dict) -> str | None:

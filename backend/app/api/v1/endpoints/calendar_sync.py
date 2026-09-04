@@ -6,12 +6,13 @@ from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.dependencies import CurrentUser, _set_tenant_context, get_current_user, require_tenant_write
+from app.core.request_body import read_limited_body
 from app.models.external_integrations import CalendarConnection, CalendarSyncConflict, CalendarTaskLink
 from app.models.user import User
 from app.schemas.external_integrations import (
@@ -29,6 +30,7 @@ from app.services.audit_service import AuditService
 from app.services.calendar_sync import (
     choose_calendar,
     complete_oauth,
+    conflict_payload,
     disconnect_calendar,
     get_connection,
     provider_calendars,
@@ -38,6 +40,7 @@ from app.services.calendar_sync import (
     start_oauth,
     unselect_task,
 )
+from app.services.workspace_service import get_task
 
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -96,6 +99,7 @@ async def calendar_oauth_callback(
     code: str | None = Query(default=None, min_length=1, max_length=4096),
     error: str | None = Query(default=None, max_length=200),
     db: AsyncSession = Depends(get_db),
+    _write: User = Depends(require_tenant_write),
 ):
     provider = _provider(provider)
     if error or not code:
@@ -204,6 +208,7 @@ async def remove_calendar_task(
         {"provider": provider, "task_id": task_id},
     )
     await db.commit()
+    _enqueue(connection)
     return Response(status_code=204)
 
 
@@ -212,50 +217,96 @@ async def pending_calendar_conflicts(user: CurrentUser, db: AsyncSession = Depen
     rows = (
         await db.scalars(
             select(CalendarSyncConflict)
-            .join(CalendarConnection, CalendarConnection.id == CalendarSyncConflict.connection_id)
+            .join(
+                CalendarConnection,
+                and_(
+                    CalendarConnection.tenant_id == CalendarSyncConflict.tenant_id,
+                    CalendarConnection.id == CalendarSyncConflict.connection_id,
+                ),
+            )
             .where(
                 CalendarSyncConflict.tenant_id == user.tenant_id,
+                CalendarConnection.tenant_id == user.tenant_id,
                 CalendarConnection.user_id == user.id,
                 CalendarSyncConflict.status == "pending",
             )
             .order_by(CalendarSyncConflict.created_at)
         )
     ).all()
-    return {"items": [CalendarConflictResponse.model_validate(row) for row in rows]}
+    items = []
+    for row in rows:
+        try:
+            task = await get_task(db, user, row.task_id)
+        except HTTPException:
+            continue
+        items.append(CalendarConflictResponse.model_validate(conflict_payload(row, task)))
+    return {"items": items}
 
 
 @router.post("/calendar-oauth/conflicts/{conflict_id}/resolve", response_model=CalendarConflictResponse)
 async def resolve_calendar_conflict(
     conflict_id: str,
     body: ConflictResolution,
+    request: Request,
     user: CurrentUser,
     db: AsyncSession = Depends(get_db),
     _write: User = Depends(require_tenant_write),
 ):
     conflict = await db.scalar(
         select(CalendarSyncConflict)
-        .join(CalendarConnection, CalendarConnection.id == CalendarSyncConflict.connection_id)
+        .join(
+            CalendarConnection,
+            and_(
+                CalendarConnection.tenant_id == CalendarSyncConflict.tenant_id,
+                CalendarConnection.id == CalendarSyncConflict.connection_id,
+            ),
+        )
         .where(
             CalendarSyncConflict.tenant_id == user.tenant_id,
             CalendarSyncConflict.id == conflict_id,
+            CalendarConnection.tenant_id == user.tenant_id,
             CalendarConnection.user_id == user.id,
         )
-        .with_for_update()
     )
     if not conflict:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conflito não encontrado.")
-    conflict = await resolve_conflict(db, user, conflict, body.resolution)
-    connection = await db.scalar(select(CalendarConnection).where(CalendarConnection.id == conflict.connection_id))
+    conflict = await resolve_conflict(
+        db,
+        user,
+        conflict,
+        body.resolution,
+        expected_local_revision=body.expected_local_revision,
+        expected_remote_hash=body.expected_remote_hash,
+    )
+    await AuditService.log_action(
+        db,
+        user.tenant_id,
+        user.id,
+        "CALENDAR_CONFLICT_RESOLVED",
+        "calendar_sync_conflicts",
+        conflict.id,
+        {
+            "resolution": body.resolution,
+            "task_id": conflict.task_id,
+            "expected_local_revision": body.expected_local_revision,
+            "expected_remote_hash": body.expected_remote_hash,
+        },
+        request.client.host if request.client else None,
+        request.headers.get("user-agent"),
+    )
+    await db.commit()
+    task = await get_task(db, user, conflict.task_id)
+    response = CalendarConflictResponse.model_validate(conflict_payload(conflict, task))
+    connection = await db.scalar(
+        select(CalendarConnection).where(
+            CalendarConnection.tenant_id == user.tenant_id,
+            CalendarConnection.id == conflict.connection_id,
+            CalendarConnection.user_id == user.id,
+        )
+    )
     if connection:
         _enqueue(connection)
-    return CalendarConflictResponse.model_validate(conflict)
-
-
-async def _body(request: Request) -> bytes:
-    body = await request.body()
-    if len(body) > MAX_WEBHOOK_BYTES:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Webhook muito grande.")
-    return body
+    return response
 
 
 @public_router.post("/calendar-webhooks/google", status_code=202)
@@ -264,13 +315,13 @@ async def google_calendar_webhook(
     channel_id: str = Header(alias="X-Goog-Channel-ID", min_length=1, max_length=200),
     channel_token: str = Header(alias="X-Goog-Channel-Token", min_length=1, max_length=512),
     message_number: str = Header(alias="X-Goog-Message-Number", min_length=1, max_length=100),
-    resource_id: str | None = Header(default=None, alias="X-Goog-Resource-ID", max_length=512),
+    resource_id: str = Header(alias="X-Goog-Resource-ID", min_length=1, max_length=512),
     db: AsyncSession = Depends(get_db),
 ):
-    raw = await _body(request)
+    raw = await read_limited_body(request, MAX_WEBHOOK_BYTES, "Webhook muito grande.")
     connection, duplicate = await record_webhook(
         db, provider="google", reference=channel_id, token=channel_token,
-        delivery_id=f"{channel_id}:{message_number}", payload=raw + (resource_id or "").encode(), resource=resource_id,
+        delivery_id=f"{channel_id}:{message_number}", payload=raw + resource_id.encode(), resource=resource_id,
     )
     if not connection:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Notificação inválida.")
@@ -287,7 +338,7 @@ async def microsoft_calendar_webhook(
 ):
     if validation_token is not None:
         return Response(validation_token, media_type="text/plain")
-    raw = await _body(request)
+    raw = await read_limited_body(request, MAX_WEBHOOK_BYTES, "Webhook muito grande.")
     try:
         payload = json.loads(raw)
         values = payload["value"]

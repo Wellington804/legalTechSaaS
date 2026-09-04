@@ -109,7 +109,10 @@ class CalendarTaskLink(Base):
             name="fk_calendar_task_link_task_tenant",
             ondelete="CASCADE",
         ),
-        CheckConstraint("status IN ('active', 'tombstoned', 'conflict')", name="ck_calendar_task_links_status"),
+        CheckConstraint(
+            "status IN ('active', 'tombstoned', 'conflict', 'delete_pending')",
+            name="ck_calendar_task_links_status",
+        ),
     )
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))

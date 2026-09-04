@@ -22,7 +22,7 @@ async def _process(event_id: str, tenant_id: str) -> str:
             await _set_tenant_context(db, tenant_id)
             usage_attempt = str(uuid.uuid4())
             result = await finalize_queued_autentique_event(db, tenant_id=tenant_id, event_id=event_id)
-            if result in {"finalized", "provider_deferred"}:
+            if result in {"finalized", "provider_deferred", "validation_failed", "validation_deferred"}:
                 await record_provider_usage(
                     db,
                     tenant_id=tenant_id,

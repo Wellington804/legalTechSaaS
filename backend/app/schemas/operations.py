@@ -427,6 +427,7 @@ class SignatureEnvelopeResponse(OperationsResponse):
     document_hash: str
     provider: str
     provider_account_reference: str
+    signature_authentication: Literal["email", "icp_brasil"] | None
     status: Literal["pending", "signed", "declined", "expired"]
     dispatch_status: Literal["not_dispatched", "submitted", "unknown", "failed"]
     expires_at: datetime | None
@@ -436,6 +437,10 @@ class SignatureEnvelopeResponse(OperationsResponse):
     signed_filename: str | None
     signed_file_size: int | None
     signed_file_hash: str | None
+    signed_validation_status: Literal["valid_integrity", "invalid", "unavailable"] | None
+    signed_certificate_trust: Literal["trusted", "unverified", "invalid", "unavailable"] | None
+    signed_validated_at: datetime | None
+    signed_signature_count: int | None
     revision: int
     created_at: datetime
     updated_at: datetime

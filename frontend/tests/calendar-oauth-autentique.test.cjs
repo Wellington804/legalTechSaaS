@@ -13,6 +13,11 @@ test("calendar UI offers revocable Google and Microsoft OAuth plus explicit task
   assert.match(source, /calendar-oauth\/\$\{provider\}\/sync/);
   assert.match(source, /api\.delete\(`\/integrations\/calendar-oauth\/\$\{provider\}`\)/);
   assert.match(source, /iPhone ou iPad/);
+  assert.match(source, /expected_local_revision: conflict\.local\.revision/);
+  assert.match(source, /expected_remote_hash: conflict\.remote_hash/);
+  assert.match(source, /Dados enviados ao provedor/);
+  assert.match(source, /Versão no LexFlow/);
+  assert.match(source, /Versão na agenda externa/);
   assert.doesNotMatch(source, /client_secret|icloud_password|caldav_password/i);
 });
 

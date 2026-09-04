@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import httpx
 
-from app.services.calendar_providers import CalendarClient, CalendarProviderError, authorization_url
+from app.services.calendar_providers import CalendarClient, CalendarProviderError, _parse_event, authorization_url
 
 
 class CalendarProviderTests(unittest.IsolatedAsyncioTestCase):
@@ -72,6 +72,85 @@ class CalendarProviderTests(unittest.IsolatedAsyncioTestCase):
             calendars = await CalendarClient("google", "access", http=http).calendars()
         self.assertTrue(calendars[0].can_write)
         self.assertFalse(calendars[1].can_write)
+
+    async def test_microsoft_calendar_without_can_edit_is_read_only(self):
+        async def handler(_request: httpx.Request):
+            return httpx.Response(200, json={"value": [{"id": "calendar-a", "name": "Agenda"}]})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            calendars = await CalendarClient("microsoft", "access", http=http).calendars()
+        self.assertFalse(calendars[0].can_write)
+
+    async def test_update_and_delete_require_provider_etag_before_network(self):
+        def handler(_request: httpx.Request):
+            raise AssertionError("request must not be issued without ETag")
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            client = CalendarClient("google", "access", http=http)
+            body = {"title": "Prazo", "starts_at": datetime.now(timezone.utc), "location": "", "notes": ""}
+            with self.assertRaises(CalendarProviderError) as update_error:
+                await client.update_event("calendar-a", "event-a", None, "task-a", body, "connection-a")
+            with self.assertRaises(CalendarProviderError) as delete_error:
+                await client.delete_event("calendar-a", "event-a", None)
+        self.assertTrue(update_error.exception.conflict)
+        self.assertTrue(delete_error.exception.conflict)
+
+    async def test_event_lookup_distinguishes_confirmed_404_and_divergent_identity(self):
+        def missing(_request: httpx.Request):
+            return httpx.Response(404, json={"error": "not found"})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(missing)) as http:
+            remote = await CalendarClient("google", "access", http=http).get_event("calendar-a", "event-a")
+        self.assertTrue(remote.deleted)
+        self.assertEqual(remote.identifier, "event-a")
+
+        def divergent(_request: httpx.Request):
+            return httpx.Response(200, json={"id": "event-b", "etag": '"etag"'})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(divergent)) as http:
+            with self.assertRaises(CalendarProviderError):
+                await CalendarClient("google", "access", http=http).get_event("calendar-a", "event-a")
+
+    async def test_google_watch_requires_resource_identity(self):
+        def handler(_request: httpx.Request):
+            return httpx.Response(200, json={"id": "channel-a", "expiration": "1788541200000"})
+
+        with patch("app.services.calendar_providers._setting", return_value="https://api.example.com/webhook"):
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+                with self.assertRaises(CalendarProviderError):
+                    await CalendarClient("google", "access", http=http).create_watch("calendar-a", "connection-a")
+
+    async def test_delta_pagination_is_bounded(self):
+        def handler(_request: httpx.Request):
+            return httpx.Response(200, json={"value": [], "@odata.nextLink": "https://graph.microsoft.com/v1.0/next"})
+
+        with patch("app.services.calendar_providers.MAX_SYNC_PAGES", 1):
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+                with self.assertRaises(CalendarProviderError):
+                    await CalendarClient("microsoft", "access", http=http).changes(
+                        "calendar-a",
+                        "connection-a",
+                        None,
+                        datetime.now(timezone.utc) - timedelta(days=1),
+                    datetime.now(timezone.utc) + timedelta(days=1),
+                )
+
+    def test_microsoft_link_markers_are_accepted_only_as_the_exact_trailer(self):
+        remote = _parse_event(
+            "microsoft",
+            {
+                "id": "event-a",
+                "@odata.etag": '"etag"',
+                "subject": "Prazo",
+                "start": {"dateTime": "2026-09-04T12:00:00Z"},
+                "body": {
+                    "content": "Texto com LexFlow-Task-ID: não-é-metadado\n\nLexFlow-Task-ID: task-a\nLexFlow-Connection-ID: connection-a"
+                },
+            },
+        )
+        self.assertEqual(remote.linked_task_id, "task-a")
+        self.assertEqual(remote.linked_connection_id, "connection-a")
+        self.assertIn("não-é-metadado", remote.notes)
 
 
 if __name__ == "__main__":

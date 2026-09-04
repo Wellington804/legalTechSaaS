@@ -23,6 +23,7 @@ from app.models.external_integrations import (
 )
 from app.models.user import User
 from app.models.workspace import WorkspaceTask
+from app.services.audit_service import AuditService
 from app.services.calendar_providers import (
     CalendarClient,
     CalendarCursorExpired,
@@ -327,6 +328,19 @@ def task_hash(task: WorkspaceTask) -> str:
     return digest(json.dumps(serializable, sort_keys=True, separators=(",", ":")))
 
 
+def task_remote_hash(task: WorkspaceTask) -> str:
+    payload = task_payload(task)
+    return RemoteEvent(
+        task.id,
+        None,
+        False,
+        payload["title"],
+        payload["starts_at"],
+        payload["location"],
+        payload["notes"],
+    ).canonical_hash()
+
+
 async def select_tasks(db: AsyncSession, user: User, connection: CalendarConnection, task_ids: list[str]) -> list[CalendarTaskLink]:
     if not connection.selected_calendar_id_encrypted:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Selecione uma agenda antes de adicionar compromissos.")
@@ -345,7 +359,7 @@ async def select_tasks(db: AsyncSession, user: User, connection: CalendarConnect
         if link is None:
             link = CalendarTaskLink(tenant_id=user.tenant_id, connection_id=connection.id, task_id=task.id)
             db.add(link)
-        elif link.status == "tombstoned":
+        elif link.status in {"tombstoned", "delete_pending"}:
             link.status = "active"
         links.append(link)
     await db.commit()
@@ -366,13 +380,18 @@ async def unselect_task(db: AsyncSession, user: User, connection: CalendarConnec
         if not connection.selected_calendar_id_encrypted:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Agenda de destino indisponível.")
         try:
-            await CalendarClient(connection.provider, await _access_token(db, connection)).delete_event(
-                decrypt_mfa_secret(connection.selected_calendar_id_encrypted),
-                decrypt_mfa_secret(link.provider_event_id_encrypted),
-                link.provider_etag,
-            )
-        except CalendarProviderError as exc:
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="O provedor não confirmou a remoção.") from exc
+            client = CalendarClient(connection.provider, await _access_token(db, connection))
+            calendar_id = decrypt_mfa_secret(connection.selected_calendar_id_encrypted)
+            event_id = decrypt_mfa_secret(link.provider_event_id_encrypted)
+            remote = await client.get_event(calendar_id, event_id)
+            if not remote.deleted:
+                await client.delete_event(calendar_id, event_id, remote.etag)
+        except (CalendarProviderError, RuntimeError):
+            await _set_tenant_context(db, user.tenant_id)
+            link.status = "delete_pending"
+            connection.last_error = "O provedor ainda não confirmou a remoção do compromisso. Uma nova tentativa será feita."
+            await db.commit()
+            return
         await _set_tenant_context(db, user.tenant_id)
     await db.delete(link)
     await db.commit()
@@ -408,12 +427,21 @@ async def _record_conflict(
     remote_hash = remote.canonical_hash()
     existing = await db.scalar(
         select(CalendarSyncConflict).where(
+            CalendarSyncConflict.tenant_id == connection.tenant_id,
             CalendarSyncConflict.connection_id == connection.id,
             CalendarSyncConflict.task_id == task.id,
             CalendarSyncConflict.remote_hash == remote_hash,
         )
     )
     if existing:
+        existing.remote_etag = remote.etag
+        existing.remote_payload_encrypted = encrypt_mfa_secret(_serialize_remote(remote))
+        existing.local_revision = task.revision
+        existing.reason = reason
+        existing.status = "pending"
+        existing.resolved_by_user_id = None
+        existing.resolved_at = None
+        link.status = "conflict"
         return existing
     conflict = CalendarSyncConflict(
         tenant_id=connection.tenant_id,
@@ -428,6 +456,41 @@ async def _record_conflict(
     db.add(conflict)
     link.status = "conflict"
     return conflict
+
+
+def conflict_payload(conflict: CalendarSyncConflict, task: WorkspaceTask) -> dict:
+    remote = _deserialize_remote(decrypt_mfa_secret(conflict.remote_payload_encrypted))
+    local_starts_at = task.due_at
+    if local_starts_at and local_starts_at.tzinfo is None:
+        local_starts_at = local_starts_at.replace(tzinfo=timezone.utc)
+    return {
+        "id": conflict.id,
+        "connection_id": conflict.connection_id,
+        "task_id": conflict.task_id,
+        "reason": conflict.reason,
+        "status": conflict.status,
+        "local_revision": task.revision,
+        "remote_hash": conflict.remote_hash,
+        "created_at": conflict.created_at,
+        "local": {
+            "hash": task_hash(task),
+            "title": task.title,
+            "starts_at": local_starts_at,
+            "location": task.location,
+            "notes": task.notes,
+            "deleted": task.status == "cancelled",
+            "revision": task.revision,
+        },
+        "remote": {
+            "hash": remote.canonical_hash(),
+            "title": remote.title,
+            "starts_at": remote.starts_at,
+            "location": remote.location,
+            "notes": remote.notes,
+            "deleted": remote.deleted,
+            "revision": None,
+        },
+    }
 
 
 def _apply_remote(task: WorkspaceTask, remote: RemoteEvent) -> None:
@@ -482,7 +545,6 @@ async def synchronize_connection(db: AsyncSession, tenant_id: str, connection_id
     links = (
         await db.scalars(select(CalendarTaskLink).where(CalendarTaskLink.tenant_id == tenant_id, CalendarTaskLink.connection_id == connection.id))
     ).all()
-    by_event = {link.provider_event_hash: link for link in links if link.provider_event_hash}
     tasks: dict[str, WorkspaceTask] = {}
     for link in links:
         try:
@@ -493,9 +555,35 @@ async def synchronize_connection(db: AsyncSession, tenant_id: str, connection_id
             continue
     pulled = pushed = conflicts = 0
     sync_error: str | None = None
+    # Recover an external create that succeeded before the local transaction
+    # committed. Provider markers are opaque IDs and are accepted only for this
+    # connection's selected task allowlist.
+    candidates_by_task: dict[str, list[RemoteEvent]] = {}
+    for remote in page.events:
+        if remote.linked_task_id and remote.linked_connection_id in {None, connection.id}:
+            candidates_by_task.setdefault(remote.linked_task_id, []).append(remote)
+    for link in links:
+        if link.provider_event_id_encrypted or link.status != "active":
+            continue
+        candidates = candidates_by_task.get(link.task_id, [])
+        if len(candidates) != 1:
+            continue
+        remote = candidates[0]
+        task = tasks.get(link.task_id)
+        link.provider_event_id_encrypted = encrypt_mfa_secret(remote.identifier)
+        link.provider_event_hash = digest(remote.identifier)
+        link.provider_etag = remote.etag
+        if task and not remote.deleted and task.due_at and remote.canonical_hash() == task_remote_hash(task):
+            link.last_local_hash = task_hash(task)
+            link.last_remote_hash = remote.canonical_hash()
+            link.last_synced_at = _utcnow()
+        elif task:
+            await _record_conflict(db, connection, link, task, remote, "remote_deleted" if remote.deleted else "both_changed")
+            conflicts += 1
+    by_event = {link.provider_event_hash: link for link in links if link.provider_event_hash}
     for remote in page.events:
         link = by_event.get(digest(remote.identifier))
-        if not link or link.status == "tombstoned":
+        if not link or link.status != "active":
             continue
         task = tasks.get(link.task_id)
         if not task:
@@ -530,21 +618,44 @@ async def synchronize_connection(db: AsyncSession, tenant_id: str, connection_id
         pulled += 1
 
     for link in links:
-        if link.status != "active":
+        if link.status not in {"active", "delete_pending"}:
             continue
         task = tasks.get(link.task_id)
+        if link.status == "delete_pending":
+            if not link.provider_event_id_encrypted:
+                link.status = "tombstoned"
+                continue
+            try:
+                event_id = decrypt_mfa_secret(link.provider_event_id_encrypted)
+                remote = await client.get_event(calendar_id, event_id)
+                if not remote.deleted:
+                    await client.delete_event(calendar_id, event_id, remote.etag)
+                await _set_tenant_context(db, tenant_id)
+                link.status = "tombstoned"
+                link.last_synced_at = _utcnow()
+                pushed += 1
+            except (CalendarProviderError, RuntimeError) as exc:
+                await _set_tenant_context(db, tenant_id)
+                sync_error = str(exc)[:500]
+                connection.last_error = sync_error
+            continue
         if not task:
             if link.provider_event_id_encrypted:
                 try:
-                    await client.delete_event(
-                        calendar_id,
-                        decrypt_mfa_secret(link.provider_event_id_encrypted),
-                        link.provider_etag,
-                    )
+                    event_id = decrypt_mfa_secret(link.provider_event_id_encrypted)
+                    remote = await client.get_event(calendar_id, event_id)
+                    if not remote.deleted:
+                        await client.delete_event(calendar_id, event_id, remote.etag)
                     await _set_tenant_context(db, tenant_id)
-                except (CalendarProviderError, RuntimeError):
-                    pass
-            link.status = "tombstoned"
+                    link.status = "tombstoned"
+                    link.last_synced_at = _utcnow()
+                except (CalendarProviderError, RuntimeError) as exc:
+                    await _set_tenant_context(db, tenant_id)
+                    link.status = "delete_pending"
+                    sync_error = str(exc)[:500]
+                    connection.last_error = sync_error
+            else:
+                link.status = "tombstoned"
             continue
         current_hash = task_hash(task)
         if task.status != "cancelled" and not task.due_at:
@@ -573,7 +684,12 @@ async def synchronize_connection(db: AsyncSession, tenant_id: str, connection_id
                 pushed += 1
             elif current_hash != link.last_local_hash:
                 remote = await client.update_event(
-                    calendar_id, decrypt_mfa_secret(link.provider_event_id_encrypted), link.provider_etag, task.id, task_payload(task)
+                    calendar_id,
+                    decrypt_mfa_secret(link.provider_event_id_encrypted),
+                    link.provider_etag,
+                    task.id,
+                    task_payload(task),
+                    connection.id,
                 )
                 await _set_tenant_context(db, tenant_id)
                 link.provider_etag = remote.etag
@@ -584,11 +700,27 @@ async def synchronize_connection(db: AsyncSession, tenant_id: str, connection_id
         except CalendarProviderError as exc:
             await _set_tenant_context(db, tenant_id)
             if exc.conflict:
-                remote = RemoteEvent(
-                    decrypt_mfa_secret(link.provider_event_id_encrypted), link.provider_etag, False,
-                    task.title, task.due_at, task.location, task.notes,
+                if not link.provider_event_id_encrypted:
+                    sync_error = "O provedor informou conflito sem identificar o evento remoto. A reconciliação será repetida."
+                    connection.last_error = sync_error
+                    break
+                try:
+                    event_id = decrypt_mfa_secret(link.provider_event_id_encrypted)
+                    remote = await client.get_event(calendar_id, event_id)
+                    await _set_tenant_context(db, tenant_id)
+                except (CalendarProviderError, RuntimeError) as lookup_error:
+                    await _set_tenant_context(db, tenant_id)
+                    sync_error = str(lookup_error)[:500]
+                    connection.last_error = sync_error
+                    break
+                await _record_conflict(
+                    db,
+                    connection,
+                    link,
+                    task,
+                    remote,
+                    "remote_deleted" if remote.deleted else "both_changed",
                 )
-                await _record_conflict(db, connection, link, task, remote, "both_changed")
                 conflicts += 1
             else:
                 sync_error = str(exc)[:500]
@@ -605,49 +737,186 @@ async def synchronize_connection(db: AsyncSession, tenant_id: str, connection_id
 
 
 async def resolve_conflict(
-    db: AsyncSession, user: User, conflict: CalendarSyncConflict, resolution: Literal["accept_remote", "keep_local"]
+    db: AsyncSession,
+    user: User,
+    conflict: CalendarSyncConflict,
+    resolution: Literal["accept_remote", "keep_local"],
+    *,
+    expected_local_revision: int,
+    expected_remote_hash: str,
 ) -> CalendarSyncConflict:
+    """Resolve only the exact local/remote snapshots shown to the reviewer.
+
+    Provider access happens before database row locks only when refreshing the
+    OAuth token may commit.  The actual remote read is performed while the
+    conflict, connection, task and link are locked, and is compared with both
+    the stored hash and ETag before any local mutation.
+    """
+    if conflict.status != "pending":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Este conflito já foi resolvido.")
+    if not secrets.compare_digest(conflict.remote_hash, expected_remote_hash):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A versão externa exibida não é mais atual.")
     task = await get_task(db, user, conflict.task_id)
     require_task_write(user, task)
-    if conflict.status != "pending":
-        return conflict
+    if task.revision != expected_local_revision:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="O compromisso mudou após a abertura do conflito.")
+
+    connection = await db.scalar(
+        select(CalendarConnection).where(
+            CalendarConnection.tenant_id == user.tenant_id,
+            CalendarConnection.id == conflict.connection_id,
+            CalendarConnection.user_id == user.id,
+            CalendarConnection.status == "active",
+        )
+    )
+    if not connection or not connection.selected_calendar_id_encrypted:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Reconecte e selecione a agenda antes de resolver.")
+    token = await _access_token(db, connection)
+
+    await _set_tenant_context(db, user.tenant_id)
+    connection = await db.scalar(
+        select(CalendarConnection)
+        .where(
+            CalendarConnection.tenant_id == user.tenant_id,
+            CalendarConnection.id == conflict.connection_id,
+            CalendarConnection.user_id == user.id,
+            CalendarConnection.status == "active",
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    current = await db.scalar(
+        select(CalendarSyncConflict)
+        .where(
+            CalendarSyncConflict.tenant_id == user.tenant_id,
+            CalendarSyncConflict.id == conflict.id,
+            CalendarSyncConflict.connection_id == conflict.connection_id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    locked_task = await db.scalar(
+        select(WorkspaceTask)
+        .where(WorkspaceTask.tenant_id == user.tenant_id, WorkspaceTask.id == conflict.task_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     link = await db.scalar(
         select(CalendarTaskLink).where(
             CalendarTaskLink.tenant_id == user.tenant_id,
             CalendarTaskLink.connection_id == conflict.connection_id,
             CalendarTaskLink.task_id == conflict.task_id,
-        ).with_for_update()
+        ).with_for_update().execution_options(populate_existing=True)
     )
-    if not link:
+    if not connection or not connection.selected_calendar_id_encrypted:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A conexão de calendário mudou durante a revisão.")
+    if not current or current.status != "pending":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Este conflito já foi resolvido ou removido.")
+    if not locked_task or not link:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vínculo de calendário não encontrado.")
+    if link.status != "conflict":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="O vínculo de calendário não está mais em conflito.")
+    require_task_write(user, locked_task)
+    if locked_task.revision != expected_local_revision:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="O compromisso mudou após a abertura do conflito.")
+    if not secrets.compare_digest(current.remote_hash, expected_remote_hash):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A versão externa exibida não é mais atual.")
+
+    try:
+        stored_remote = _deserialize_remote(decrypt_mfa_secret(current.remote_payload_encrypted))
+        calendar_id = decrypt_mfa_secret(connection.selected_calendar_id_encrypted)
+    except (RuntimeError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="O snapshot do conflito não pôde ser validado.") from exc
+    client = CalendarClient(connection.provider, token)
+    try:
+        live_remote = await client.get_event(calendar_id, stored_remote.identifier)
+    except (CalendarProviderError, KeyError, TypeError, ValueError) as exc:
+        await _set_tenant_context(db, user.tenant_id)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Não foi possível revalidar a versão externa.") from exc
+    await _set_tenant_context(db, user.tenant_id)
+    live_hash = live_remote.canonical_hash()
+    etag_changed = current.remote_etag != live_remote.etag
+    remote_is_stale = (
+        not secrets.compare_digest(live_hash, expected_remote_hash)
+        or not secrets.compare_digest(live_hash, current.remote_hash)
+        or etag_changed
+        or (not live_remote.deleted and not live_remote.etag)
+    )
+    if remote_is_stale:
+        # Persist the provider's real state before returning 409.  A reload can
+        # then show the exact new comparison instead of trapping the reviewer
+        # on a stale encrypted snapshot.
+        previous_remote_hash = current.remote_hash
+        if not secrets.compare_digest(previous_remote_hash, live_hash):
+            replacement = await db.scalar(
+                select(CalendarSyncConflict)
+                .where(
+                    CalendarSyncConflict.tenant_id == user.tenant_id,
+                    CalendarSyncConflict.connection_id == current.connection_id,
+                    CalendarSyncConflict.task_id == current.task_id,
+                    CalendarSyncConflict.remote_hash == live_hash,
+                    CalendarSyncConflict.id != current.id,
+                )
+                .with_for_update()
+            )
+            if replacement:
+                await db.delete(current)
+                current = replacement
+        current.remote_hash = live_hash
+        current.remote_etag = live_remote.etag
+        current.remote_payload_encrypted = encrypt_mfa_secret(_serialize_remote(live_remote))
+        current.reason = "remote_deleted" if live_remote.deleted else "both_changed"
+        current.local_revision = locked_task.revision
+        current.status = "pending"
+        current.resolved_by_user_id = None
+        current.resolved_at = None
+        link.provider_etag = live_remote.etag
+        await AuditService.log_action(
+            db,
+            user.tenant_id,
+            user.id,
+            "CALENDAR_CONFLICT_REFRESHED",
+            "calendar_sync_conflicts",
+            current.id,
+            {
+                "task_id": current.task_id,
+                "previous_remote_hash": previous_remote_hash,
+                "remote_hash": live_hash,
+                "local_revision": locked_task.revision,
+            },
+        )
+        await db.commit()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A agenda externa mudou após a abertura do conflito.")
+
     if resolution == "accept_remote":
-        remote = _deserialize_remote(decrypt_mfa_secret(conflict.remote_payload_encrypted))
-        if remote.deleted:
-            task.status = "cancelled"
-            task.manually_reviewed = False
-            task.revision += 1
+        if live_remote.deleted:
+            locked_task.status = "cancelled"
+            locked_task.manually_reviewed = False
+            locked_task.revision += 1
             link.status = "tombstoned"
         else:
-            _apply_remote(task, remote)
+            try:
+                _apply_remote(locked_task, live_remote)
+            except ValueError as exc:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A versão externa está incompleta.") from exc
             link.status = "active"
-            link.last_local_hash = task_hash(task)
-            link.last_remote_hash = remote.canonical_hash()
-            link.provider_etag = remote.etag
-        conflict.status = "accepted_remote"
+            link.last_local_hash = task_hash(locked_task)
+            link.last_remote_hash = live_hash
+            link.provider_etag = live_remote.etag
+        current.status = "accepted_remote"
     else:
-        remote = _deserialize_remote(decrypt_mfa_secret(conflict.remote_payload_encrypted))
         link.status = "active"
-        link.last_remote_hash = remote.canonical_hash()
-        link.provider_etag = remote.etag
-        if remote.deleted:
+        link.last_remote_hash = live_hash
+        link.provider_etag = live_remote.etag
+        if live_remote.deleted:
             link.provider_event_hash = None
             link.provider_event_id_encrypted = None
             link.provider_etag = None
-        conflict.status = "kept_local"
-    conflict.resolved_by_user_id = user.id
-    conflict.resolved_at = _utcnow()
-    await db.commit()
-    return conflict
+        current.status = "kept_local"
+    current.resolved_by_user_id = user.id
+    current.resolved_at = _utcnow()
+    await db.flush()
+    return current
 
 
 async def record_webhook(
@@ -683,7 +952,15 @@ async def record_webhook(
         )
     if not connection or not connection.watch_token_hash or not secrets.compare_digest(connection.watch_token_hash, digest(token)):
         return None, False
-    if resource and connection.watch_resource_hash and not secrets.compare_digest(connection.watch_resource_hash, digest(resource)):
+    if provider == "google":
+        if not resource or not connection.watch_resource_hash:
+            return None, False
+        if not secrets.compare_digest(connection.watch_resource_hash, digest(resource)):
+            return None, False
+    elif resource and (
+        not connection.watch_resource_hash
+        or not secrets.compare_digest(connection.watch_resource_hash, digest(resource))
+    ):
         return None, False
     event = CalendarWebhookEvent(
         tenant_id=connection.tenant_id,

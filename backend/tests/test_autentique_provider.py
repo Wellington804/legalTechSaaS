@@ -97,6 +97,35 @@ class AutentiqueProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(verify_hmac_webhook(raw, signature, encrypt_mfa_secret(secret)))
         self.assertFalse(verify_hmac_webhook(raw + b" ", signature, encrypt_mfa_secret(secret)))
 
+    def test_official_flat_signature_rejection_payload_is_supported_strictly(self):
+        raw = json.dumps(
+            {
+                "event": {
+                    "id": "event-rejected-1",
+                    "type": "signature.rejected",
+                    "organization": {"id": 123},
+                    "data": {"object": "signature", "id": "signature-1", "document": "doc-aut-1"},
+                }
+            },
+            separators=(",", ":"),
+        ).encode()
+        event = parse_autentique_webhook(raw)
+        self.assertEqual(event.provider_document_id, "doc-aut-1")
+        self.assertEqual(event.event_type, "envelope.declined")
+
+        invalid = json.dumps(
+            {
+                "event": {
+                    "id": "event-rejected-2",
+                    "type": "signature.rejected",
+                    "organization": 123,
+                    "data": {"object": {"id": "signature-1", "document": "doc-aut-1"}},
+                }
+            }
+        ).encode()
+        with self.assertRaises(ValueError):
+            parse_autentique_webhook(invalid)
+
     async def test_authenticated_event_is_persisted_once_before_async_finalization(self):
         raw = json.dumps({"event": {"id": "event-1", "type": "document.finished", "organization": 123, "data": {"object": {"id": "doc-aut-1"}}}}, separators=(",", ":")).encode()
         event = parse_autentique_webhook(raw)

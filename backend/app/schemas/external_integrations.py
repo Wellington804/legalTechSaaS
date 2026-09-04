@@ -77,7 +77,17 @@ class CalendarTaskLinkResponse(OrmResponse):
     task_id: str
     provider_etag: str | None
     last_synced_at: datetime | None
-    status: Literal["active", "tombstoned", "conflict"]
+    status: Literal["active", "tombstoned", "conflict", "delete_pending"]
+
+
+class CalendarConflictSide(StrictInput):
+    hash: str
+    title: str | None
+    starts_at: datetime | None
+    location: str | None
+    notes: str | None
+    deleted: bool = False
+    revision: int | None = None
 
 
 class CalendarConflictResponse(OrmResponse):
@@ -87,11 +97,16 @@ class CalendarConflictResponse(OrmResponse):
     reason: Literal["both_changed", "remote_deleted"]
     status: Literal["pending", "accepted_remote", "kept_local"]
     local_revision: int
+    remote_hash: str
+    local: CalendarConflictSide
+    remote: CalendarConflictSide
     created_at: datetime
 
 
 class ConflictResolution(StrictInput):
     resolution: Literal["accept_remote", "keep_local"]
+    expected_local_revision: int = Field(ge=1)
+    expected_remote_hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
 
 
 class PriceItemInput(StrictInput):
