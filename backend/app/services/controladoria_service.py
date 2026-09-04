@@ -1,22 +1,25 @@
 """Authorization-aware commands for the judicial control desk.
 
 The provider layer may collect evidence, but only these commands turn it into
-tenant data. No command computes a legal deadline; a supplied suggestion can
-become a workspace task only through ``approve_deadline_and_create_task``.
+tenant data. Deadline calculation requires an explicit reviewed rule and a
+human-confirmed trigger; only two approvals can create a workspace task.
 """
 
 import hashlib
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TypeVar
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, status
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.controladoria import (
+    ControladoriaCalendarException,
     ControladoriaDeadlineReview,
+    ControladoriaDeadlineRule,
     ControladoriaJudicialEvent,
     ControladoriaMonitoringSubscription,
     ControladoriaWorkflowRun,
@@ -27,6 +30,9 @@ from app.models.controladoria import (
 from app.models.user import User
 from app.models.workspace import WorkspaceCase, WorkspaceTask
 from app.schemas.controladoria import (
+    CalendarExceptionCreate,
+    DeadlineCalculationCreate,
+    DeadlineRuleCreate,
     DeadlineSuggestionCreate,
     JudicialEventCreate,
     MonitoringSubscriptionCreate,
@@ -34,6 +40,12 @@ from app.schemas.controladoria import (
     WorkflowRunCreate,
     WorkflowRunItemUpdate,
     WorkflowTemplateCreate,
+)
+from app.services.controladoria_deadline_engine import (
+    CalendarExceptionSpec,
+    DeadlineCalculationError,
+    DeadlineRuleSpec,
+    calculate_deadline,
 )
 from app.services.workspace_service import (
     active_tenant_user,
@@ -45,6 +57,7 @@ from app.services.workspace_service import (
 
 
 CONTROLADORIA_TRIAGE_ROLES = {"admin", "partner", "lawyer", "paralegal"}
+DEADLINE_APPROVAL_ROLES = {"admin", "partner", "lawyer"}
 WORKFLOW_TEMPLATE_ROLES = {"admin", "partner"}
 T = TypeVar("T")
 
@@ -106,15 +119,21 @@ def infer_datajud_tribunal(process_number: str | None, court: str | None = None)
 
 def event_dedupe_key(case_id: str, payload: JudicialEventCreate) -> str:
     """Stable per-source-event identity, scoped by the bound case."""
-    material = "\x1f".join(
-        (
-            case_id,
-            payload.source_kind,
-            payload.source_event_id,
-            payload.occurred_at.isoformat() if payload.occurred_at else "",
-            payload.title,
+    if payload.source_kind in {"djen", "domicilio", "tribunal_api"}:
+        # Publication ids are the authority. Corrections to title/content must
+        # not create a second inbox item for the same tenant-bound case.
+        material = "\x1f".join((case_id, payload.source_kind, payload.source_event_id))
+    else:
+        # Preserve the deployed identity for existing DataJud/Escavador rows.
+        material = "\x1f".join(
+            (
+                case_id,
+                payload.source_kind,
+                payload.source_event_id,
+                payload.occurred_at.isoformat() if payload.occurred_at else "",
+                payload.title,
+            )
         )
-    )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
@@ -169,6 +188,21 @@ async def get_deadline_review(
     record = await db.scalar(statement)
     if not record:
         raise _not_found("Revisao de prazo")
+    return record
+
+
+async def get_deadline_rule(
+    db: AsyncSession, user: User, rule_id: str, *, for_update: bool = False
+) -> ControladoriaDeadlineRule:
+    statement = select(ControladoriaDeadlineRule).where(
+        ControladoriaDeadlineRule.id == rule_id,
+        ControladoriaDeadlineRule.tenant_id == user.tenant_id,
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    record = await db.scalar(statement)
+    if not record:
+        raise _not_found("Regra de prazo")
     return record
 
 
@@ -386,6 +420,7 @@ async def create_deadline_suggestion(
         case_id=event.case_id,
         event_id=event.id,
         suggested_by_user_id=user.id,
+        approval_policy_version=2,
         **payload.model_dump(),
     )
     try:
@@ -405,17 +440,279 @@ async def create_deadline_suggestion(
     return record, True
 
 
+async def create_deadline_rule(
+    db: AsyncSession, user: User, payload: DeadlineRuleCreate
+) -> ControladoriaDeadlineRule:
+    require_role(user, WORKFLOW_TEMPLATE_ROLES)
+    record = ControladoriaDeadlineRule(
+        tenant_id=user.tenant_id,
+        created_by_user_id=user.id,
+        legal_sources=[source.model_dump() for source in payload.legal_sources],
+        **payload.model_dump(exclude={"legal_sources"}),
+    )
+    try:
+        async with db.begin_nested():
+            db.add(record)
+            await db.flush()
+    except IntegrityError as exc:
+        raise _conflict("Ja existe esta versao da regra de prazo.") from exc
+    return record
+
+
+async def review_deadline_rule(
+    db: AsyncSession,
+    user: User,
+    rule_id: str,
+    *,
+    decision: str,
+    note: str,
+) -> ControladoriaDeadlineRule:
+    require_role(user, WORKFLOW_TEMPLATE_ROLES)
+    rule = await get_deadline_rule(db, user, rule_id, for_update=True)
+    if rule.status != "draft":
+        raise _conflict("A regra ja recebeu revisao.")
+    if rule.created_by_user_id == user.id:
+        raise _conflict("A regra deve ser revisada por outro usuario autorizado.")
+    now = datetime.now(timezone.utc)
+    rule.reviewed_by_user_id = user.id
+    rule.reviewed_at = now
+    rule.review_note = note
+    if decision == "approved":
+        current_active = await db.scalar(
+            select(ControladoriaDeadlineRule)
+            .where(
+                ControladoriaDeadlineRule.tenant_id == user.tenant_id,
+                ControladoriaDeadlineRule.rule_key == rule.rule_key,
+                ControladoriaDeadlineRule.status == "active",
+                ControladoriaDeadlineRule.id != rule.id,
+            )
+            .order_by(ControladoriaDeadlineRule.version.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        if current_active and current_active.version >= rule.version:
+            raise _conflict(
+                "A versao ativa da regra e igual ou mais recente; publique uma versao superior."
+            )
+        await db.execute(
+            update(ControladoriaDeadlineRule)
+            .where(
+                ControladoriaDeadlineRule.tenant_id == user.tenant_id,
+                ControladoriaDeadlineRule.rule_key == rule.rule_key,
+                ControladoriaDeadlineRule.status == "active",
+                ControladoriaDeadlineRule.id != rule.id,
+            )
+            .values(status="retired", updated_at=now)
+        )
+        rule.status = "active"
+    else:
+        rule.status = "rejected"
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        raise _conflict("Outra versao desta regra foi ativada durante a revisao.") from exc
+    return rule
+
+
+async def create_calendar_exception(
+    db: AsyncSession, user: User, payload: CalendarExceptionCreate
+) -> ControladoriaCalendarException:
+    require_role(user, WORKFLOW_TEMPLATE_ROLES)
+    record = ControladoriaCalendarException(
+        tenant_id=user.tenant_id,
+        created_by_user_id=user.id,
+        **payload.model_dump(),
+    )
+    try:
+        async with db.begin_nested():
+            db.add(record)
+            await db.flush()
+    except IntegrityError as exc:
+        raise _conflict("Esta excecao de calendario ja foi cadastrada.") from exc
+    return record
+
+
+async def calculate_deadline_suggestion(
+    db: AsyncSession,
+    user: User,
+    payload: DeadlineCalculationCreate,
+) -> tuple[ControladoriaDeadlineReview, bool]:
+    event = await get_event(db, user, payload.event_id, for_update=True)
+    case = await get_case(db, user, event.case_id)
+    require_case_write(user, case)
+    if event.triage_status != "reviewed":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="O evento precisa ser revisado antes do calculo.",
+        )
+    rule = await get_deadline_rule(db, user, payload.rule_id)
+    if rule.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A regra precisa estar ativa e revisada.",
+        )
+    case_tribunal = infer_datajud_tribunal(case.number, case.court)
+    if case_tribunal != rule.tribunal:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A regra nao corresponde ao tribunal do processo.",
+        )
+    local_trigger_date = payload.triggered_at.astimezone(ZoneInfo(rule.timezone_name)).date()
+    if local_trigger_date < rule.effective_from or (
+        rule.effective_until and local_trigger_date > rule.effective_until
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A regra nao estava vigente no termo de referencia informado.",
+        )
+    if payload.assigned_user_id:
+        await active_tenant_user(db, user.tenant_id, payload.assigned_user_id)
+
+    scope_clauses = [
+        and_(
+            ControladoriaCalendarException.scope_kind == "national",
+            ControladoriaCalendarException.scope_code == "BR",
+        ),
+        and_(
+            ControladoriaCalendarException.scope_kind == "tribunal",
+            ControladoriaCalendarException.scope_code == rule.tribunal,
+        ),
+    ]
+    if rule.local_code:
+        scope_clauses.append(
+            and_(
+                ControladoriaCalendarException.scope_kind == "local",
+                ControladoriaCalendarException.scope_code == rule.local_code,
+            )
+        )
+    horizon = local_trigger_date + timedelta(days=5000)
+    exception_rows = (
+        await db.execute(
+            select(ControladoriaCalendarException).where(
+                ControladoriaCalendarException.tenant_id == user.tenant_id,
+                ControladoriaCalendarException.starts_on <= horizon,
+                ControladoriaCalendarException.ends_on >= local_trigger_date,
+                or_(*scope_clauses),
+            )
+        )
+    ).scalars().all()
+    rule_spec = DeadlineRuleSpec(
+        id=rule.id,
+        rule_key=rule.rule_key,
+        version=rule.version,
+        rite=rule.rite,
+        act_type=rule.act_type,
+        tribunal=rule.tribunal,
+        local_code=rule.local_code,
+        days=rule.days,
+        counting_method=rule.counting_method,
+        start_mode=rule.start_mode,
+        due_adjustment=rule.due_adjustment,
+        timezone_name=rule.timezone_name,
+        due_hour=rule.due_hour,
+        due_minute=rule.due_minute,
+        legal_sources=rule.legal_sources,
+    )
+    exception_specs = [
+        CalendarExceptionSpec(
+            scope_kind=item.scope_kind,
+            scope_code=item.scope_code,
+            kind=item.kind,
+            name=item.name,
+            starts_on=item.starts_on,
+            ends_on=item.ends_on,
+            source_url=item.source_url,
+            source_name=item.source_name,
+        )
+        for item in exception_rows
+    ]
+    try:
+        calculation = calculate_deadline(payload.triggered_at, rule_spec, exception_specs)
+    except DeadlineCalculationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A regra ou o calendario nao permitem um calculo seguro.",
+        ) from exc
+    basis = (
+        f"Regra {rule.rule_key} v{rule.version}, revisada por {rule.reviewed_by_user_id}; "
+        f"termo inicial {calculation.explanation['term_start']}; {rule.days} "
+        f"{'dias uteis' if rule.counting_method == 'business_days' else 'dias corridos'}; "
+        f"fuso {rule.timezone_name}. Confira as fontes e exclusoes registradas antes de aprovar."
+    )
+    existing = await db.scalar(
+        select(ControladoriaDeadlineReview).where(
+            ControladoriaDeadlineReview.tenant_id == user.tenant_id,
+            ControladoriaDeadlineReview.event_id == event.id,
+        ).with_for_update()
+    )
+    if existing and existing.status == "approved":
+        raise _conflict("Prazo aprovado e tarefa criada nao podem ser recalculados.")
+    if existing:
+        existing.title = payload.title
+        existing.suggested_due_at = calculation.due_at
+        existing.suggested_basis = basis
+        existing.assigned_user_id = payload.assigned_user_id
+        existing.rule_id = rule.id
+        existing.rule_version = rule.version
+        existing.calculation = calculation.explanation
+        existing.calculation_revision += 1
+        existing.approval_policy_version = 2
+        existing.status = "suggested"
+        existing.suggested_by_user_id = user.id
+        existing.first_approved_by_user_id = None
+        existing.first_approved_at = None
+        existing.first_approval_note = None
+        existing.second_approved_by_user_id = None
+        existing.second_approved_at = None
+        existing.second_approval_note = None
+        existing.reviewed_by_user_id = None
+        existing.reviewed_at = None
+        existing.review_note = None
+        await db.flush()
+        return existing, False
+    record = ControladoriaDeadlineReview(
+        tenant_id=user.tenant_id,
+        case_id=event.case_id,
+        event_id=event.id,
+        title=payload.title,
+        suggested_due_at=calculation.due_at,
+        suggested_basis=basis,
+        assigned_user_id=payload.assigned_user_id,
+        rule_id=rule.id,
+        rule_version=rule.version,
+        calculation=calculation.explanation,
+        calculation_revision=1,
+        approval_policy_version=2,
+        suggested_by_user_id=user.id,
+    )
+    db.add(record)
+    await db.flush()
+    return record, True
+
+
 async def approve_deadline_and_create_task(
     db: AsyncSession, user: User, review_id: str, *, note: str
-) -> tuple[ControladoriaDeadlineReview, WorkspaceTask]:
-    """The sole path from a suggested date to a deadline task."""
+) -> tuple[ControladoriaDeadlineReview, WorkspaceTask | None]:
+    """Record one approval; only the distinct second approver creates a task."""
+    require_role(user, DEADLINE_APPROVAL_ROLES)
     review = await get_deadline_review(db, user, review_id, for_update=True)
-    case = await get_case(db, user, review.case_id)
-    require_case_write(user, case)
-    if review.status != "suggested":
+    await get_case(db, user, review.case_id)
+    if review.approval_policy_version != 2:
+        raise _conflict("Registro legado nao pode receber uma nova aprovacao.")
+    if review.status not in {"suggested", "first_approved"}:
         raise _conflict("A revisao de prazo ja recebeu decisao humana.")
     if review.assigned_user_id:
         await active_tenant_user(db, user.tenant_id, review.assigned_user_id)
+    now = datetime.now(timezone.utc)
+    if review.status == "suggested":
+        review.status = "first_approved"
+        review.first_approved_by_user_id = user.id
+        review.first_approved_at = now
+        review.first_approval_note = note
+        await db.flush()
+        return review, None
+    if review.first_approved_by_user_id == user.id:
+        raise _conflict("A segunda aprovacao deve ser feita por outro usuario autorizado.")
     task = WorkspaceTask(
         tenant_id=user.tenant_id,
         case_id=review.case_id,
@@ -429,9 +726,12 @@ async def approve_deadline_and_create_task(
     db.add(task)
     await db.flush()
     review.status = "approved"
+    review.second_approved_by_user_id = user.id
+    review.second_approved_at = now
+    review.second_approval_note = note
     review.review_note = note
     review.reviewed_by_user_id = user.id
-    review.reviewed_at = datetime.now(timezone.utc)
+    review.reviewed_at = now
     review.task_id = task.id
     await db.flush()
     return review, task
@@ -440,10 +740,10 @@ async def approve_deadline_and_create_task(
 async def reject_deadline_suggestion(
     db: AsyncSession, user: User, review_id: str, *, note: str
 ) -> ControladoriaDeadlineReview:
+    require_role(user, DEADLINE_APPROVAL_ROLES)
     review = await get_deadline_review(db, user, review_id, for_update=True)
-    case = await get_case(db, user, review.case_id)
-    require_case_write(user, case)
-    if review.status != "suggested":
+    await get_case(db, user, review.case_id)
+    if review.status not in {"suggested", "first_approved"}:
         raise _conflict("A revisao de prazo ja recebeu decisao humana.")
     review.status = "rejected"
     review.review_note = note

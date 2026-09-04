@@ -1,7 +1,7 @@
-"""HTTP boundary for the human-reviewed judicial control desk.
+"""Mounted HTTP boundary for the human-reviewed judicial control desk.
 
-Router registration is deliberately left to the integrating change. See the
-module exports below; no endpoint performs a tribunal request.
+Provider polling remains asynchronous; request handlers only persist control
+decisions, validate source availability, or enqueue bounded background work.
 """
 
 import hmac
@@ -16,7 +16,9 @@ from app.core.config import settings
 from app.core.dependencies import CurrentUser, require_tenant_write
 from app.core.request_body import read_limited_body
 from app.models.controladoria import (
+    ControladoriaCalendarException,
     ControladoriaDeadlineReview,
+    ControladoriaDeadlineRule,
     ControladoriaJudicialEvent,
     ControladoriaMonitoringSubscription,
     ControladoriaWorkflowRun,
@@ -24,9 +26,15 @@ from app.models.controladoria import (
 )
 from app.models.user import User
 from app.schemas.controladoria import (
+    CalendarExceptionCreate,
+    CalendarExceptionResponse,
     ControladoriaListResponse,
+    DeadlineCalculationCreate,
     DeadlineDecision,
     DeadlineReviewResponse,
+    DeadlineRuleCreate,
+    DeadlineRuleResponse,
+    DeadlineRuleReview,
     DeadlineSuggestionCreate,
     JudicialEventCreate,
     JudicialEventResponse,
@@ -34,6 +42,7 @@ from app.schemas.controladoria import (
     MonitoringSubscriptionCreate,
     MonitoringSubscriptionResponse,
     MonitoringSubscriptionUpdate,
+    JudicialProviderStatus,
     WorkflowRunComplete,
     WorkflowRunCreate,
     WorkflowRunItemResponse,
@@ -44,8 +53,11 @@ from app.schemas.controladoria import (
 )
 from app.services.audit_service import AuditService
 from app.services.controladoria_service import (
+    calculate_deadline_suggestion,
     case_scoped_statement,
     complete_workflow_run,
+    create_calendar_exception,
+    create_deadline_rule,
     create_deadline_suggestion,
     create_monitoring_subscription,
     create_workflow_template,
@@ -55,6 +67,7 @@ from app.services.controladoria_service import (
     get_workflow_run_item,
     record_judicial_event,
     reject_deadline_suggestion,
+    review_deadline_rule,
     resolve_workflow_run_item,
     set_subscription_status,
     start_workflow_run,
@@ -68,6 +81,7 @@ from app.services.controladoria_provider import (
     JudicialProviderError,
     monitoring_provider,
     parse_escavador_callback,
+    provider_configuration_status,
 )
 from app.services.workspace_service import bounded_limit, get_case, require_role
 
@@ -223,6 +237,25 @@ async def list_subscriptions(
     )
 
 
+@router.get("/providers", response_model=list[JudicialProviderStatus])
+async def list_provider_status(
+    tribunal: str | None = Query(default=None, min_length=2, max_length=20),
+    *,
+    current_user: CurrentUser,
+):
+    del current_user
+    try:
+        return [
+            JudicialProviderStatus.model_validate(item)
+            for item in provider_configuration_status(settings, tribunal)
+        ]
+    except JudicialProviderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="A configuracao de fontes judiciais precisa de revisao.",
+        ) from exc
+
+
 @router.post("/subscriptions", response_model=MonitoringSubscriptionResponse, status_code=status.HTTP_201_CREATED)
 async def create_subscription(
     payload: MonitoringSubscriptionCreate,
@@ -232,17 +265,19 @@ async def create_subscription(
     db: AsyncSession = Depends(get_db),
     _write: User = Depends(require_tenant_write),
 ):
-    source_kind = settings.JUDICIAL_MONITORING_PROVIDER
-    try:
-        monitoring_provider(source_kind, settings)
-    except JudicialProviderError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="O acompanhamento processual ainda não foi ativado pelo administrador.",
-        ) from exc
+    source_kind = payload.source_kind or settings.JUDICIAL_MONITORING_PROVIDER
     record, created = await create_monitoring_subscription(
         db, current_user, payload, source_kind=source_kind
     )
+    try:
+        monitoring_provider(source_kind, settings, tribunal=record.tribunal)
+    except JudicialProviderError as exc:
+        if created:
+            await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="A fonte escolhida ainda nao possui configuracao ou homologacao operacional.",
+        ) from exc
     if not created:
         response.status_code = status.HTTP_200_OK
         return MonitoringSubscriptionResponse.model_validate(record)
@@ -400,7 +435,9 @@ async def triage_event(
 @router.get("/deadlines", response_model=ControladoriaListResponse)
 async def list_deadline_reviews(
     case_id: str | None = Query(default=None, max_length=64),
-    status_filter: str | None = Query(default=None, alias="status", pattern="^(suggested|approved|rejected)$"),
+    status_filter: str | None = Query(
+        default=None, alias="status", pattern="^(suggested|first_approved|approved|rejected)$"
+    ),
     limit: int = Query(default=50, ge=1, le=200),
     *,
     current_user: CurrentUser,
@@ -422,6 +459,154 @@ async def list_deadline_reviews(
         items=[await deadline_review_payload(db, current_user, record) for record in records],
         limit=bounded_limit(limit),
     )
+
+
+@router.get("/deadline-rules", response_model=ControladoriaListResponse)
+async def list_deadline_rules(
+    status_filter: str | None = Query(
+        default="active", alias="status", pattern="^(draft|active|rejected|retired)$"
+    ),
+    limit: int = Query(default=100, ge=1, le=200),
+    *,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+):
+    statement = select(ControladoriaDeadlineRule).where(
+        ControladoriaDeadlineRule.tenant_id == current_user.tenant_id
+    )
+    if status_filter:
+        statement = statement.where(ControladoriaDeadlineRule.status == status_filter)
+    records = (
+        await db.execute(
+            statement.order_by(
+                ControladoriaDeadlineRule.rule_key.asc(),
+                ControladoriaDeadlineRule.version.desc(),
+            ).limit(bounded_limit(limit))
+        )
+    ).scalars().all()
+    return ControladoriaListResponse(
+        items=[DeadlineRuleResponse.model_validate(record) for record in records],
+        limit=bounded_limit(limit),
+    )
+
+
+@router.post("/deadline-rules", response_model=DeadlineRuleResponse, status_code=status.HTTP_201_CREATED)
+async def create_rule(
+    payload: DeadlineRuleCreate,
+    *,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    _write: User = Depends(require_tenant_write),
+):
+    record = await create_deadline_rule(db, current_user, payload)
+    await audit_and_commit(
+        db,
+        current_user,
+        "CONTROLADORIA_DEADLINE_RULE_CREATED",
+        "controladoria_deadline_rules",
+        record.id,
+        {"rule_key": record.rule_key, "version": record.version, "status": record.status},
+    )
+    return DeadlineRuleResponse.model_validate(record)
+
+
+@router.post("/deadline-rules/{rule_id}/review", response_model=DeadlineRuleResponse)
+async def review_rule(
+    rule_id: str,
+    payload: DeadlineRuleReview,
+    *,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    _write: User = Depends(require_tenant_write),
+):
+    record = await review_deadline_rule(
+        db, current_user, rule_id, decision=payload.decision, note=payload.note
+    )
+    await audit_and_commit(
+        db,
+        current_user,
+        "CONTROLADORIA_DEADLINE_RULE_REVIEWED",
+        "controladoria_deadline_rules",
+        record.id,
+        {"decision": payload.decision, "version": record.version},
+    )
+    return DeadlineRuleResponse.model_validate(record)
+
+
+@router.get("/calendar-exceptions", response_model=ControladoriaListResponse)
+async def list_calendar_exceptions(
+    limit: int = Query(default=100, ge=1, le=200),
+    *,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+):
+    records = (
+        await db.execute(
+            select(ControladoriaCalendarException)
+            .where(ControladoriaCalendarException.tenant_id == current_user.tenant_id)
+            .order_by(ControladoriaCalendarException.starts_on.desc())
+            .limit(bounded_limit(limit))
+        )
+    ).scalars().all()
+    return ControladoriaListResponse(
+        items=[CalendarExceptionResponse.model_validate(record) for record in records],
+        limit=bounded_limit(limit),
+    )
+
+
+@router.post(
+    "/calendar-exceptions",
+    response_model=CalendarExceptionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_calendar_exception(
+    payload: CalendarExceptionCreate,
+    *,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    _write: User = Depends(require_tenant_write),
+):
+    record = await create_calendar_exception(db, current_user, payload)
+    await audit_and_commit(
+        db,
+        current_user,
+        "CONTROLADORIA_CALENDAR_EXCEPTION_CREATED",
+        "controladoria_calendar_exceptions",
+        record.id,
+        {
+            "scope": f"{record.scope_kind}:{record.scope_code}",
+            "kind": record.kind,
+            "starts_on": record.starts_on.isoformat(),
+            "ends_on": record.ends_on.isoformat(),
+        },
+    )
+    return CalendarExceptionResponse.model_validate(record)
+
+
+@router.post("/deadlines/calculate", response_model=DeadlineReviewResponse)
+async def calculate_deadline(
+    payload: DeadlineCalculationCreate,
+    *,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    _write: User = Depends(require_tenant_write),
+):
+    record, created = await calculate_deadline_suggestion(db, current_user, payload)
+    await audit_and_commit(
+        db,
+        current_user,
+        "CONTROLADORIA_DEADLINE_CALCULATED" if created else "CONTROLADORIA_DEADLINE_RECALCULATED",
+        "controladoria_deadline_reviews",
+        record.id,
+        {
+            "event_id": record.event_id,
+            "rule_id": record.rule_id,
+            "rule_version": record.rule_version,
+            "calculation_revision": record.calculation_revision,
+            "suggested_due_at": record.suggested_due_at.isoformat(),
+        },
+    )
+    return await deadline_review_payload(db, current_user, record)
 
 
 @router.post("/deadlines", response_model=DeadlineReviewResponse, status_code=status.HTTP_201_CREATED)
@@ -462,10 +647,14 @@ async def decide_deadline(
         await audit_and_commit(
             db,
             current_user,
-            "CONTROLADORIA_DEADLINE_APPROVED",
+            "CONTROLADORIA_DEADLINE_APPROVED" if task else "CONTROLADORIA_DEADLINE_FIRST_APPROVED",
             "controladoria_deadline_reviews",
             record.id,
-            {"task_id": task.id, "due_at": task.due_at.isoformat()},
+            (
+                {"task_id": task.id, "due_at": task.due_at.isoformat(), "approval_stage": 2}
+                if task
+                else {"task_id": None, "approval_stage": 1}
+            ),
         )
     else:
         record = await reject_deadline_suggestion(db, current_user, review_id, note=payload.note)
@@ -637,3 +826,7 @@ async def complete_workflow(
         {},
     )
     return await workflow_run_payload(db, current_user, record)
+    create_calendar_exception,
+    create_deadline_rule,
+    get_deadline_rule,
+    review_deadline_rule,

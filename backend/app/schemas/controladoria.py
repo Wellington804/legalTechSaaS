@@ -6,14 +6,16 @@ deadline.
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Literal
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 MAX_METADATA_BYTES = 20_000
+JudicialSourceKind = Literal["datajud", "escavador", "djen", "domicilio", "tribunal_api"]
 SUPPORTED_DATAJUD_TRIBUNALS = frozenset(
     {"stj", "tst", "tse", "stm"}
     | {f"trf{i}" for i in range(1, 7)}
@@ -46,6 +48,7 @@ def _timezone_aware(value: datetime) -> datetime:
 
 class MonitoringSubscriptionCreate(ControladoriaSchema):
     case_id: str = Field(min_length=1, max_length=64)
+    source_kind: JudicialSourceKind | None = None
     tribunal: str | None = Field(default=None, min_length=2, max_length=20)
 
     @field_validator("tribunal")
@@ -55,7 +58,7 @@ class MonitoringSubscriptionCreate(ControladoriaSchema):
             return None
         normalized = value.lower()
         if normalized not in SUPPORTED_DATAJUD_TRIBUNALS:
-            raise ValueError("tribunal DataJud nao suportado")
+            raise ValueError("tribunal judicial nao suportado")
         return normalized
 
 
@@ -66,8 +69,9 @@ class MonitoringSubscriptionUpdate(ControladoriaSchema):
 class MonitoringSubscriptionResponse(ControladoriaSchema):
     id: str
     case_id: str
-    source_kind: Literal["datajud", "escavador"]
+    source_kind: JudicialSourceKind
     provider_subscription_id: str | None
+    provider_cursor: str | None
     tribunal: str
     process_number: str
     status: Literal["active", "paused", "disabled"]
@@ -78,10 +82,18 @@ class MonitoringSubscriptionResponse(ControladoriaSchema):
     updated_at: datetime
 
 
+class JudicialProviderStatus(ControladoriaSchema):
+    source_kind: JudicialSourceKind
+    label: str
+    configured: bool
+    homologation_required: bool
+    detail: str
+
+
 class JudicialEventCreate(ControladoriaSchema):
     case_id: str = Field(min_length=1, max_length=64)
     subscription_id: str | None = Field(default=None, min_length=1, max_length=64)
-    source_kind: Literal["manual", "datajud", "escavador"]
+    source_kind: Literal["manual", "datajud", "escavador", "djen", "domicilio", "tribunal_api"]
     source_event_id: str = Field(min_length=1, max_length=200)
     source_url: str = Field(min_length=8, max_length=2048)
     title: str = Field(min_length=2, max_length=500)
@@ -133,7 +145,7 @@ class JudicialEventResponse(ControladoriaSchema):
     id: str
     case_id: str
     subscription_id: str | None
-    source_kind: Literal["manual", "datajud", "escavador"]
+    source_kind: Literal["manual", "datajud", "escavador", "djen", "domicilio", "tribunal_api"]
     source_event_id: str
     source_url: str
     title: str
@@ -167,6 +179,123 @@ class DeadlineDecision(ControladoriaSchema):
     note: str = Field(min_length=3, max_length=5_000)
 
 
+class DeadlineRuleSource(ControladoriaSchema):
+    title: str = Field(min_length=3, max_length=300)
+    url: str = Field(min_length=8, max_length=2048)
+    reference: str = Field(min_length=1, max_length=300)
+
+    @field_validator("url")
+    @classmethod
+    def valid_url(cls, value: str) -> str:
+        return _normalize_url(value)
+
+
+class DeadlineRuleCreate(ControladoriaSchema):
+    rule_key: str = Field(min_length=3, max_length=100, pattern=r"^[a-z0-9_.-]+$")
+    version: int = Field(ge=1, le=100_000)
+    rite: str = Field(min_length=2, max_length=100)
+    act_type: str = Field(min_length=2, max_length=100)
+    tribunal: str = Field(min_length=2, max_length=20)
+    local_code: str | None = Field(default=None, min_length=2, max_length=100)
+    days: int = Field(ge=1, le=3650)
+    counting_method: Literal["business_days", "calendar_days"]
+    start_mode: Literal["next_business_day", "same_business_day", "next_calendar_day"]
+    due_adjustment: Literal["none", "next_business_day"] = "next_business_day"
+    timezone_name: str = Field(default="America/Sao_Paulo", min_length=3, max_length=64)
+    due_hour: int = Field(default=23, ge=0, le=23)
+    due_minute: int = Field(default=59, ge=0, le=59)
+    legal_sources: list[DeadlineRuleSource] = Field(min_length=1, max_length=20)
+    effective_from: date
+    effective_until: date | None = None
+
+    @field_validator("tribunal")
+    @classmethod
+    def valid_rule_tribunal(cls, value: str) -> str:
+        normalized = value.lower()
+        if normalized not in SUPPORTED_DATAJUD_TRIBUNALS:
+            raise ValueError("tribunal nao suportado")
+        return normalized
+
+    @field_validator("timezone_name")
+    @classmethod
+    def valid_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("fuso horario IANA invalido") from exc
+        return value
+
+    @model_validator(mode="after")
+    def valid_effective_period(self):
+        if self.effective_until and self.effective_until < self.effective_from:
+            raise ValueError("vigencia final nao pode anteceder vigencia inicial")
+        if self.counting_method == "business_days" and self.start_mode == "next_calendar_day":
+            raise ValueError("contagem em dias uteis exige termo inicial util configurado")
+        return self
+
+
+class DeadlineRuleReview(ControladoriaSchema):
+    decision: Literal["approved", "rejected"]
+    note: str = Field(min_length=5, max_length=5_000)
+
+
+class DeadlineRuleResponse(DeadlineRuleCreate):
+    id: str
+    status: Literal["draft", "active", "rejected", "retired"]
+    created_by_user_id: str
+    reviewed_by_user_id: str | None
+    reviewed_at: datetime | None
+    review_note: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CalendarExceptionCreate(ControladoriaSchema):
+    scope_kind: Literal["national", "tribunal", "local"]
+    scope_code: str = Field(min_length=2, max_length=100)
+    kind: Literal["holiday", "suspension"]
+    name: str = Field(min_length=2, max_length=200)
+    starts_on: date
+    ends_on: date
+    source_url: str = Field(min_length=8, max_length=2048)
+    source_name: str = Field(min_length=3, max_length=300)
+
+    @field_validator("source_url")
+    @classmethod
+    def valid_source_url(cls, value: str) -> str:
+        return _normalize_url(value)
+
+    @model_validator(mode="after")
+    def valid_scope_and_period(self):
+        self.scope_code = self.scope_code.upper() if self.scope_kind == "national" else self.scope_code.lower()
+        if self.scope_kind == "national" and self.scope_code != "BR":
+            raise ValueError("calendario nacional deve usar escopo BR")
+        if self.ends_on < self.starts_on:
+            raise ValueError("fim da excecao nao pode anteceder o inicio")
+        if (self.ends_on - self.starts_on).days > 366:
+            raise ValueError("excecao nao pode exceder 367 dias")
+        return self
+
+
+class CalendarExceptionResponse(CalendarExceptionCreate):
+    id: str
+    created_by_user_id: str
+    created_at: datetime
+
+
+class DeadlineCalculationCreate(ControladoriaSchema):
+    event_id: str = Field(min_length=1, max_length=64)
+    rule_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=2, max_length=300)
+    triggered_at: datetime
+    assigned_user_id: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("triggered_at")
+    @classmethod
+    def valid_trigger(cls, value: datetime) -> datetime:
+        return _timezone_aware(value)
+
+
 class DeadlineReviewResponse(ControladoriaSchema):
     id: str
     case_id: str
@@ -175,8 +304,19 @@ class DeadlineReviewResponse(ControladoriaSchema):
     suggested_due_at: datetime
     suggested_basis: str
     assigned_user_id: str | None
-    status: Literal["suggested", "approved", "rejected"]
+    rule_id: str | None
+    rule_version: int | None
+    calculation: dict[str, Any] | None
+    calculation_revision: int
+    approval_policy_version: int
+    status: Literal["suggested", "first_approved", "approved", "rejected"]
     suggested_by_user_id: str
+    first_approved_by_user_id: str | None
+    first_approved_at: datetime | None
+    first_approval_note: str | None
+    second_approved_by_user_id: str | None
+    second_approved_at: datetime | None
+    second_approval_note: str | None
     reviewed_by_user_id: str | None
     reviewed_at: datetime | None
     review_note: str | None

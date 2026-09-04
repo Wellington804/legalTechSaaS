@@ -225,8 +225,16 @@ function fixtureApi() {
     if (method === "PATCH" && path === "/api/v1/account/profile") return json(route, 200, profile(state.needsSecuritySetup, state.role));
     if (method === "PATCH" && path === "/api/v1/account/office") return json(route, 200, profile(state.needsSecuritySetup, state.role));
     if (method === "POST" && path.startsWith("/api/v1/account/")) return json(route, 202, { status: "received" });
+    if (method === "GET" && path === "/api/v1/controladoria/providers") return json(route, 200, [
+      { source_kind: "datajud", label: "DataJud", configured: false, homologation_required: false, detail: "Não configurada." },
+      { source_kind: "escavador", label: "Escavador", configured: false, homologation_required: true, detail: "Homologação obrigatória." },
+      { source_kind: "djen", label: "DJEN", configured: true, homologation_required: false, detail: "API pública oficial." },
+      { source_kind: "domicilio", label: "Domicílio Judicial Eletrônico", configured: false, homologation_required: true, detail: "Credencial do CNJ necessária." },
+      { source_kind: "tribunal_api", label: "API específica do tribunal", configured: false, homologation_required: true, detail: "Contrato necessário." },
+    ]);
     if (method === "GET" && [
       "/api/v1/controladoria/subscriptions", "/api/v1/controladoria/events", "/api/v1/controladoria/deadlines",
+      "/api/v1/controladoria/deadline-rules", "/api/v1/controladoria/calendar-exceptions",
       "/api/v1/controladoria/workflow-templates", "/api/v1/controladoria/workflows", "/api/v1/operations/intakes",
       "/api/v1/operations/fee-contracts", "/api/v1/operations/invoices", "/api/v1/operations/time-entries",
       "/api/v1/operations/provider-credentials", "/api/v1/operations/signature-providers",

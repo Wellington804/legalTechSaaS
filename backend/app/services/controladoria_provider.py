@@ -1,4 +1,4 @@
-"""Bounded DataJud evidence fetcher for a future monitor worker.
+"""Bounded adapters for configured judicial evidence sources.
 
 It is deliberately side-effect free: callers must persist each returned event
 through ``record_judicial_event`` and must set the PostgreSQL tenant context
@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
+from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -19,6 +21,8 @@ from app.schemas.controladoria import SUPPORTED_DATAJUD_TRIBUNALS
 
 DATAJUD_HOST = "api-publica.datajud.cnj.jus.br"
 ESCAVADOR_HOST = "api.escavador.com"
+DJEN_HOSTS = frozenset({"comunicaapi.pje.jus.br", "hcomunicaapi.cnj.jus.br"})
+DJEN_ENDPOINT = "https://comunicaapi.pje.jus.br/api/v1/comunicacao"
 MAX_RESPONSE_BYTES = 2_000_000
 MAX_HITS = 10
 MAX_MOVEMENTS_PER_HIT = 1_000
@@ -41,6 +45,12 @@ class ProviderJudicialEvent:
 
 
 @dataclass(frozen=True)
+class ProviderFetchPage:
+    events: list[ProviderJudicialEvent]
+    next_cursor: str | None = None
+
+
+@dataclass(frozen=True)
 class EscavadorCallbackDelivery:
     process_number: str
     provider_subscription_id: str
@@ -50,6 +60,41 @@ class EscavadorCallbackDelivery:
 def _payload_digest(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _normalize_process_number(value: Any) -> str:
+    return re.sub(r"\D", "", str(value or ""))
+
+
+def _parse_source_datetime(value: Any, *, timezone_name: str = "America/Sao_Paulo") -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=ZoneInfo(timezone_name))
+        return parsed.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _safe_http_url(value: Any, fallback: str) -> str:
+    candidate = str(value or "").strip()
+    parsed = urlsplit(candidate)
+    if parsed.scheme in {"https", "http"} and parsed.netloc and not parsed.username and not parsed.password:
+        return candidate[:2048]
+    return fallback
+
+
+def _configured_https_endpoint(value: Any, *, allowed_hosts: frozenset[str] | None = None) -> str:
+    endpoint = str(value or "").strip()
+    parsed = urlsplit(endpoint)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise JudicialProviderError("endpoint judicial HTTPS nao configurado")
+    if allowed_hosts is not None and parsed.hostname not in allowed_hosts:
+        raise JudicialProviderError("host judicial nao autorizado")
+    return endpoint.rstrip("/")
 
 
 def _format_cnj(number: str) -> str:
@@ -234,6 +279,12 @@ class DataJudMonitoringProvider:
                     return events
         return events
 
+    async def fetch_page(
+        self, *, tribunal: str, process_number: str, cursor: str | None = None
+    ) -> ProviderFetchPage:
+        del cursor
+        return ProviderFetchPage(await self.fetch(tribunal=tribunal, process_number=process_number))
+
 
 class EscavadorMonitoringProvider:
     """Read-only access to already indexed public movements in Escavador v2."""
@@ -316,10 +367,323 @@ class EscavadorMonitoringProvider:
             ))
         return events
 
+    async def fetch_page(
+        self, *, tribunal: str, process_number: str, cursor: str | None = None
+    ) -> ProviderFetchPage:
+        del cursor
+        return ProviderFetchPage(await self.fetch(tribunal=tribunal, process_number=process_number))
 
-def monitoring_provider(source_kind: str, config):
+
+def _communication_event(
+    item: dict[str, Any],
+    *,
+    source_kind: str,
+    endpoint: str,
+    process_number: str,
+    retrieved_at: datetime,
+) -> ProviderJudicialEvent | None:
+    item_number = _normalize_process_number(
+        item.get("numero_processo") or item.get("numeroProcesso") or item.get("process_number")
+    )
+    if item_number and item_number != process_number:
+        return None
+    content = str(
+        item.get("texto") or item.get("conteudo") or item.get("content") or item.get("assunto") or ""
+    ).strip()
+    if not content or len(content) > 100_000:
+        raise JudicialProviderError("comunicacao judicial sem conteudo valido")
+    raw_date = (
+        item.get("data_disponibilizacao")
+        or item.get("dataDisponibilizacao")
+        or item.get("dataEnvio")
+        or item.get("published_at")
+        or item.get("data")
+    )
+    occurred_at = _parse_source_datetime(raw_date)
+    raw_id = str(
+        item.get("hash")
+        or item.get("numeroComunicacao")
+        or item.get("numero_comunicacao")
+        or item.get("id")
+        or ""
+    ).strip()
+    source_event_id = raw_id or hashlib.sha256(
+        f"{process_number}\x1f{raw_date or ''}\x1f{content}".encode("utf-8")
+    ).hexdigest()
+    kind = str(
+        item.get("tipoComunicacao") or item.get("tipo_comunicacao") or item.get("tipo") or "COMUNICACAO"
+    ).strip()[:100]
+    source_url = _safe_http_url(item.get("link") or item.get("url"), endpoint)
+    return ProviderJudicialEvent(
+        source_event_id=source_event_id[:200],
+        source_url=source_url,
+        title=(kind.title() + ": " + content)[:500],
+        source_content=content[:20_000],
+        source_metadata={
+            "type": kind.upper(),
+            "court": str(item.get("siglaTribunal") or item.get("tribunal") or "")[:20] or None,
+            "communication_number": str(
+                item.get("numeroComunicacao") or item.get("numero_comunicacao") or ""
+            )[:100] or None,
+            "document_type": str(item.get("tipoDocumento") or item.get("tipo_documento") or "")[:100] or None,
+            "court_unit": str(item.get("nomeOrgao") or item.get("orgao") or "")[:200] or None,
+            "occurred_at_raw": str(raw_date or "")[:100] or None,
+            "ingestion_method": "poll",
+            "provider_payload_sha256": _payload_digest(item),
+            "provider_source": source_kind,
+            "active": item.get("ativo") if isinstance(item.get("ativo"), bool) else None,
+            "suggested_action": "Revisar comunicacao e avaliar providencia ou prazo",
+        },
+        occurred_at=occurred_at,
+        retrieved_at=retrieved_at,
+    )
+
+
+class DjenMonitoringProvider:
+    """Official public DJEN API (CNJ), queried by CNJ process number."""
+
+    def __init__(
+        self,
+        endpoint: str = DJEN_ENDPOINT,
+        client_factory: Callable[..., httpx.AsyncClient] = httpx.AsyncClient,
+    ):
+        self._endpoint = _configured_https_endpoint(endpoint, allowed_hosts=DJEN_HOSTS)
+        self._client_factory = client_factory
+
+    async def fetch_page(
+        self, *, tribunal: str, process_number: str, cursor: str | None = None
+    ) -> ProviderFetchPage:
+        number = _normalize_process_number(process_number)
+        if tribunal.lower() not in SUPPORTED_DATAJUD_TRIBUNALS or len(number) != 20:
+            raise JudicialProviderError("assinatura DJEN invalida")
+        try:
+            page = int(cursor or "1")
+        except ValueError as exc:
+            raise JudicialProviderError("cursor DJEN invalido") from exc
+        if not 1 <= page <= 100_000:
+            raise JudicialProviderError("cursor DJEN fora do limite")
+        try:
+            async with self._client_factory(timeout=20, follow_redirects=False) as client:
+                response = await client.get(
+                    self._endpoint,
+                    headers={"Accept": "application/json"},
+                    params={
+                        "numeroProcesso": number,
+                        "siglaTribunal": tribunal.upper(),
+                        "pagina": page,
+                        "itensPorPagina": 100,
+                        "meio": "D",
+                    },
+                )
+            if not response.is_success or len(response.content) > MAX_RESPONSE_BYTES:
+                raise JudicialProviderError("resposta DJEN invalida")
+            payload = response.json()
+            items = payload.get("items") if isinstance(payload, dict) else None
+        except (httpx.HTTPError, TypeError, ValueError) as exc:
+            if isinstance(exc, JudicialProviderError):
+                raise
+            raise JudicialProviderError("fonte DJEN indisponivel ou resposta invalida") from exc
+        if not isinstance(items, list) or len(items) > 100:
+            raise JudicialProviderError("volume de comunicacoes DJEN invalido")
+        if any(not isinstance(item, dict) for item in items):
+            raise JudicialProviderError("registro DJEN invalido")
+        retrieved_at = datetime.now(timezone.utc)
+        events = [
+            event
+            for item in items
+            for event in [
+                _communication_event(
+                    item,
+                    source_kind="djen",
+                    endpoint=self._endpoint,
+                    process_number=number,
+                    retrieved_at=retrieved_at,
+                )
+            ]
+            if event is not None
+        ]
+        return ProviderFetchPage(events=events, next_cursor=str(page + 1) if len(items) == 100 else None)
+
+
+class CredentialedCommunicationProvider:
+    """Fail-closed adapter for contracted CNJ/tribunal communication endpoints.
+
+    The configured endpoint must expose a bounded JSON collection in `items`,
+    `content` or `comunicacoes`. Homologation remains an operational gate.
+    """
+
+    def __init__(
+        self,
+        *,
+        source_kind: str,
+        endpoint: str,
+        token: str,
+        token_header: str = "Authorization",
+        client_factory: Callable[..., httpx.AsyncClient] = httpx.AsyncClient,
+    ):
+        if source_kind not in {"domicilio", "tribunal_api"} or not token:
+            raise JudicialProviderError("credencial judicial nao configurada")
+        if token_header not in {"Authorization", "X-API-Key"}:
+            raise JudicialProviderError("cabecalho de credencial judicial nao permitido")
+        self.source_kind = source_kind
+        self._endpoint = _configured_https_endpoint(endpoint)
+        self._token = token
+        self._token_header = token_header
+        self._client_factory = client_factory
+
+    async def fetch_page(
+        self, *, tribunal: str, process_number: str, cursor: str | None = None
+    ) -> ProviderFetchPage:
+        number = _normalize_process_number(process_number)
+        if tribunal.lower() not in SUPPORTED_DATAJUD_TRIBUNALS or len(number) != 20:
+            raise JudicialProviderError("assinatura de comunicacoes invalida")
+        if cursor is not None and len(cursor) > 512:
+            raise JudicialProviderError("cursor do provedor invalido")
+        credential = f"Bearer {self._token}" if self._token_header == "Authorization" else self._token
+        params = {"numeroProcesso": number, "limite": 100}
+        if cursor:
+            params["cursor"] = cursor
+        try:
+            async with self._client_factory(timeout=25, follow_redirects=False) as client:
+                response = await client.get(
+                    self._endpoint,
+                    headers={self._token_header: credential, "Accept": "application/json"},
+                    params=params,
+                )
+            if not response.is_success or len(response.content) > MAX_RESPONSE_BYTES:
+                raise JudicialProviderError("resposta do conector judicial invalida")
+            payload = response.json()
+        except (httpx.HTTPError, TypeError, ValueError) as exc:
+            if isinstance(exc, JudicialProviderError):
+                raise
+            raise JudicialProviderError("conector judicial indisponivel ou resposta invalida") from exc
+        if not isinstance(payload, dict):
+            raise JudicialProviderError("contrato do conector judicial invalido")
+        if "items" in payload:
+            items = payload["items"]
+        elif "content" in payload:
+            items = payload["content"]
+        else:
+            items = payload.get("comunicacoes")
+        if not isinstance(items, list) or len(items) > 100:
+            raise JudicialProviderError("volume do conector judicial invalido")
+        if any(not isinstance(item, dict) for item in items):
+            raise JudicialProviderError("registro do conector judicial invalido")
+        next_cursor_value = payload.get("next_cursor") or payload.get("proximoCursor")
+        next_cursor = str(next_cursor_value) if next_cursor_value not in (None, "") else None
+        if next_cursor and len(next_cursor) > 512:
+            raise JudicialProviderError("cursor retornado pelo conector invalido")
+        retrieved_at = datetime.now(timezone.utc)
+        events = [
+            event
+            for item in items
+            for event in [
+                _communication_event(
+                    item,
+                    source_kind=self.source_kind,
+                    endpoint=self._endpoint,
+                    process_number=number,
+                    retrieved_at=retrieved_at,
+                )
+            ]
+            if event is not None
+        ]
+        return ProviderFetchPage(events=events, next_cursor=next_cursor)
+
+
+def _tribunal_connectors(config) -> dict[str, dict[str, Any]]:
+    raw = getattr(config, "TRIBUNAL_SOURCE_CONNECTORS", None) or {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError as exc:
+            raise JudicialProviderError("configuracao de fontes dos tribunais invalida") from exc
+    if not isinstance(raw, dict):
+        raise JudicialProviderError("configuracao de fontes dos tribunais invalida")
+    return {str(key).lower(): value for key, value in raw.items() if isinstance(value, dict)}
+
+
+def provider_configuration_status(config, tribunal: str | None = None) -> list[dict[str, Any]]:
+    connectors = _tribunal_connectors(config)
+    tribunal_config = connectors.get((tribunal or "").lower()) if tribunal else None
+    tribunal_configured = bool(
+        tribunal_config
+        and tribunal_config.get("url")
+        and tribunal_config.get("token")
+        and tribunal_config.get("homologated") is True
+    )
+    if tribunal is None:
+        tribunal_configured = any(
+            item.get("url") and item.get("token") and item.get("homologated") is True
+            for item in connectors.values()
+        )
+    return [
+        {
+            "source_kind": "datajud",
+            "label": "DataJud",
+            "configured": bool(getattr(config, "DATAJUD_ENABLED", False) and getattr(config, "DATAJUD_API_KEY", None)),
+            "homologation_required": False,
+            "detail": "API Publica do CNJ para dados processuais.",
+        },
+        {
+            "source_kind": "escavador",
+            "label": "Escavador",
+            "configured": bool(getattr(config, "ESCAVADOR_ENABLED", False) and getattr(config, "ESCAVADOR_API_TOKEN", None)),
+            "homologation_required": True,
+            "detail": "Monitoramento contratado; requer token e callback homologado.",
+        },
+        {
+            "source_kind": "djen",
+            "label": "DJEN",
+            "configured": True,
+            "homologation_required": False,
+            "detail": "Consulta publica oficial do Diario de Justica Eletronico Nacional.",
+        },
+        {
+            "source_kind": "domicilio",
+            "label": "Domicilio Judicial Eletronico",
+            "configured": bool(
+                getattr(config, "DOMICILIO_JUDICIAL_API_URL", None)
+                and getattr(config, "DOMICILIO_JUDICIAL_API_TOKEN", None)
+                and getattr(config, "DOMICILIO_JUDICIAL_HOMOLOGATED", False)
+            ),
+            "homologation_required": True,
+            "detail": "Exige credenciais de interoperabilidade e homologacao fornecidas pelo CNJ.",
+        },
+        {
+            "source_kind": "tribunal_api",
+            "label": "API especifica do tribunal",
+            "configured": tribunal_configured,
+            "homologation_required": True,
+            "detail": "Conector contratual por tribunal; indisponivel sem endpoint e credencial homologados.",
+        },
+    ]
+
+
+def monitoring_provider(source_kind: str, config, *, tribunal: str | None = None):
     if source_kind == "datajud" and getattr(config, "DATAJUD_ENABLED", False) and getattr(config, "DATAJUD_API_KEY", None):
         return DataJudMonitoringProvider(config.DATAJUD_API_KEY)
     if source_kind == "escavador" and getattr(config, "ESCAVADOR_ENABLED", False) and getattr(config, "ESCAVADOR_API_TOKEN", None):
         return EscavadorMonitoringProvider(config.ESCAVADOR_API_TOKEN)
+    if source_kind == "djen":
+        return DjenMonitoringProvider(getattr(config, "DJEN_API_URL", None) or DJEN_ENDPOINT)
+    if source_kind == "domicilio":
+        if not getattr(config, "DOMICILIO_JUDICIAL_HOMOLOGATED", False):
+            raise JudicialProviderError("Domicilio Judicial ainda nao homologado")
+        return CredentialedCommunicationProvider(
+            source_kind="domicilio",
+            endpoint=getattr(config, "DOMICILIO_JUDICIAL_API_URL", None),
+            token=getattr(config, "DOMICILIO_JUDICIAL_API_TOKEN", None),
+            token_header=getattr(config, "DOMICILIO_JUDICIAL_TOKEN_HEADER", "Authorization"),
+        )
+    if source_kind == "tribunal_api" and tribunal:
+        connector = _tribunal_connectors(config).get(tribunal.lower()) or {}
+        if connector.get("homologated") is not True:
+            raise JudicialProviderError("fonte especifica do tribunal ainda nao homologada")
+        return CredentialedCommunicationProvider(
+            source_kind="tribunal_api",
+            endpoint=connector.get("url"),
+            token=connector.get("token"),
+            token_header=connector.get("token_header", "Authorization"),
+        )
     raise JudicialProviderError("provedor judicial nao configurado")

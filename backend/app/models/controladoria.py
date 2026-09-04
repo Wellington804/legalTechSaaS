@@ -1,8 +1,8 @@
 """Persisted, tenant-scoped judicial control desk records.
 
 This module intentionally does not calculate deadlines or dispatch work. A
-``ControladoriaDeadlineReview`` only creates a workspace deadline task after a
-human approver records an explicit approval.
+``ControladoriaDeadlineReview`` only creates a workspace deadline task after
+two distinct authorized users record explicit approvals.
 """
 
 import uuid
@@ -12,14 +12,17 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
+    Date,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     Integer,
     JSON,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 
 from app.core.database import Base
@@ -53,7 +56,10 @@ class ControladoriaMonitoringSubscription(Base):
             ["users.tenant_id", "users.id"],
             name="fk_controladoria_monitoring_subscriptions_updater_tenant",
         ),
-        CheckConstraint("source_kind IN ('datajud', 'escavador')", name="ck_controladoria_monitoring_subscriptions_source_kind"),
+        CheckConstraint(
+            "source_kind IN ('datajud', 'escavador', 'djen', 'domicilio', 'tribunal_api')",
+            name="ck_controladoria_monitoring_subscriptions_source_kind",
+        ),
         CheckConstraint(
             "status IN ('active', 'paused', 'disabled')",
             name="ck_controladoria_monitoring_subscriptions_status",
@@ -65,6 +71,7 @@ class ControladoriaMonitoringSubscription(Base):
     case_id = Column(String, nullable=False, index=True)
     source_kind = Column(String(16), nullable=False, default="datajud")
     provider_subscription_id = Column(String(128), nullable=True)
+    provider_cursor = Column(String(512), nullable=True)
     tribunal = Column(String(20), nullable=False)
     process_number = Column(String(20), nullable=False)
     status = Column(String(16), nullable=False, default="active", index=True)
@@ -104,7 +111,10 @@ class ControladoriaJudicialEvent(Base):
             ["users.tenant_id", "users.id"],
             name="fk_controladoria_judicial_events_triager_tenant",
         ),
-        CheckConstraint("source_kind IN ('manual', 'datajud', 'escavador')", name="ck_controladoria_judicial_events_source_kind"),
+        CheckConstraint(
+            "source_kind IN ('manual', 'datajud', 'escavador', 'djen', 'domicilio', 'tribunal_api')",
+            name="ck_controladoria_judicial_events_source_kind",
+        ),
         CheckConstraint(
             "triage_status IN ('pending', 'reviewed', 'discarded')",
             name="ck_controladoria_judicial_events_triage_status",
@@ -171,13 +181,42 @@ class ControladoriaDeadlineReview(Base):
             name="fk_controladoria_deadline_reviews_task_tenant",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "rule_id"],
+            ["controladoria_deadline_rules.tenant_id", "controladoria_deadline_rules.id"],
+            name="fk_controladoria_deadline_reviews_rule_tenant",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "first_approved_by_user_id"],
+            ["users.tenant_id", "users.id"],
+            name="fk_controladoria_deadline_reviews_first_approver_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "second_approved_by_user_id"],
+            ["users.tenant_id", "users.id"],
+            name="fk_controladoria_deadline_reviews_second_approver_tenant",
+        ),
         CheckConstraint(
-            "status IN ('suggested', 'approved', 'rejected')",
+            "status IN ('suggested', 'first_approved', 'approved', 'rejected')",
             name="ck_controladoria_deadline_reviews_status",
         ),
         CheckConstraint(
-            "(status = 'approved' AND reviewed_at IS NOT NULL AND reviewed_by_user_id IS NOT NULL AND task_id IS NOT NULL) "
-            "OR (status IN ('suggested', 'rejected') AND task_id IS NULL)",
+            "(approval_policy_version = 1 AND status = 'approved' AND reviewed_at IS NOT NULL "
+            "AND reviewed_by_user_id IS NOT NULL AND task_id IS NOT NULL) OR "
+            "(approval_policy_version = 2 AND status = 'suggested' AND task_id IS NULL "
+            "AND first_approved_by_user_id IS NULL AND second_approved_by_user_id IS NULL) OR "
+            "(approval_policy_version = 2 AND status = 'first_approved' AND task_id IS NULL "
+            "AND first_approved_by_user_id IS NOT NULL AND first_approved_at IS NOT NULL "
+            "AND first_approval_note IS NOT NULL AND second_approved_by_user_id IS NULL) OR "
+            "(approval_policy_version = 2 AND status = 'approved' AND task_id IS NOT NULL "
+            "AND first_approved_by_user_id IS NOT NULL AND first_approved_at IS NOT NULL "
+            "AND second_approved_by_user_id IS NOT NULL AND second_approved_at IS NOT NULL "
+            "AND first_approval_note IS NOT NULL AND second_approval_note IS NOT NULL "
+            "AND reviewed_by_user_id = second_approved_by_user_id AND reviewed_at IS NOT NULL "
+            "AND first_approved_by_user_id <> second_approved_by_user_id) OR "
+            "(approval_policy_version = 2 AND status = 'rejected' AND task_id IS NULL "
+            "AND reviewed_by_user_id IS NOT NULL AND reviewed_at IS NOT NULL AND review_note IS NOT NULL)",
             name="ck_controladoria_deadline_reviews_human_approval",
         ),
     )
@@ -190,14 +229,147 @@ class ControladoriaDeadlineReview(Base):
     suggested_due_at = Column(DateTime(timezone=True), nullable=False, index=True)
     suggested_basis = Column(Text, nullable=False)
     assigned_user_id = Column(String, nullable=True)
+    rule_id = Column(String, nullable=True)
+    rule_version = Column(Integer, nullable=True)
+    calculation = Column(JSON, nullable=True)
+    calculation_revision = Column(Integer, nullable=False, default=1)
+    approval_policy_version = Column(Integer, nullable=False, default=2)
     status = Column(String(16), nullable=False, default="suggested", index=True)
     suggested_by_user_id = Column(String, nullable=False)
+    first_approved_by_user_id = Column(String, nullable=True)
+    first_approved_at = Column(DateTime(timezone=True), nullable=True)
+    first_approval_note = Column(Text, nullable=True)
+    second_approved_by_user_id = Column(String, nullable=True)
+    second_approved_at = Column(DateTime(timezone=True), nullable=True)
+    second_approval_note = Column(Text, nullable=True)
     reviewed_by_user_id = Column(String, nullable=True)
     reviewed_at = Column(DateTime(timezone=True), nullable=True)
     review_note = Column(Text, nullable=True)
     task_id = Column(String, nullable=True, unique=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class ControladoriaDeadlineRule(Base):
+    __tablename__ = "controladoria_deadline_rules"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_controladoria_deadline_rules_tenant_id"),
+        UniqueConstraint(
+            "tenant_id", "rule_key", "version",
+            name="uq_controladoria_deadline_rules_key_version",
+        ),
+        Index(
+            "uq_controladoria_deadline_rules_active_key",
+            "tenant_id",
+            "rule_key",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "created_by_user_id"],
+            ["users.tenant_id", "users.id"],
+            name="fk_controladoria_deadline_rules_creator_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "reviewed_by_user_id"],
+            ["users.tenant_id", "users.id"],
+            name="fk_controladoria_deadline_rules_reviewer_tenant",
+        ),
+        CheckConstraint("days > 0 AND days <= 3650", name="ck_controladoria_deadline_rules_days"),
+        CheckConstraint(
+            "counting_method IN ('business_days', 'calendar_days')",
+            name="ck_controladoria_deadline_rules_counting_method",
+        ),
+        CheckConstraint(
+            "start_mode IN ('next_business_day', 'same_business_day', 'next_calendar_day')",
+            name="ck_controladoria_deadline_rules_start_mode",
+        ),
+        CheckConstraint(
+            "due_adjustment IN ('none', 'next_business_day')",
+            name="ck_controladoria_deadline_rules_due_adjustment",
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'active', 'rejected', 'retired')",
+            name="ck_controladoria_deadline_rules_status",
+        ),
+        CheckConstraint(
+            "(status = 'draft' AND reviewed_by_user_id IS NULL AND reviewed_at IS NULL) OR "
+            "(status IN ('active', 'rejected', 'retired') AND reviewed_by_user_id IS NOT NULL "
+            "AND reviewed_at IS NOT NULL AND reviewed_by_user_id <> created_by_user_id)",
+            name="ck_controladoria_deadline_rules_reviewed",
+        ),
+        CheckConstraint("due_hour BETWEEN 0 AND 23", name="ck_controladoria_deadline_rules_due_hour"),
+        CheckConstraint("due_minute BETWEEN 0 AND 59", name="ck_controladoria_deadline_rules_due_minute"),
+    )
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String, ForeignKey("tenants.id"), nullable=False, index=True)
+    rule_key = Column(String(100), nullable=False)
+    version = Column(Integer, nullable=False)
+    rite = Column(String(100), nullable=False, index=True)
+    act_type = Column(String(100), nullable=False, index=True)
+    tribunal = Column(String(20), nullable=False, index=True)
+    local_code = Column(String(100), nullable=True)
+    days = Column(Integer, nullable=False)
+    counting_method = Column(String(20), nullable=False)
+    start_mode = Column(String(30), nullable=False)
+    due_adjustment = Column(String(30), nullable=False, default="next_business_day")
+    timezone_name = Column(String(64), nullable=False, default="America/Sao_Paulo")
+    due_hour = Column(Integer, nullable=False, default=23)
+    due_minute = Column(Integer, nullable=False, default=59)
+    legal_sources = Column(JSON, nullable=False, default=list)
+    status = Column(String(16), nullable=False, default="draft", index=True)
+    effective_from = Column(Date, nullable=False)
+    effective_until = Column(Date, nullable=True)
+    created_by_user_id = Column(String, nullable=False)
+    reviewed_by_user_id = Column(String, nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    review_note = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class ControladoriaCalendarException(Base):
+    __tablename__ = "controladoria_calendar_exceptions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_controladoria_calendar_exceptions_tenant_id"),
+        UniqueConstraint(
+            "tenant_id", "scope_kind", "scope_code", "starts_on", "ends_on", "kind",
+            name="uq_controladoria_calendar_exceptions_scope_period",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "created_by_user_id"],
+            ["users.tenant_id", "users.id"],
+            name="fk_controladoria_calendar_exceptions_creator_tenant",
+        ),
+        CheckConstraint(
+            "scope_kind IN ('national', 'tribunal', 'local')",
+            name="ck_controladoria_calendar_exceptions_scope_kind",
+        ),
+        CheckConstraint(
+            "kind IN ('holiday', 'suspension')",
+            name="ck_controladoria_calendar_exceptions_kind",
+        ),
+        CheckConstraint("ends_on >= starts_on", name="ck_controladoria_calendar_exceptions_period"),
+        CheckConstraint(
+            "(scope_kind = 'national' AND scope_code = 'BR') OR "
+            "(scope_kind IN ('tribunal', 'local') AND length(scope_code) >= 2)",
+            name="ck_controladoria_calendar_exceptions_scope_code",
+        ),
+    )
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id = Column(String, ForeignKey("tenants.id"), nullable=False, index=True)
+    scope_kind = Column(String(16), nullable=False, index=True)
+    scope_code = Column(String(100), nullable=False, index=True)
+    kind = Column(String(16), nullable=False)
+    name = Column(String(200), nullable=False)
+    starts_on = Column(Date, nullable=False, index=True)
+    ends_on = Column(Date, nullable=False, index=True)
+    source_url = Column(String(2048), nullable=False)
+    source_name = Column(String(300), nullable=False)
+    created_by_user_id = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 class ControladoriaWorkflowTemplate(Base):

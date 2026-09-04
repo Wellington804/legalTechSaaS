@@ -14,11 +14,15 @@ from app.models.workspace import WorkspaceTask
 from app.schemas.controladoria import JudicialEventCreate
 from app.services import controladoria_service as service
 from app.services.controladoria_provider import (
+    CredentialedCommunicationProvider,
     DataJudMonitoringProvider,
+    DjenMonitoringProvider,
     EscavadorMonitoringProvider,
     JudicialProviderError,
+    monitoring_provider,
     parse_escavador_callback,
     parse_escavador_movement,
+    provider_configuration_status,
 )
 
 
@@ -84,7 +88,7 @@ class ControladoriaServiceTests(unittest.TestCase):
         self.assertIs(duplicate, created)
         self.assertEqual(duplicate_db.added, [])
 
-    def test_only_explicit_approval_creates_manually_reviewed_deadline_task(self):
+    def test_only_distinct_second_approval_creates_manually_reviewed_deadline_task(self):
         async def run():
             review = SimpleNamespace(
                 id="review-a",
@@ -98,19 +102,33 @@ class ControladoriaServiceTests(unittest.TestCase):
                 review_note=None,
                 reviewed_by_user_id=None,
                 reviewed_at=None,
+                approval_policy_version=2,
+                first_approved_by_user_id=None,
+                first_approved_at=None,
+                first_approval_note=None,
+                second_approved_by_user_id=None,
+                second_approved_at=None,
+                second_approval_note=None,
             )
             db = FakeDatabase()
             with (
                 patch.object(service, "get_deadline_review", AsyncMock(return_value=review)),
                 patch.object(service, "get_case", AsyncMock(return_value=self.case)),
             ):
-                result, task = await service.approve_deadline_and_create_task(
+                first_result, first_task = await service.approve_deadline_and_create_task(
                     db, self.user, "review-a", note="Conferido pelo responsavel."
                 )
-            return db, result, task
+                second_user = SimpleNamespace(id="lawyer-b", tenant_id="tenant-a", role="lawyer")
+                result, task = await service.approve_deadline_and_create_task(
+                    db, second_user, "review-a", note="Segunda conferencia independente."
+                )
+            return db, first_result, first_task, result, task
 
-        db, review, task = asyncio.run(run())
+        db, first_review, first_task, review, task = asyncio.run(run())
+        self.assertIsNone(first_task)
+        self.assertEqual(first_review.first_approved_by_user_id, "lawyer-a")
         self.assertEqual(review.status, "approved")
+        self.assertEqual(review.second_approved_by_user_id, "lawyer-b")
         self.assertEqual(review.task_id, "task-approved")
         self.assertEqual(len(db.added), 1)
         self.assertIs(db.added[0], task)
@@ -242,6 +260,93 @@ class ControladoriaServiceTests(unittest.TestCase):
             service.event_dedupe_key("case-a", polled_payload),
         )
 
+    def test_djen_public_provider_uses_official_contract_cursor_and_stable_publication_identity(self):
+        requests = []
+
+        async def run():
+            def handler(request: httpx.Request):
+                requests.append(request)
+                return httpx.Response(200, json={"items": [{
+                    "id": 99,
+                    "numeroComunicacao": 2026000123,
+                    "numero_processo": "0000000-00.0000.0.00.0000",
+                    "data_disponibilizacao": "2026-09-04",
+                    "siglaTribunal": "TJSP",
+                    "tipoComunicacao": "Intimacao",
+                    "texto": "Intimacao para manifestacao.",
+                    "link": "https://comunica.pje.jus.br/consulta/2026000123",
+                }]})
+
+            transport = httpx.MockTransport(handler)
+            provider = DjenMonitoringProvider(
+                client_factory=lambda **kwargs: httpx.AsyncClient(transport=transport, **kwargs)
+            )
+            return await provider.fetch_page(
+                tribunal="tjsp", process_number="00000000000000000000", cursor=None
+            )
+
+        first = asyncio.run(run())
+        second = asyncio.run(run())
+        self.assertEqual(requests[0].url.host, "comunicaapi.pje.jus.br")
+        self.assertEqual(requests[0].url.params["numeroProcesso"], "00000000000000000000")
+        self.assertEqual(requests[0].url.params["itensPorPagina"], "100")
+        self.assertEqual(first.next_cursor, None)
+        self.assertEqual(first.events[0].source_event_id, "2026000123")
+        self.assertEqual(first.events[0].source_event_id, second.events[0].source_event_id)
+        self.assertEqual(first.events[0].source_metadata["provider_source"], "djen")
+        self.assertEqual(len(first.events[0].source_metadata["provider_payload_sha256"]), 64)
+        first_payload = JudicialEventCreate(
+            case_id="case-a", subscription_id="subscription-a", source_kind="djen",
+            source_event_id=first.events[0].source_event_id, source_url=first.events[0].source_url,
+            title=first.events[0].title, source_content=first.events[0].source_content,
+            source_metadata=first.events[0].source_metadata, occurred_at=first.events[0].occurred_at,
+            retrieved_at=first.events[0].retrieved_at,
+        )
+        corrected_payload = first_payload.model_copy(update={"title": "Texto corrigido pelo DJEN"})
+        self.assertEqual(
+            service.event_dedupe_key("case-a", first_payload),
+            service.event_dedupe_key("case-a", corrected_payload),
+        )
+
+    def test_credentialed_sources_fail_closed_until_endpoint_and_token_exist(self):
+        config = SimpleNamespace()
+        with self.assertRaises(JudicialProviderError):
+            monitoring_provider("domicilio", config, tribunal="tjsp")
+        statuses = {item["source_kind"]: item for item in provider_configuration_status(config)}
+        self.assertTrue(statuses["djen"]["configured"])
+        self.assertFalse(statuses["domicilio"]["configured"])
+        self.assertTrue(statuses["domicilio"]["homologation_required"])
+        credentials_without_homologation = SimpleNamespace(
+            DOMICILIO_JUDICIAL_API_URL="https://domicilio.example/api/v1/comunicacoes",
+            DOMICILIO_JUDICIAL_API_TOKEN="secret",
+            DOMICILIO_JUDICIAL_HOMOLOGATED=False,
+        )
+        with self.assertRaises(JudicialProviderError):
+            monitoring_provider("domicilio", credentials_without_homologation, tribunal="tjsp")
+
+    def test_contracted_tribunal_adapter_uses_configured_https_endpoint_without_redirects(self):
+        async def run():
+            def handler(request: httpx.Request):
+                self.assertEqual(request.url.host, "api.tjsp.example")
+                self.assertEqual(request.headers["X-API-Key"], "contract-token")
+                return httpx.Response(200, json={"items": [], "next_cursor": "cursor-2"})
+
+            transport = httpx.MockTransport(handler)
+            provider = CredentialedCommunicationProvider(
+                source_kind="tribunal_api",
+                endpoint="https://api.tjsp.example/comunicacoes",
+                token="contract-token",
+                token_header="X-API-Key",
+                client_factory=lambda **kwargs: httpx.AsyncClient(transport=transport, **kwargs),
+            )
+            return await provider.fetch_page(
+                tribunal="tjsp", process_number="00000000000000000000"
+            )
+
+        page = asyncio.run(run())
+        self.assertEqual(page.events, [])
+        self.assertEqual(page.next_cursor, "cursor-2")
+
     def test_deadline_payload_carries_persisted_event_evidence_for_approval(self):
         async def run():
             now = datetime(2026, 8, 29, 12, tzinfo=timezone.utc)
@@ -250,6 +355,10 @@ class ControladoriaServiceTests(unittest.TestCase):
                 suggested_due_at=now, suggested_basis="Conferencia humana pendente.", assigned_user_id=None,
                 status="suggested", suggested_by_user_id="lawyer-a", reviewed_by_user_id=None,
                 reviewed_at=None, review_note=None, task_id=None, created_at=now, updated_at=now,
+                rule_id=None, rule_version=None, calculation=None, calculation_revision=1,
+                approval_policy_version=2, first_approved_by_user_id=None, first_approved_at=None,
+                first_approval_note=None, second_approved_by_user_id=None, second_approved_at=None,
+                second_approval_note=None,
             )
             event = SimpleNamespace(
                 id="event-a", case_id="case-a", subscription_id="subscription-a", source_kind="datajud",

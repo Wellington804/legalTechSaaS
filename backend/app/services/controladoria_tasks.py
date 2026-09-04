@@ -17,6 +17,7 @@ from app.services.audit_service import AuditService
 from app.services.controladoria_provider import (
     EscavadorMonitoringProvider,
     JudicialProviderError,
+    ProviderFetchPage,
     monitoring_provider,
     parse_escavador_callback,
 )
@@ -25,6 +26,23 @@ from app.services.push_service import enqueue_user_push
 
 
 logger = logging.getLogger(__name__)
+
+
+async def _fetch_with_backoff(provider, *, tribunal: str, process_number: str, cursor: str | None) -> ProviderFetchPage:
+    """Bounded provider retry; recurring beat remains the longer recovery path."""
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            return await provider.fetch_page(
+                tribunal=tribunal,
+                process_number=process_number,
+                cursor=cursor,
+            )
+        except JudicialProviderError as exc:
+            last_error = exc
+            if attempt < 2:
+                await asyncio.sleep(2 ** attempt)
+    raise JudicialProviderError("fonte judicial indisponivel apos novas tentativas") from last_error
 
 
 async def _mark_failed(tenant_id: str, subscription_id: str, code: str) -> None:
@@ -48,6 +66,7 @@ async def _poll_subscription(tenant_id: str, subscription_id: str) -> dict:
             select(
                 ControladoriaMonitoringSubscription.source_kind,
                 ControladoriaMonitoringSubscription.provider_subscription_id,
+                ControladoriaMonitoringSubscription.provider_cursor,
                 ControladoriaMonitoringSubscription.tribunal,
                 ControladoriaMonitoringSubscription.process_number,
                 WorkspaceCase.responsible_user_id,
@@ -64,7 +83,7 @@ async def _poll_subscription(tenant_id: str, subscription_id: str) -> dict:
     if not snapshot:
         return {"status": "ignored", "imported": 0}
 
-    provider = monitoring_provider(snapshot["source_kind"], settings)
+    provider = monitoring_provider(snapshot["source_kind"], settings, tribunal=snapshot["tribunal"])
     if isinstance(provider, EscavadorMonitoringProvider) and not snapshot["provider_subscription_id"]:
         provider_subscription_id = await provider.ensure_monitor(
             tribunal=snapshot["tribunal"], process_number=snapshot["process_number"]
@@ -80,8 +99,11 @@ async def _poll_subscription(tenant_id: str, subscription_id: str) -> dict:
                 return {"status": "ignored", "imported": 0}
             if not subscription.provider_subscription_id:
                 subscription.provider_subscription_id = provider_subscription_id
-    events = await provider.fetch(
-        tribunal=snapshot["tribunal"], process_number=snapshot["process_number"]
+    page = await _fetch_with_backoff(
+        provider,
+        tribunal=snapshot["tribunal"],
+        process_number=snapshot["process_number"],
+        cursor=snapshot["provider_cursor"],
     )
     async with AsyncSessionLocal() as db, db.begin():
         await _set_tenant_context(db, tenant_id)
@@ -99,7 +121,7 @@ async def _poll_subscription(tenant_id: str, subscription_id: str) -> dict:
             raise JudicialProviderError("assinatura sem responsavel ativo")
 
         imported = 0
-        for source_event in events:
+        for source_event in page.events:
             event, created = await record_judicial_event(
                 db,
                 user,
@@ -130,6 +152,7 @@ async def _poll_subscription(tenant_id: str, subscription_id: str) -> dict:
         subscription.last_checked_at = now
         subscription.last_success_at = now
         subscription.last_error_code = None
+        subscription.provider_cursor = page.next_cursor
         if imported:
             await AuditService.log_action(
                 db,
