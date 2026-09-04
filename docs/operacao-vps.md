@@ -73,6 +73,25 @@ docker compose --env-file .env.production -f docker-compose.prod.yml exec db \
 
 `unknown` requer verificação no provedor e ação explícita. Não force reenvio de WhatsApp. Antes de ativar Resend, valide domínio/remetente, SPF/DKIM/DMARC e webhook assinado. Antes de Evolution, valide pareamento, instância por tenant, credenciais, callback e recibos com ambiente de homologação. Estas configurações não enviam mensagens nem fazem deploy por si só.
 
+## Fontes judiciais, calendários e assinatura
+
+O DJEN usa o endpoint público CNJ permitido no `.env.example`. Domicílio Judicial
+e conectores de tribunais permanecem bloqueados até existir credencial contratual,
+URL HTTPS aprovada e evidência de homologação. Uma movimentação importada nunca
+efetiva prazo por si só: o motor apenas propõe e exige duas aprovações humanas
+distintas.
+
+Google e Microsoft Calendar exigem o conjunto completo de client ID, client
+secret, callback e webhook. Para o domínio público configurado, registre exatamente
+`/api/v1/integrations/calendar-oauth/{provider}/callback` e
+`/api/v1/integrations/calendar-webhooks/{provider}`. Configuração parcial falha no
+preflight; sem configuração, o restante do sistema continua disponível.
+
+Clicksign e Autentique são configurados por escritório na interface de operações.
+Os tokens e segredos de webhook ficam cifrados no banco; PFX, chave privada, token
+USB e PIN do advogado nunca entram no LexFlow. Só aceite o artefato final depois do
+webhook autenticado, download seguro, hash imutável e validação PAdES.
+
 ## Backup, restore e volumes
 
 `backup-postgres.sh` faz `pg_dump` custom de todo PostgreSQL (inclusive `bytea` de documentos legados), valida o dump, cifra com GPG AES-256, valida checksum/cifra e copia o par arquivo/checksum para o destino SCP pré-configurado. A retenção só toca arquivos `legaltech-postgres-*` no diretório dedicado configurado. Os novos anexos ficam no R2 e exigem cópia independente e restore conjunto conforme o [runbook da Central de Arquivos](central-arquivos.md).

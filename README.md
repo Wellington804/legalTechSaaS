@@ -12,8 +12,12 @@ SaaS de gestão de escritórios, implementado como monólito modular Next.js/Fas
 - Comunicação vinculada ao caso, portal revogável, mensagens e checklist/upload do cliente.
 - Primeiros passos derivados dos cadastros, kit documental revisável, diligências, checklists operacionais, lembretes pessoais e feedback semanal em `/dashboard/pilot`.
 - Conectores opcionais DataJud e Gemini com origem, autorização, limites e revisão humana; Resend/Evolution com entrega durável e recibos.
+- Caixa omnichannel persistida para WhatsApp/e-mail, com vínculo seguro ao processo e fila humana para mensagens ou anexos ambíguos.
+- Monitoramento judicial por fontes configuradas, motor versionado de prazos e dupla aprovação humana antes de qualquer prazo ser efetivado.
+- Corpus jurídico revisado por advogados, benchmarks com evidência citável e inteligência documental com OCR, classificação, linha do tempo e contradições.
+- Calendários Google/Microsoft bidirecionais e assinatura Clicksign/Autentique com credenciais cifradas por escritório; ativação depende de homologação real.
 
-Assinatura eletrônica externa, cobrança automática do SaaS, caixa de entrada bidirecional de e-mail/WhatsApp, OAB/FGV, cálculo judicial e jurimetria preditiva **não estão concluídos**. Os routers demonstrativos foram removidos do runtime e as rotas antigas falham fechado. Não simule esses recursos em produção.
+Cobrança automática do SaaS, OAB/FGV e jurimetria preditiva **não estão concluídas**. Integrações externas permanecem indisponíveis sem credenciais, contrato e homologação; sugestões de prazo e resultados de IA nunca dispensam revisão profissional. Os routers demonstrativos foram removidos do runtime e as rotas antigas falham fechado.
 
 ## Execução local
 
