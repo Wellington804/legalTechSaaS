@@ -65,7 +65,9 @@ function totp(secret, offsetSeconds = 0) {
     const clientResponse = await clientSaved;
     assert.equal(clientResponse.status(), 201, await clientResponse.text());
     const client = await clientResponse.json();
-    await page.reload(); await page.getByText(label, { exact: true }).waitFor();
+    await page.reload();
+    await page.getByRole('button', { name: 'Clientes', exact: true }).click();
+    await page.getByText(label, { exact: true }).waitFor();
 
     await page.goto(`${base}/dashboard/tracker`);
     await page.getByRole('button', { name: 'Novo processo', exact: true }).click();
