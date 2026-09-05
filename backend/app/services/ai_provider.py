@@ -114,8 +114,7 @@ async def generate_text(*, system_prompt: str, user_prompt: str | None = None,
             "messages": [{"role": "system", "content": system_prompt},
                          {"role": "user", "content": user_content if user_content is not None else user_prompt}],
             "max_tokens": max_output_tokens,
-            "provider": {"zdr": True, "data_collection": "deny", "require_parameters": True,
-                         "allow_fallbacks": True},
+            "provider": {"zdr": True, "data_collection": "deny", "allow_fallbacks": True},
         }
         if reasoning:
             payload["reasoning"] = {"effort": reasoning}

@@ -18,7 +18,7 @@ class AIProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("secret", str(request.await_args.kwargs["payload"]))
         self.assertEqual(request.await_args.kwargs["payload"]["reasoning"], {"effort": "low"})
         self.assertEqual(request.await_args.kwargs["payload"]["provider"], {
-            "zdr": True, "data_collection": "deny", "require_parameters": True, "allow_fallbacks": True,
+            "zdr": True, "data_collection": "deny", "allow_fallbacks": True,
         })
 
     async def test_deep_and_legal_routes_reuse_main_key_without_changing_model_slug(self):
