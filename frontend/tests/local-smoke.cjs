@@ -56,6 +56,7 @@ function totp(secret, offsetSeconds = 0) {
 
     const label = `Verificação local ${Date.now()}`;
     await page.goto(`${base}/dashboard/crm`);
+    await page.getByRole('button', { name: 'Clientes', exact: true }).click();
     await page.getByRole('button', { name: 'Cadastrar cliente', exact: true }).click();
     await page.getByLabel('Nome / razão social').fill(label);
     await page.getByLabel('Etapa').selectOption('client');
