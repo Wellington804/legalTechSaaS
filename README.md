@@ -11,13 +11,17 @@ SaaS de gestão de escritórios, implementado como monólito modular Next.js/Fas
 - Horas, despesas, honorários, recebimentos manuais idempotentes e estornos; não é confirmação bancária.
 - Comunicação vinculada ao caso, portal revogável, mensagens e checklist/upload do cliente.
 - Primeiros passos derivados dos cadastros, kit documental revisável, diligências, checklists operacionais, lembretes pessoais e feedback semanal em `/dashboard/pilot`.
-- Conectores opcionais DataJud e Gemini com origem, autorização, limites e revisão humana; Resend/Evolution com entrega durável e recibos.
+- CRM persistente em `/dashboard/crm`, com oportunidades por etapa, responsável, próxima ação e vínculos opcionais com cliente, processo e atendimento; alterações são auditadas e separadas por escritório.
+- Acompanhamento pessoal de inscrição em `/dashboard/oab`, com busca das 27 Seccionais, links oficiais e checklist preenchido pelo próprio usuário. Não envia inscrição, consulta protocolo nem sincroniza andamento com a OAB.
+- Jurimetria descritiva em `/dashboard/jurimetria`, baseada em amostras limitadas da API Pública do DataJud e com snapshots opcionais por escritório. Depende de credencial/configuração ativa e não prevê êxito, prazo ou estratégia.
+- Qualidade da IA em `/dashboard/audit/ai-quality`, com importação de casos de avaliação, revisão independente registrada e execuções somente sobre casos aprovados. Depende do provedor de IA habilitado e não homologa juridicamente suas respostas.
+- Conectores opcionais Gemini, Resend e Evolution com origem, autorização, limites, revisão humana ou recibos conforme o fluxo; disponibilidade depende de configuração e homologação reais.
 - Caixa omnichannel persistida para WhatsApp/e-mail, com vínculo seguro ao processo e fila humana para mensagens ou anexos ambíguos.
 - Monitoramento judicial por fontes configuradas, motor versionado de prazos e dupla aprovação humana antes de qualquer prazo ser efetivado.
 - Corpus jurídico revisado por advogados, benchmarks com evidência citável e inteligência documental com OCR, classificação, linha do tempo e contradições.
 - Calendários Google/Microsoft bidirecionais e assinatura Clicksign/Autentique com credenciais cifradas por escritório; ativação depende de homologação real.
 
-Cobrança automática do SaaS, OAB/FGV e jurimetria preditiva **não estão concluídas**. Integrações externas permanecem indisponíveis sem credenciais, contrato e homologação; sugestões de prazo e resultados de IA nunca dispensam revisão profissional. Os routers demonstrativos foram removidos do runtime e as rotas antigas falham fechado.
+Cobrança automática do SaaS, protocolo/consulta automatizada na OAB ou FGV e jurimetria preditiva **não estão concluídos**. Integrações externas permanecem indisponíveis sem credenciais, contrato e homologação; resultados do DataJud, sugestões de prazo e respostas de IA nunca dispensam conferência profissional. Os routers demonstrativos foram removidos do runtime e as rotas antigas falham fechado.
 
 ## Execução local
 

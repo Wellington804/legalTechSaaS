@@ -10,7 +10,7 @@ const origin = new URL(base).origin;
 const apiOrigin = new URL(process.env.WORKSPACE_UI_API_URL || base).origin;
 assert.ok(["localhost", "127.0.0.1"].includes(new URL(base).hostname), "Local bundle only");
 assert.ok(["localhost", "127.0.0.1"].includes(new URL(apiOrigin).hostname), "Local fixture API only");
-const paths = ["/dashboard", "/dashboard/pilot", "/dashboard/crm", "/dashboard/tracker", "/dashboard/tasks", "/dashboard/cases/case-a", "/dashboard/petitions/editor", "/dashboard/templates", "/dashboard/financeiro", "/dashboard/library", "/dashboard/communications", "/dashboard/conflitos", "/dashboard/controladoria", "/dashboard/operacoes", "/dashboard/integrations", "/dashboard/analytics/judge-profiling", "/dashboard/admin/users", "/dashboard/audit", "/dashboard/account", "/account/access", "/portal"];
+const paths = ["/dashboard", "/dashboard/pilot", "/dashboard/crm", "/dashboard/tracker", "/dashboard/tasks", "/dashboard/cases/case-a", "/dashboard/petitions/editor", "/dashboard/templates", "/dashboard/financeiro", "/dashboard/library", "/dashboard/communications", "/dashboard/conflitos", "/dashboard/controladoria", "/dashboard/operacoes", "/dashboard/oab", "/dashboard/jurimetria", "/dashboard/integrations", "/dashboard/analytics/judge-profiling", "/dashboard/admin/users", "/dashboard/audit", "/dashboard/audit/ai-quality", "/dashboard/account", "/account/access", "/portal"];
 
 async function fits(page, label) {
   const overflow = await page.evaluate(() => {
@@ -42,10 +42,16 @@ async function fits(page, label) {
       if (path === "/api/v1/workspace/search") {
         searchRequests++;
         const query = url.searchParams.get("q");
-        return json(query === "diligência" ? {
-          clients: api.state.clients, cases: api.state.cases,
-          documents: [{ ...api.state.documents[0], id: "doc-outside-first-page", title: "Documento encontrado na diligência", content_text: "Conteúdo consultado sem abrir o editor." }],
-        } : { clients: [], cases: [], documents: [] });
+        if (query === "diligência") return json({ results: [{
+          kind: "document", id: "doc-outside-first-page", title: "Documento encontrado na diligência",
+          subtitle: "Petição", snippet: "Conteúdo consultado sem abrir o editor.",
+          href: "/dashboard/petitions/editor?document=doc-outside-first-page", updated_at: "2026-09-05T00:00:00Z",
+        }] });
+        if (query === "Cliente Exemplo") return json({ results: [{
+          kind: "client", id: "client-a", title: "Cliente Exemplo", subtitle: api.state.clients[0].email,
+          snippet: null, href: "/dashboard/crm", updated_at: "2026-09-05T00:00:00Z",
+        }] });
+        return json({ results: [] });
       }
       if (["/api/v1/workspace/ledger", "/api/v1/workspace/publications", "/api/v1/workspace/library"].includes(path)) return json({ items: [], limit: 50 });
       if (path === "/api/v1/workspace/analytics") return json({ cases_by_status: { open: 1 } });
@@ -69,7 +75,16 @@ async function fits(page, label) {
     }
 
     await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto(base + "/dashboard/audit/ai-quality");
+    assert.equal(await page.getByRole("button", { name: "Aprovar caso conferido", exact: true }).count(), 0, "approval stays unavailable before opening the complete content");
+    await page.getByRole("button", { name: "Abrir revisão completa", exact: true }).click();
+    await page.getByText("Texto de referência suficientemente completo para que outro advogado confira o conteúdo antes de decidir se o caso pode ser usado na avaliação da inteligência artificial.", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Aprovar caso conferido", exact: true }).waitFor();
+    await fits(page, "mobile AI quality complete review");
+
+    await page.setViewportSize({ width: 375, height: 812 });
     await page.goto(base + "/dashboard/crm");
+    await page.getByRole("button", { name: "Clientes", exact: true }).click();
     const client = page.getByText("Cliente Exemplo", { exact: true });
     await client.waitFor();
     assert.ok((await client.boundingBox()).y < 812, "client lookup visible before lengthy create/import forms");
@@ -100,24 +115,25 @@ async function fits(page, label) {
 
     const searchTrigger = page.getByRole("button", { name: "Buscar", exact: true });
     await searchTrigger.click();
-    const search = page.getByRole("dialog", { name: "Buscar na Central" });
+    const search = page.getByRole("dialog", { name: "Buscar no escritório" });
     await search.getByRole("searchbox").fill("diligência");
-    await search.getByRole("button", { name: /Documento encontrado na diligência/ }).click();
+    await search.getByRole("link", { name: /Documento encontrado na diligência/ }).waitFor();
     await search.getByText("Conteúdo consultado sem abrir o editor.", { exact: true }).waitFor();
     assert.ok(searchRequests > 0, "lookup uses existing server search, not loaded first page");
     await fits(page, "search document preview and long filename");
-    await search.getByRole("button", { name: "Voltar aos resultados" }).click();
-    await search.getByRole("button", { name: /Cliente Exemplo/ }).click();
+    await search.getByRole("searchbox").fill("Cliente Exemplo");
+    await search.getByRole("link", { name: /Cliente Exemplo/ }).waitFor();
     await search.getByText(api.state.clients[0].email, { exact: true }).waitFor();
     await fits(page, "search client contact");
     await search.getByRole("searchbox").fill("nenhum resultado");
-    await search.getByText("Nenhum módulo ou registro corresponde à busca.").waitFor();
+    await search.getByText("Nada foi encontrado com esses termos.").waitFor();
     await page.setViewportSize({ width: 375, height: 360 });
     await fits(page, "search with reduced keyboard-height viewport");
     await search.getByRole("button", { name: "Fechar busca" }).click();
 
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto(base + "/dashboard/petitions/editor");
+    await page.getByRole("button", { name: "Criar documento", exact: true }).click();
     await page.getByText("Ler documento", { exact: true }).first().click();
     await page.getByText("Texto original.", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Editar documento", exact: true }).first().click();

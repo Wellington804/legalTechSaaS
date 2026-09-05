@@ -72,15 +72,15 @@ test('Sentry removes sensitive request and metadata from real helper', () => {
   assert.deepEqual(event.user, { id: 'internal-id' });
 });
 
-test('removed prototype routes fail closed permanently', () => {
+test('removed prototype routes fail closed and released workspace routes remain available', () => {
   const { NextRequest } = require('next/server');
   const { proxy } = require('../src/proxy.ts');
-  for (const path of ['/sign/test', '/verify/test', '/dashboard/simulator', '/oab-hub']) {
+  for (const path of ['/sign/test', '/verify/test', '/dashboard/simulator']) {
     const response = proxy(new NextRequest(`http://localhost:3000${path}`));
     assert.equal(response.status, 307);
     assert.equal(response.headers.get('location'), 'http://localhost:3000/dashboard');
   }
-  for (const path of ['/portal', '/dashboard/crm', '/dashboard/tasks', '/dashboard/cases/test', '/dashboard/account']) {
+  for (const path of ['/portal', '/dashboard/crm', '/dashboard/tasks', '/dashboard/cases/test', '/dashboard/account', '/dashboard/oab', '/dashboard/jurimetria', '/dashboard/audit/ai-quality', '/oab-hub']) {
     assert.equal(proxy(new NextRequest(`http://localhost:3000${path}`)).status, 200);
   }
   assert.equal(proxy(new NextRequest('http://localhost:3000/api/ai/generate')).status, 404);

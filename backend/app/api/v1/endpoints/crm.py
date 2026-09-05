@@ -1,133 +1,109 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel
-from typing import List, Optional
-from app.services.tasks import generate_audit_hash_task
-from app.core.dependencies import get_current_user
+from fastapi import APIRouter, Depends, Query, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
+from app.core.dependencies import CurrentUser, get_current_user, require_tenant_write
+from app.models.user import User
+from app.schemas.crm import OpportunityArchive, OpportunityCreate, OpportunityListResponse, OpportunityResponse, OpportunityUpdate
+from app.services.audit_service import AuditService
+from app.services.crm import archive_opportunity, create_opportunity, list_opportunities, update_opportunity
+from app.services.workspace_service import bounded_limit
+
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
-class LeadCreate(BaseModel):
-    name: str
-    channel: str
-    subject: str
-    estimated_value: float
-    temperature: Optional[str] = "Quente"
-    notes: Optional[str] = ""
 
-class LeadUpdate(BaseModel):
-    name: Optional[str] = None
-    channel: Optional[str] = None
-    subject: Optional[str] = None
-    stage: Optional[str] = None
-    estimated_value: Optional[float] = None
-    temperature: Optional[str] = None
-    notes: Optional[str] = None
-
-class LeadResponse(BaseModel):
-    id: str
-    name: str
-    channel: str
-    subject: str
-    stage: str
-    estimated_value: float
-    temperature: Optional[str] = "Quente"
-    notes: Optional[str] = ""
-
-class PipelineEventTrigger(BaseModel):
-    event_type: str # "SIGNATURE_COMPLETED", "CHECKLIST_APPROVED", "PAYMENT_RECEIVED"
-    lead_id: str
-    target_stage: Optional[str] = "fechados"
-    metadata: Optional[dict] = {}
-
-@router.get("/leads", response_model=List[LeadResponse])
-async def list_crm_leads():
-    """
-    Retorna os leads do funil de vendas Omnichannel CRM do escritório.
-    """
-    return [
-        {
-            "id": "lead_1",
-            "name": "Mariana Alencar",
-            "channel": "WhatsApp",
-            "subject": "Dúvida sobre Registro OAB Originária",
-            "stage": "novos",
-            "estimated_value": 2500.00,
-            "temperature": "Quente",
-            "notes": "Candidata aprovada no Exame da OAB."
-        },
-        {
-            "id": "lead_2",
-            "name": "Empresa Beta Logística",
-            "channel": "Formulário",
-            "subject": "Contrato de Prestação de Serviços",
-            "stage": "novos",
-            "estimated_value": 8000.00,
-            "temperature": "Morno",
-            "notes": "Enviou formulário pelo site."
-        },
-        {
-            "id": "lead_3",
-            "name": "Dr. Roberto Faria",
-            "channel": "E-mail",
-            "subject": "Constituição de SUA Advocacia",
-            "stage": "qualificacao",
-            "estimated_value": 1950.00,
-            "temperature": "Quente",
-            "notes": "Quer abrir CNPJ Sociedade Unipessoal."
-        }
-    ]
-
-@router.post("/leads", response_model=LeadResponse, status_code=status.HTTP_201_CREATED)
-async def create_lead(lead: LeadCreate):
-    """
-    Cadastra novo lead vindo de formulário público ou webhook de WhatsApp.
-    """
-    return {
-        "id": "lead_new_99",
-        "name": lead.name,
-        "channel": lead.channel,
-        "subject": lead.subject,
-        "stage": "novos",
-        "estimated_value": lead.estimated_value,
-        "temperature": lead.temperature or "Quente",
-        "notes": lead.notes or ""
-    }
-
-@router.put("/leads/{lead_id}", response_model=LeadResponse)
-async def update_lead(lead_id: str, lead_data: LeadUpdate):
-    """
-    Atualiza integralmente as informações de um lead/oportunidade existente.
-    """
-    return {
-        "id": lead_id,
-        "name": lead_data.name or "Lead Atualizado",
-        "channel": lead_data.channel or "WhatsApp",
-        "subject": lead_data.subject or "Serviço Atualizado",
-        "stage": lead_data.stage or "novos",
-        "estimated_value": lead_data.estimated_value if lead_data.estimated_value is not None else 0.0,
-        "temperature": lead_data.temperature or "Quente",
-        "notes": lead_data.notes or ""
-    }
-
-@router.post("/auto-trigger")
-async def trigger_pipeline_automation(trigger: PipelineEventTrigger, request: Request):
-    """
-    Passo 4.1 — Automação de Workflow Legal: Avança o lead de estático no CRM e gera tarefa Celery ao confirmar assinatura.
-    """
-    # Envia tarefa de auditoria em background no Celery
-    generate_audit_hash_task.delay(
-        tenant_id=request.state.tenant_id,
-        user_id=request.state.user_id,
-        action=f"AUTOMATED_PIPELINE_{trigger.event_type}",
-        resource_type="crm_leads",
-        details=trigger.metadata or {}
+async def commit_crm_mutation(
+    db: AsyncSession,
+    request: Request,
+    user: User,
+    action: str,
+    opportunity_id: str,
+    details: dict | None = None,
+) -> None:
+    await AuditService.log_action(
+        db=db,
+        tenant_id=user.tenant_id,
+        user_id=user.id,
+        action=action,
+        resource_type="crm_opportunities",
+        resource_id=opportunity_id,
+        details=details or {},
+        ip_address=request.client.host if request.client else None,
+        user_agent=(request.headers.get("user-agent") or "")[:512] or None,
     )
+    await db.commit()
 
-    return {
-        "status": "success",
-        "lead_id": trigger.lead_id,
-        "previous_stage": "proposta",
-        "new_stage": trigger.target_stage or "fechados",
-        "automated_event": trigger.event_type,
-        "message": f"Lead {trigger.lead_id} movido automaticamente para '{trigger.target_stage}' por disparo de evento {trigger.event_type}!"
-    }
+
+@router.get("/opportunities", response_model=OpportunityListResponse)
+async def get_opportunities(
+    stage: str | None = Query(default=None, pattern="^(new|qualified|proposal|won|lost)$"),
+    owner_user_id: str | None = Query(default=None, max_length=64),
+    include_archived: bool = False,
+    limit: int = Query(default=200, ge=1, le=200),
+    *,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+):
+    limit = bounded_limit(limit)
+    items = await list_opportunities(
+        db,
+        current_user,
+        stage=stage,
+        owner_user_id=owner_user_id,
+        include_archived=include_archived,
+        limit=limit,
+    )
+    return OpportunityListResponse(items=[OpportunityResponse.model_validate(item) for item in items], limit=limit)
+
+
+@router.post("/opportunities", response_model=OpportunityResponse, status_code=status.HTTP_201_CREATED)
+async def post_opportunity(
+    payload: OpportunityCreate,
+    request: Request,
+    *,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    _write: User = Depends(require_tenant_write),
+):
+    opportunity, existing = await create_opportunity(db, current_user, payload)
+    if not existing:
+        await commit_crm_mutation(db, request, current_user, "CRM_OPPORTUNITY_CREATED", opportunity.id)
+    return OpportunityResponse.model_validate(opportunity)
+
+
+@router.put("/opportunities/{opportunity_id}", response_model=OpportunityResponse)
+async def put_opportunity(
+    opportunity_id: str,
+    payload: OpportunityUpdate,
+    request: Request,
+    *,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    _write: User = Depends(require_tenant_write),
+):
+    opportunity, changed = await update_opportunity(db, current_user, opportunity_id, payload)
+    if changed:
+        fields = sorted(payload.model_dump(exclude_unset=True, exclude={"expected_revision"}))
+        await commit_crm_mutation(
+            db, request, current_user, "CRM_OPPORTUNITY_UPDATED", opportunity.id, {"fields": fields}
+        )
+    return OpportunityResponse.model_validate(opportunity)
+
+
+@router.post("/opportunities/{opportunity_id}/archive", response_model=OpportunityResponse)
+async def post_opportunity_archive(
+    opportunity_id: str,
+    payload: OpportunityArchive,
+    request: Request,
+    *,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    _write: User = Depends(require_tenant_write),
+):
+    opportunity, changed = await archive_opportunity(
+        db, current_user, opportunity_id, payload.expected_revision
+    )
+    if changed:
+        await commit_crm_mutation(db, request, current_user, "CRM_OPPORTUNITY_ARCHIVED", opportunity.id)
+    return OpportunityResponse.model_validate(opportunity)

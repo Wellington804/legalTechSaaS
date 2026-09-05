@@ -37,12 +37,16 @@ Esse é o mecanismo de produto desejado, não uma alegação de exclusividade no
 
 - A implementação existente é web responsiva com PWA e Web Push. Isso não a torna um aplicativo nativo nem comprova entrega de notificações em um celular físico.
 - O núcleo reúne clientes, casos e permissões, agenda/tarefas, diligências, checklists, lembretes, documentos e versões, identidade documental, honorários/despesas, comunicações/portal, equipe, conta e feedback do piloto. Usar os contratos e dados persistidos existentes; não substituir funcionalidades reais por demonstrações.
+- O CRM registra oportunidades persistentes por escritório em `/dashboard/crm`, com etapa, responsável, próxima ação e vínculos opcionais com cliente, processo e atendimento. Ele não substitui comunicação, cobrança ou automação comercial externa.
+- `/dashboard/oab` organiza o acompanhamento pessoal da inscrição, oferece busca e links oficiais para as 27 Seccionais e guarda somente situações e itens informados pelo usuário. Não protocola pedidos, consulta processos administrativos nem confirma exigências perante a OAB.
+- `/dashboard/jurimetria` consulta amostras limitadas da API Pública do DataJud e apresenta apenas distribuições descritivas e cobertura dos campos, com snapshots opcionais. A fonte pode estar indisponível, incompleta ou desatualizada; não usar a amostra como previsão de êxito, duração ou decisão judicial.
+- `/dashboard/audit/ai-quality` permite importar casos de avaliação, registrar revisão independente e executar testes com casos aprovados. Essa avaliação depende do provedor configurado e não transforma uma resposta da IA em conteúdo juridicamente aprovado.
 - Contas e dados são separados por escritório, com permissões por usuário/caso. Revisão, confirmação, concorrência, auditoria e limites de armazenamento fazem parte do comportamento a preservar em mudanças de interface.
 - A IA é assistiva e depende de integração habilitada. Propostas exigem revisão; gerar não significa salvar, publicar, enviar ou protocolar. Não inventar fatos, poderes, condições contratuais ou datas legais.
 - Branding suporta referências privadas e identidades pessoais/do escritório. Exportações Word/PDF usam versões publicadas; mudanças posteriores não reescrevem arquivos antigos. Provas, anexos originais e documentos assinados não devem ser reformatados.
 - Datas de tarefas e lembretes são conferidas pelo advogado. Push não substitui acompanhamento da agenda; aceitação pelo provedor não comprova recebimento pelo usuário.
 - Não guardar documentos jurídicos em cache offline persistente por padrão. Rascunhos protegidos permanecem somente em memória da conta, sem salvamento automático; fechar/recarregar pode descartá-los. Não prometer trabalho jurídico completo sem conexão.
-- Assinatura eletrônica externa, cobrança automática do SaaS, caixa de entrada omnicanal, integrações OAB/FGV, cálculo judicial e jurimetria preditiva não devem ser apresentados como entregues sem implementação e evidência próprias.
+- Assinatura eletrônica externa, cobrança automática do SaaS, protocolo ou consulta automatizada na OAB/FGV, cálculo judicial e jurimetria preditiva não devem ser apresentados como entregues sem implementação e evidência próprias.
 - Publicação na VPS, entrega de provedores, alertas, recuperação de backup e experiência em aparelho físico precisam de validação no ambiente real. Testes locais e fixtures de interface não comprovam esses requisitos externos.
 
 ## Brand Commitments

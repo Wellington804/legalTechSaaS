@@ -1,2 +1,3 @@
-import { Records } from "@/components/workspace/records";
-export default function Page() { return <Records kind="clients" />; }
+import { CRM } from "@/components/workspace/crm";
+
+export default function Page() { return <CRM />; }

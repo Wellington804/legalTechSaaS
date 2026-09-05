@@ -24,7 +24,7 @@ export function ClientImport({ onImported }: { onImported: () => void }) {
   const [status, setStatus] = useState("");
 
   function downloadExample() {
-    const csv = "Nome;E-mail;Telefone;CPF ou CNPJ;Etapa\nCliente Exemplo;cliente@exemplo.com.br;+5511999999999;12345678901;Cliente\n";
+    const csv = "Nome;E-mail;Telefone;CPF ou CNPJ;Etapa\n";
     const url = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" }));
     const link = document.createElement("a"); link.href = url; link.download = "modelo-clientes-lexflow.csv"; link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -50,7 +50,7 @@ export function ClientImport({ onImported }: { onImported: () => void }) {
   }
   return <Panel title="Importar clientes de planilha" collapsibleOnMobile>
     <p className="text-sm text-zinc-400">Use uma planilha CSV ou XLSX com até 200 clientes. Você verá uma prévia e poderá indicar o significado de cada coluna antes de importar.</p>
-    <div className="flex flex-wrap gap-2"><button type="button" className={button} onClick={downloadExample}>Baixar planilha de exemplo</button>
+    <div className="flex flex-wrap gap-2"><button type="button" className={button} onClick={downloadExample}>Baixar modelo vazio</button>
       <label className={`${button} cursor-pointer`}>{busy ? "Analisando…" : "Selecionar planilha"}<input className="sr-only" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={busy} onChange={e => { const selected = e.target.files?.[0]; if (selected) void analyze(selected); e.currentTarget.value = ""; }} /></label></div>
     <Field label="Origem da planilha"><select className={control} value={source} onChange={e => setSource(e.target.value)}><option value="planilha">Planilha própria</option><option value="astrea">Exportação do Astrea</option><option value="projuris">Exportação do ProJuris</option><option value="advbox">Exportação do ADVBOX</option><option value="other">Outro sistema</option></select></Field>
     {source !== "planilha" && <p className="text-xs text-zinc-400">Este fluxo importa o arquivo exportado. Não acessa nem altera o sistema de origem.</p>}

@@ -9,7 +9,6 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app.api.v1.endpoints.auth import UserLogin, _enforce_auth_rate_limit, _session_lifetime, _set_session_cookie, create_session_token
-from app.api.v1.endpoints.oab import get_application_checklist
 from app.core.config import settings
 from app.core.dependencies import get_current_user
 from app.core.redis_cache import cache_manager
@@ -36,15 +35,6 @@ class InvalidTokenDatabase:
 
     async def execute(self, statement):
         raise AssertionError("invalid tokens must be rejected before querying the database")
-
-
-class MissingApplicationDatabase:
-    def __init__(self):
-        self.statement = None
-
-    async def scalar(self, statement):
-        self.statement = statement
-        return None
 
 
 class RateLimitRedis:
@@ -109,24 +99,6 @@ class SecurityBoundaryTests(unittest.TestCase):
                 )
             )
         self.assertEqual(caught.exception.status_code, 401)
-
-    def test_oab_application_lookup_is_tenant_scoped(self):
-        db = MissingApplicationDatabase()
-        user = SimpleNamespace(id="user-a", tenant_id="tenant-a")
-
-        with self.assertRaises(HTTPException) as caught:
-            asyncio.run(
-                get_application_checklist(
-                    app_id="application-from-tenant-b",
-                    current_user=user,
-                    db=db,
-                )
-            )
-
-        self.assertEqual(caught.exception.status_code, 404)
-        query = str(db.statement.compile(compile_kwargs={"literal_binds": True}))
-        self.assertIn("oab_applications.tenant_id = 'tenant-a'", query)
-        self.assertIn("oab_applications.id = 'application-from-tenant-b'", query)
 
     def test_login_rate_limit_uses_hashed_identity_and_blocks(self):
         original = cache_manager.redis_client

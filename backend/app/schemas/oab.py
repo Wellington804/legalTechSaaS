@@ -1,56 +1,172 @@
-from pydantic import BaseModel, Field
-from typing import Optional, List
 from datetime import datetime
+from typing import Literal
+import uuid
 
-class OABChecklistSchema(BaseModel):
-    id: Optional[str] = None
-    item_code: str
-    title: str
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+UFS = frozenset({"AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"})
+EnrollmentType = Literal["principal", "supplementary", "transfer", "other"]
+EnrollmentStatus = Literal["planning", "gathering", "submitted", "awaiting_response", "completed", "paused"]
+
+
+class OABInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class OABResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+
+def optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+class OABSourceResponse(OABResponse):
+    uf: str
+    state_name: str
+    official_url: str
+    directory_url: str
+    provision_url: str
+    source_version: str
+    source_checked_at: datetime
+    notice: str
+
+
+class OABSourceList(OABResponse):
+    items: list[OABSourceResponse]
+    count: int
+
+
+class OABEnrollmentCreate(OABInput):
+    request_id: uuid.UUID
+    uf: str
+    enrollment_type: EnrollmentType
+    status: EnrollmentStatus = "planning"
+    protocol: str | None = Field(default=None, max_length=120)
+
+    @field_validator("uf")
+    @classmethod
+    def valid_uf(cls, value: str) -> str:
+        value = value.strip().upper()
+        if value not in UFS:
+            raise ValueError("UF invalida")
+        return value
+
+    @field_validator("protocol")
+    @classmethod
+    def clean_protocol(cls, value: str | None) -> str | None:
+        return optional_text(value)
+
+
+class OABEnrollmentUpdate(OABInput):
+    expected_revision: int = Field(ge=1)
+    uf: str | None = None
+    enrollment_type: EnrollmentType | None = None
+    status: EnrollmentStatus | None = None
+    protocol: str | None = Field(default=None, max_length=120)
+
+    @field_validator("uf")
+    @classmethod
+    def valid_uf(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip().upper()
+        if value not in UFS:
+            raise ValueError("UF invalida")
+        return value
+
+    @field_validator("protocol")
+    @classmethod
+    def clean_protocol(cls, value: str | None) -> str | None:
+        return optional_text(value)
+
+    @model_validator(mode="after")
+    def has_change(self):
+        if not (self.model_fields_set - {"expected_revision"}):
+            raise ValueError("informe ao menos uma alteracao")
+        return self
+
+
+class OABChecklistItemCreate(OABInput):
+    request_id: uuid.UUID
+    title: str = Field(min_length=1, max_length=200)
+    notes: str | None = Field(default=None, max_length=2000)
     is_completed: bool = False
-    file_url: Optional[str] = None
-    verification_notes: Optional[str] = None
 
-class OABApplicationCreate(BaseModel):
-    seccional: str = Field(..., example="OAB/SP")
-    candidate_name: str
-    cpf: str
-    rg: str
-    fgv_exam_number: Optional[str] = None
+    @field_validator("title")
+    @classmethod
+    def clean_title(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("titulo e obrigatorio")
+        return value
 
-class OABApplicationResponse(BaseModel):
+    @field_validator("notes")
+    @classmethod
+    def clean_notes(cls, value: str | None) -> str | None:
+        return optional_text(value)
+
+
+class OABChecklistItemUpdate(OABInput):
+    expected_revision: int = Field(ge=1)
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    notes: str | None = Field(default=None, max_length=2000)
+    is_completed: bool | None = None
+
+    @field_validator("title")
+    @classmethod
+    def clean_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("titulo e obrigatorio")
+        return value
+
+    @field_validator("notes")
+    @classmethod
+    def clean_notes(cls, value: str | None) -> str | None:
+        return optional_text(value)
+
+    @model_validator(mode="after")
+    def has_change(self):
+        if not (self.model_fields_set - {"expected_revision"}):
+            raise ValueError("informe ao menos uma alteracao")
+        return self
+
+
+class OABChecklistItemResponse(OABResponse):
     id: str
-    tenant_id: str
-    user_id: str
-    seccional: str
-    candidate_name: str
-    cpf: str
-    rg: str
-    status: str
-    fgv_exam_number: Optional[str]
-    protocol_number: Optional[str]
+    enrollment_id: str
+    title: str
+    notes: str | None
+    is_completed: bool
+    revision: int
     created_at: datetime
+    updated_at: datetime
 
-class FeeSimulationRequest(BaseModel):
-    seccional: str
-    month_of_registration: int = 1 # 1 to 12
-    is_jovem_advogado: bool = True
-    register_sua: bool = False
 
-class FeeSimulationResponse(BaseModel):
-    seccional: str
-    req_fee: float
-    card_fee: float
-    anuidade_bruta: float
-    anuidade_proporcional: float
-    desconto_jovem_advogado: float
-    desconto_sua: float
-    total_estimado: float
+class OABEnrollmentResponse(OABResponse):
+    id: str
+    uf: str
+    enrollment_type: EnrollmentType
+    status: EnrollmentStatus
+    protocol: str | None
+    source_url: str
+    source_version: str
+    source_checked_at: datetime
+    revision: int
+    created_at: datetime
+    updated_at: datetime
+    checklist: list[OABChecklistItemResponse] = Field(default_factory=list)
+    source_notice: str
+    provision_url: str
 
-class DeclarationGenerateRequest(BaseModel):
-    application_id: str
-    declaration_type: str # IDONEIDADE_MORAL ou NAO_INCOMPATIBILIDADE
-    candidate_name: str
-    cpf: str
-    rg: str
-    address: str
-    civil_status: str
+
+class OABEnrollmentList(OABResponse):
+    items: list[OABEnrollmentResponse]
+    count: int

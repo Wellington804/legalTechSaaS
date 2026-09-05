@@ -79,6 +79,9 @@ function fixtureApi() {
     if (method === "GET" && path === "/api/v1/routines/attention") return json(route, 200, { cases_without_next_action: [], reminders: [], limit: 50 });
     if (method === "GET" && path === "/api/v1/document-kit/templates") return json(route, 200, { items: [] });
     if (method === "GET" && path === "/api/v1/pilot/feedback") return json(route, 200, { items: [] });
+    if (method === "GET" && path === "/api/v1/pilot/feedback/team") return json(route, 200, {
+      items: [], summary: { total: 0, problems: 0, weekly_reviews: 0, last_report_at: null },
+    });
     if (method === "GET" && path === "/api/v1/pilot/overview") return json(route, 200, {
       steps: [{ id: "client", title: "Cadastrar cliente", description: "Cadastro de teste", href: "/dashboard/crm", status: "done" }],
       subscription: { status: "trial", ends_at: "2026-09-10T00:00:00Z", days_remaining: 13, write_allowed: true },
@@ -262,6 +265,25 @@ function fixtureApi() {
       email: { status: "not_configured" }, whatsapp: { status: "not_configured" },
       ai: { status: "not_configured", provider: "openrouter" }, sentry: { status: "not_configured" },
     });
+    if (method === "GET" && path === "/api/v1/crm/opportunities") return json(route, 200, list([]));
+    if (method === "GET" && path === "/api/v1/oab/sources") return json(route, 200, { items: [] });
+    if (method === "GET" && path === "/api/v1/oab/enrollments") return json(route, 200, { items: [] });
+    if (method === "GET" && path === "/api/v1/jurimetria/options") return json(route, 200, {
+      provider_available: false, source_name: "DataJud", source_documentation_url: "https://datajud-wiki.cnj.jus.br/api-publica/",
+      tribunals: ["tjal"], sample_limits: [50, 100, 200], max_period_days: 366,
+    });
+    if (method === "GET" && path === "/api/v1/jurimetria/snapshots") return json(route, 200, { items: [] });
+    if (method === "GET" && path === "/api/v1/engagement/assistant/evaluations/cases") return json(route, 200, [{
+      id: "evaluation-a", name: "Revisão de fonte", legal_area: "Civil", version: 1, status: "draft", revision: 1,
+      content: {
+        draft_request: "Responda somente com base no trecho autorizado.",
+        reference_draft: "Texto de referência suficientemente completo para que outro advogado confira o conteúdo antes de decidir se o caso pode ser usado na avaliação da inteligência artificial.",
+        sources: [{ id: "G1", title: "Fonte conferida", paragraph: 1, locator: "parágrafo 1", excerpt: "Trecho autorizado para o teste de interface." }],
+        questions: [{ id: "Q1", prompt: "A afirmação está apoiada pela fonte?", required: true }],
+        gold_answers: [{ question_id: "Q1", expected_status: "supported", source_ids: ["G1"], reviewer_note: "A resposta deve citar somente G1." }],
+      },
+    }]);
+    if (method === "GET" && path === "/api/v1/engagement/assistant/evaluations/runs") return json(route, 200, []);
 
     state.unhandled.push(`${method} ${path}`);
     return json(route, 404, { detail: `Unmocked UI-contract request: ${method} ${path}` });
@@ -356,7 +378,8 @@ if (require.main === module) (async () => {
     api.state.assistantUnavailable = false;
 
     await page.goto(`${baseUrl}/dashboard/crm`);
-    await page.getByRole("heading", { name: "Clientes e oportunidades", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Clientes e CRM", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Clientes", exact: true }).click();
     await page.getByText("Cliente Exemplo", { exact: true }).waitFor();
 
     await page.goto(`${baseUrl}/dashboard/tracker`);
@@ -546,7 +569,9 @@ if (require.main === module) (async () => {
     for (const path of [
       "/dashboard", "/dashboard/crm", "/dashboard/tracker", "/dashboard/cases/case-a",
       "/dashboard/petitions/editor", "/dashboard/account", "/dashboard/communications", "/dashboard/assistant",
+      "/dashboard/oab", "/dashboard/jurimetria", "/dashboard/audit/ai-quality",
     ]) await assertNoHorizontalOverflow(page, path);
+    await page.goto(`${baseUrl}/dashboard/assistant`);
     const mobileComposer = await page.getByLabel("Mensagem para o Copiloto", { exact: true }).boundingBox();
     const mobileNavigation = await page.getByRole("navigation", { name: "Navegação principal" }).boundingBox();
     assert.ok(mobileComposer && mobileNavigation && mobileComposer.y + mobileComposer.height <= mobileNavigation.y, "o campo do Copiloto permanece visível acima da navegação móvel");

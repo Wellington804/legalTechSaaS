@@ -21,15 +21,18 @@ export const workspaceNavigation: NavigationItem[] = [
   { name: "Copiloto jurídico", shortName: "Copiloto", href: "/dashboard/assistant", icon: "bot", group: "daily" },
   { name: "Agenda e prazos", shortName: "Agenda", href: "/dashboard/tasks", icon: "calendar", group: "daily" },
   { name: "Processos", shortName: "Processos", href: "/dashboard/tracker", icon: "briefcase", group: "daily" },
-  { name: "Clientes", shortName: "Clientes", href: "/dashboard/crm", icon: "users", group: "daily" },
+  { name: "Clientes e CRM", shortName: "Clientes", href: "/dashboard/crm", icon: "users", group: "daily" },
   { name: "Central de Arquivos", shortName: "Arquivos", href: "/dashboard/petitions/editor", icon: "file", group: "daily" },
   { name: "Comunicações", shortName: "Mensagens", href: "/dashboard/communications", icon: "message", group: "daily" },
   { name: "Biblioteca e publicações", shortName: "Biblioteca", href: "/dashboard/library", icon: "book", group: "more" },
   { name: "Conflitos de interesse", shortName: "Conflitos", href: "/dashboard/conflitos", icon: "shield", group: "more" },
   { name: "Controladoria judicial", shortName: "Controladoria", href: "/dashboard/controladoria", icon: "calendar", group: "more" },
   { name: "Atendimento e honorários", shortName: "Operação", href: "/dashboard/operacoes", icon: "wallet", group: "more", lawyer: true },
+  { name: "Inscrição na OAB", shortName: "OAB", href: "/dashboard/oab", icon: "shield", group: "more", lawyer: true },
+  { name: "Jurimetria", shortName: "Jurimetria", href: "/dashboard/jurimetria", icon: "chart", group: "more", lawyer: true },
   { name: "Indicadores da carteira", shortName: "Indicadores", href: "/dashboard/analytics/judge-profiling", icon: "chart", group: "more" },
   { name: "Auditoria", shortName: "Auditoria", href: "/dashboard/audit", icon: "audit", group: "office", admin: true },
+  { name: "Qualidade da IA", shortName: "Qualidade IA", href: "/dashboard/audit/ai-quality", icon: "bot", group: "office", lawyer: true },
   { name: "Honorários e despesas", shortName: "Honorários", href: "/dashboard/financeiro", icon: "wallet", group: "office", admin: true },
   { name: "Modelos de documentos", shortName: "Modelos", href: "/dashboard/templates", icon: "file", group: "office" },
   { name: "Identidade documental", shortName: "Identidade", href: "/dashboard/brand", icon: "palette", group: "office" },
@@ -50,5 +53,5 @@ export function navigationItemForPath(path: string) {
 
 export function isWorkspacePath(path: string) {
   return Boolean(navigationItemForPath(path))
-    || ["/dashboard/pilot", "/dashboard/brand", "/dashboard/financial", "/dashboard/peticoes", "/dashboard/assinaturas", "/portal", "/account/access"].includes(path);
+    || ["/dashboard/pilot", "/dashboard/brand", "/dashboard/financial", "/dashboard/peticoes", "/dashboard/assinaturas", "/oab-hub", "/portal", "/account/access"].includes(path);
 }

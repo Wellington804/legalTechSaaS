@@ -1,60 +1,88 @@
+"""Tenant and user scoped OAB enrollment tracking.
+
+The records are an organizer maintained by the user. They are not an OAB
+protocol system and intentionally contain no identity documents or charges.
+"""
+
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, Boolean, Float, Text, ForeignKey, UniqueConstraint
+
+from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, String, Text, UniqueConstraint
+
 from app.core.database import Base
 
-class OABApplication(Base):
-    __tablename__ = "oab_applications"
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class OABEnrollment(Base):
+    __tablename__ = "oab_enrollments"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_oab_enrollments_tenant_id"),
+        UniqueConstraint("tenant_id", "user_id", "id", name="uq_oab_enrollments_owner_id"),
+        UniqueConstraint("tenant_id", "user_id", "request_id", name="uq_oab_enrollments_owner_request"),
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id"],
+            ["users.tenant_id", "users.id"],
+            name="fk_oab_enrollments_owner_tenant",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "uf IN ('AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO')",
+            name="ck_oab_enrollments_uf",
+        ),
+        CheckConstraint(
+            "enrollment_type IN ('principal','supplementary','transfer','other')",
+            name="ck_oab_enrollments_type",
+        ),
+        CheckConstraint(
+            "status IN ('planning','gathering','submitted','awaiting_response','completed','paused')",
+            name="ck_oab_enrollments_status",
+        ),
+        Index("ix_oab_enrollments_owner_updated", "tenant_id", "user_id", "updated_at"),
+        Index("ix_oab_enrollments_uf", "uf"),
+        Index("ix_oab_enrollments_status", "status"),
+    )
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    tenant_id = Column(String, ForeignKey("tenants.id"), nullable=False, index=True)
-    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
-    seccional = Column(String, nullable=False) # e.g. OAB/SP, OAB/AL, OAB/RJ
-    candidate_name = Column(String, nullable=False)
-    cpf = Column(String, nullable=False, index=True)
-    rg = Column(String, nullable=False)
-    status = Column(String, default="EM_ANDAMENTO") # EM_ANDAMENTO, PENDENTE_DOCUMENTOS, PROTOCOLADO, CARTEIRA_EMITIDA
-    fgv_exam_number = Column(String, nullable=True)
-    protocol_number = Column(String, nullable=True)
-    biometric_scheduled_at = Column(DateTime(timezone=True), nullable=True)
-    delivery_ceremony_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    request_id = Column(String(36), nullable=False)
+    tenant_id = Column(String, ForeignKey("tenants.id"), nullable=False)
+    user_id = Column(String, nullable=False)
+    uf = Column(String(2), nullable=False)
+    enrollment_type = Column(String(24), nullable=False)
+    status = Column(String(24), nullable=False, default="planning")
+    protocol = Column(String(120), nullable=True)
+    source_url = Column(String(2048), nullable=False)
+    source_version = Column(String(64), nullable=False)
+    source_checked_at = Column(DateTime(timezone=True), nullable=False)
+    revision = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
 
-class OABChecklist(Base):
-    __tablename__ = "oab_checklists"
-    __table_args__ = (UniqueConstraint("application_id", "item_code", name="uq_oab_checklist_item"),)
 
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    application_id = Column(String, ForeignKey("oab_applications.id", ondelete="CASCADE"), nullable=False, index=True)
-    item_code = Column(String, nullable=False) # CERTIFICADO_FGV, DIPLOMA, RG_CPF, TITULO_ELEITOR, RESERVISTA, RESIDENCIA, CERTIDOES_NEGATIVAS, FOTOS_3X4
-    title = Column(String, nullable=False)
-    is_completed = Column(Boolean, default=False)
-    file_url = Column(String, nullable=True)
-    verification_notes = Column(Text, nullable=True)
-    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-class OABFeeStructure(Base):
-    __tablename__ = "oab_fee_structures"
-
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    seccional = Column(String, nullable=False, index=True)
-    req_fee = Column(Float, nullable=False, default=250.00)
-    card_fee = Column(Float, nullable=False, default=180.00)
-    anuidade_full = Column(Float, nullable=False, default=950.00)
-    jovem_advogado_discount_pct = Column(Float, nullable=False, default=50.0) # 50% discount for first 5 years
-    sua_discount_pct = Column(Float, nullable=False, default=25.0) # up to 25% discount for SUA registration
-    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-class OABDeclaration(Base):
-    __tablename__ = "oab_declarations"
+class OABEnrollmentChecklistItem(Base):
+    __tablename__ = "oab_enrollment_checklist_items"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id", "enrollment_id"],
+            ["oab_enrollments.tenant_id", "oab_enrollments.user_id", "oab_enrollments.id"],
+            name="fk_oab_checklist_enrollment_owner",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("tenant_id", "user_id", "enrollment_id", "request_id", name="uq_oab_checklist_owner_request"),
+        CheckConstraint("length(btrim(title)) > 0", name="ck_oab_checklist_title"),
+        Index("ix_oab_checklist_owner_enrollment", "tenant_id", "user_id", "enrollment_id", "created_at"),
+    )
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    application_id = Column(String, ForeignKey("oab_applications.id", ondelete="CASCADE"), nullable=False, index=True)
-    declaration_type = Column(String, nullable=False) # IDONEIDADE_MORAL, NAO_INCOMPATIBILIDADE
-    declarant_name = Column(String, nullable=False)
-    cpf = Column(String, nullable=False)
-    content_text = Column(Text, nullable=False)
-    signed_digitally = Column(Boolean, default=False)
-    signature_hash = Column(String, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    request_id = Column(String(36), nullable=False)
+    tenant_id = Column(String, ForeignKey("tenants.id"), nullable=False)
+    user_id = Column(String, nullable=False)
+    enrollment_id = Column(String, nullable=False)
+    title = Column(String(200), nullable=False)
+    notes = Column(Text, nullable=True)
+    is_completed = Column(Boolean, nullable=False, default=False)
+    revision = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
