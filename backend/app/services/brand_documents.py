@@ -1005,3 +1005,8 @@ def render_documents(title: str, content: str, settings: dict, assets: dict[str,
         return docx, _convert_pdf(docx)
     finally:
         _RENDER_SLOTS.release()
+
+
+def render_docx_only(title: str, content: str, settings: dict, assets: dict[str, bytes], content_format: str = "plain") -> bytes:
+    """Return editable DOCX directly without invoking LibreOffice PDF conversion."""
+    return _render_docx(title, content, settings, assets, content_format)

@@ -37,7 +37,7 @@ from app.schemas.branding import (
 )
 from app.services.audit_service import AuditService
 from app.services.brand_ai import ai_available, image_ai_available, suggest_brand
-from app.services.brand_documents import crop_reference, isolate_layer_image, pdf_available, render_documents, render_reference_page, validate_reference
+from app.services.brand_documents import crop_reference, isolate_layer_image, pdf_available, render_docx_only, render_documents, render_reference_page, validate_reference
 from app.services.document_kit import format_address
 from app.services.workspace_service import ADMIN_ROLES, CASE_MANAGER_ROLES, MAX_UPLOAD_BYTES, ensure_document_storage_capacity, get_case, get_document, require_document_write, require_role
 from app.services.document_storage import create_download_url, enabled as r2_enabled, put as put_object, read as read_object, scan as scan_object
@@ -525,6 +525,29 @@ async def extract_asset(profile_id: str, asset_id: str, body: BrandAssetExtract,
     return asset_payload(asset)
 
 
+@router.post("/assets/{asset_id}/isolate", status_code=201)
+async def isolate_asset(asset_id: str, user: CurrentUser, db: AsyncSession = Depends(get_db), _write: User = Depends(require_tenant_write)):
+    asset = await db.scalar(select(BrandAsset).where(BrandAsset.id == asset_id, BrandAsset.tenant_id == user.tenant_id))
+    if not asset or asset.kind not in {"logo", "logo_dark", "logo_mono", "watermark", "background"}:
+        raise HTTPException(404, "Imagem não encontrada ou de tipo incompatível.")
+    profile = await profile_for_editor(db, user, asset.profile_id, lock=True)
+    content = await asset_content(asset)
+    await reserve_request(user.tenant_id, "brand_import", 60, 3600)
+    try:
+        isolated = await asyncio.to_thread(isolate_layer_image, content, faint_only=asset.kind == "watermark")
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    clean_name = PurePath(asset.filename).stem + "-transparente.png"
+    new_asset = await store_asset(db, user, profile, clean_name, isolated, asset.kind, reuse_existing=False)
+    await audit(db, user, "BRAND_ASSET_ISOLATED", profile.id, {
+        "source_asset_id": asset.id, "isolated_asset_id": new_asset.id, "kind": asset.kind
+    })
+    await db.commit()
+    return asset_payload(new_asset)
+
+
 @router.post("/profiles/{profile_id}/suggest")
 async def suggest(profile_id: str, body: BrandSuggestion, user: CurrentUser, db: AsyncSession = Depends(get_db), _write: User = Depends(require_tenant_write)):
     profile = await profile_for_editor(db, user, profile_id)
@@ -567,11 +590,13 @@ async def suggest(profile_id: str, body: BrandSuggestion, user: CurrentUser, db:
     await audit(db, user, "BRAND_AI_REQUESTED", profile.id, {"reference_ids": body.reference_ids,
         "generate_logo": body.generate_logo, "reference_intent": body.reference_intent,
         "reference_pages": body.reference_pages,
+        "has_audio": bool(body.audio_base64),
         "document_type": body.document_type, "selected_element": body.selected_element})
     await db.commit()  # Do not retain database locks during the external request.
     proposal = await suggest_brand(tokens, body.brief, references, body.generate_logo,
         reference_intent=body.reference_intent, document_type=body.document_type,
-        selected_element=body.selected_element, selected_layer_id=body.selected_layer_id)
+        selected_element=body.selected_element, selected_layer_id=body.selected_layer_id,
+        audio_base64=body.audio_base64, audio_mime=body.audio_mime)
     await _set_tenant_context(db, user.tenant_id)
     profile = await profile_for_editor(db, user, profile_id, lock=True)
     check_revision(profile, body.expected_revision)
@@ -639,13 +664,16 @@ async def suggest(profile_id: str, body: BrandSuggestion, user: CurrentUser, db:
     return proposal
 
 
-async def render(user: User, title: str, content: str, tokens: dict, images: dict, content_format="plain"):
-    if not pdf_available():
+async def render(user: User, title: str, content: str, tokens: dict, images: dict, content_format="plain", docx_only: bool = False):
+    if not docx_only and not pdf_available():
         raise HTTPException(503, "Conversão PDF indisponível. Configure o LibreOffice no servidor.")
     if not content.strip() or len(content) > 100_000:
         raise HTTPException(422, "Exportação requer texto autoral de até 100.000 caracteres.")
     await reserve_request(user.tenant_id, "brand_render", 60, 3600)
     try:
+        if docx_only:
+            docx = await asyncio.to_thread(render_docx_only, title, content, tokens, images, content_format)
+            return docx, b""
         return await asyncio.to_thread(render_documents, title, content, tokens, images, content_format)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
@@ -664,7 +692,10 @@ async def preview(profile_id: str, body: BrandPreview, user: CurrentUser, db: As
         labels = ", ".join(PROFESSIONAL_LABELS[key] for key in dict.fromkeys(missing))
         raise HTTPException(422, f"Complete os dados profissionais selecionados para gerar a prévia: {labels}.")
     images = await brand_assets(db, user, profile, tokens)
-    _, pdf = await render(user, "PRÉVIA ILUSTRATIVA — NÃO PROTOCOLAR", "Documento de exemplo para conferir a identidade visual.\n\nEsta prévia não contém orientação jurídica nem dados de clientes.\n\nConfira cabeçalho, tipografia, margens, marca d’água, rodapé e numeração antes de publicar.", rendered_tokens, images)
+    if body.format == "docx":
+        docx, _ = await render(user, "PRÉVIA ILUSTRATIVA — NÃO PROTOCOLAR", "Documento de exemplo para conferir a identidade visual.\n\nEsta prévia não contém orientação jurídica nem dados de clientes.\n\nConfira cabeçalho, tipografia, margens, marca d’água, rodapé e numeração antes de publicar.", rendered_tokens, images, docx_only=True)
+        return download(docx, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "minuta-identidade.docx", inline=False)
+    docx, pdf = await render(user, "PRÉVIA ILUSTRATIVA — NÃO PROTOCOLAR", "Documento de exemplo para conferir a identidade visual.\n\nEsta prévia não contém orientação jurídica nem dados de clientes.\n\nConfira cabeçalho, tipografia, margens, marca d’água, rodapé e numeração antes de publicar.", rendered_tokens, images)
     return download(pdf, "application/pdf", "previa-identidade.pdf", inline=True)
 
 

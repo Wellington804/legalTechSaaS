@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { Globe2, Mail, MapPin, MessageCircle, Phone } from "lucide-react";
+import { Globe2, Mail, MapPin, MessageCircle, Phone, Sparkles, Trash2 } from "lucide-react";
 import { apiBlob } from "@/lib/api-client";
 import {
   BRAND_FONT_FAMILIES, documentTypeLabels, materializeBrandText, type BrandAsset, type BrandFontFamily,
@@ -50,10 +50,10 @@ function LayerContent({ layer, assets, compact }: { layer: BrandLayer; assets: B
   </span>;
 }
 
-export function BrandLivePreview({ name, settings, documentType = "general", professionalData, assets = [], compact = false, referenceOverlay, selectedLayerId, onSelectLayer, onClearSelection, onChangeLayer, onDeleteLayer, showSafeArea = false, zoom = 100, onZoomChange }: {
+export function BrandLivePreview({ name, settings, documentType = "general", professionalData, assets = [], compact = false, referenceOverlay, selectedLayerId, onSelectLayer, onClearSelection, onChangeLayer, onDeleteLayer, showSafeArea = false, showPjeGuide = false, onIsolateAsset, zoom = 100, onZoomChange }: {
   name: string; settings: BrandSettings; documentType?: DocumentType; professionalData?: ProfessionalData; assets?: BrandAsset[]; compact?: boolean;
   referenceOverlay?: { assetId: string; page: number; opacity: number; blendMode?: CSSProperties["mixBlendMode"] };
-  selectedLayerId?: string; onSelectLayer?: (id: string) => void; onClearSelection?: () => void; onChangeLayer?: (layer: BrandLayer) => void; onDeleteLayer?: (id: string) => void; showSafeArea?: boolean; zoom?: number;
+  selectedLayerId?: string; onSelectLayer?: (id: string) => void; onClearSelection?: () => void; onChangeLayer?: (layer: BrandLayer) => void; onDeleteLayer?: (id: string) => void; showSafeArea?: boolean; showPjeGuide?: boolean; onIsolateAsset?: (assetId: string) => Promise<void>; zoom?: number;
   onZoomChange?: (updater: number | ((current: number) => number)) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -127,6 +127,18 @@ export function BrandLivePreview({ name, settings, documentType = "general", pro
       </header>}
       {!exact && !composed && (tokens.watermark_text || watermark) && <div aria-hidden="true" className="pointer-events-none absolute w-[72%] text-center font-semibold" style={{ left: `${tokens.watermark_x_percent}%`, top: `${tokens.watermark_y_percent}%`, color: tokens.primary_color, opacity: tokens.watermark_opacity, transform: watermarkTransform, fontSize: `${Math.max(14, tokens.watermark_font_size_pt * (compact ? .18 : .28))}px` }}>{watermark ? <PrivateBrandImage asset={watermark} alt="" className="mx-auto max-h-40 max-w-full object-contain" /> : tokens.watermark_text}</div>}
       {showSafeArea && !compact && <div aria-hidden="true" className="pointer-events-none absolute border border-dashed border-emerald-600/70" style={{ left: `${tokens.margin_left_mm / 2.1}%`, right: `${tokens.margin_right_mm / 2.1}%`, top: `${tokens.margin_top_mm / 2.97}%`, bottom: `${tokens.margin_bottom_mm / 2.97}%`, zIndex: 110 }}><span className="absolute left-1 top-1 rounded bg-emerald-700/90 px-1 text-[7px] text-white">Área segura do texto</span></div>}
+      {showPjeGuide && !compact && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute right-0 top-0 border-2 border-dashed border-rose-500/80 bg-rose-500/10 flex flex-col items-end p-1 shadow-sm"
+          style={{ width: "28.5%", height: "10.1%", zIndex: 125 }}
+        >
+          <span className="rounded bg-rose-700/95 px-1 py-0.5 text-[6px] font-semibold text-white tracking-wider uppercase">
+            Protocolo PJe / Tribunais
+          </span>
+          <span className="text-[5px] text-rose-800 font-bold mt-0.5">Área reservada (30x60mm)</span>
+        </div>
+      )}
       {guides.x && <span aria-hidden="true" className="pointer-events-none absolute bottom-0 left-1/2 top-0 border-l border-blue-500" style={{ zIndex: 119 }} />}{guides.y && <span aria-hidden="true" className="pointer-events-none absolute left-0 right-0 top-1/2 border-t border-blue-500" style={{ zIndex: 119 }} />}
       {composed && (tokens.layout_layers || []).filter(layer => layer.page_scope !== "continuation" && layer.visible !== false).sort((a, b) => a.z_index - b.z_index).map(layer => <div key={layer.id}
         data-brand-layer={layer.id}
@@ -137,6 +149,131 @@ export function BrandLivePreview({ name, settings, documentType = "general", pro
         <LayerContent layer={layer} assets={assets} compact={compact} />
         {selectedLayerId === layer.id && onChangeLayer && !compact && !layer.locked && <>{(["nw", "ne", "sw", "se"] as const).map(handle => <span key={handle} aria-hidden="true" onPointerDown={event => startEdit(event, layer, handle)} className={`absolute h-4 w-4 rounded-full border-2 border-white bg-blue-600 shadow touch-none ${handle.includes("n") ? "-top-2" : "-bottom-2"} ${handle.includes("w") ? "-left-2" : "-right-2"} ${handle === "nw" || handle === "se" ? "cursor-nwse-resize" : "cursor-nesw-resize"}`} />)}<span aria-hidden="true" onPointerDown={event => startEdit(event, layer, "rotate")} className="absolute -top-8 left-1/2 h-4 w-4 -translate-x-1/2 cursor-grab rounded-full border-2 border-white bg-amber-500 shadow touch-none" /></>}
       </div>)}
+
+      {/* Contextual Floating Toolbar for Selected Layer */}
+      {(() => {
+        const activeLayer = (tokens.layout_layers || []).find(l => l.id === selectedLayerId);
+        if (!activeLayer || !onChangeLayer || compact || activeLayer.locked) return null;
+        const placeBelow = activeLayer.y_percent < 12;
+        return (
+          <div
+            className="absolute z-[160] flex flex-wrap items-center gap-1.5 rounded-xl border border-zinc-700/80 bg-zinc-900/95 px-2.5 py-1.5 shadow-2xl backdrop-blur-md text-zinc-200 text-xs transition-all pointer-events-auto"
+            style={{
+              left: `${Math.min(60, Math.max(2, activeLayer.x_percent))}%`,
+              top: placeBelow
+                ? `${activeLayer.y_percent + activeLayer.height_percent + 1.5}%`
+                : `${activeLayer.y_percent - 1.5}%`,
+              transform: placeBelow ? "none" : "translateY(-100%)",
+            }}
+            onPointerDown={e => e.stopPropagation()}
+          >
+            <span className="font-semibold text-[11px] text-blue-400 max-w-[8rem] truncate border-r border-zinc-700 pr-1.5">
+              {activeLayer.label || "Camada"}
+            </span>
+
+            {activeLayer.kind === "image" && (
+              <>
+                {activeLayer.asset_id && onIsolateAsset && (
+                  <button
+                    type="button"
+                    className="px-2 py-0.5 rounded text-[11px] bg-blue-600 hover:bg-blue-500 text-white font-medium transition flex items-center gap-1 shadow-sm"
+                    onClick={() => onIsolateAsset(activeLayer.asset_id!)}
+                    title="Remover fundo branco e tornar transparente"
+                  >
+                    <Sparkles size={12} /> Transparência
+                  </button>
+                )}
+                <div className="flex items-center gap-1 pl-1 border-l border-zinc-800">
+                  <span className="text-[10px] text-zinc-400">Opacidade</span>
+                  <input
+                    type="range"
+                    min="0.05"
+                    max="1"
+                    step="0.05"
+                    className="w-12 h-1 accent-blue-500 cursor-pointer"
+                    value={activeLayer.opacity}
+                    onChange={e => onChangeLayer({ ...activeLayer, opacity: e.target.valueAsNumber })}
+                  />
+                </div>
+              </>
+            )}
+
+            {(activeLayer.kind === "text" || activeLayer.kind === "icon_text") && (
+              <>
+                <input
+                  type="color"
+                  className="h-5 w-6 rounded border border-zinc-700 bg-transparent p-0 cursor-pointer"
+                  value={activeLayer.color}
+                  onChange={e => onChangeLayer({ ...activeLayer, color: e.target.value })}
+                  title="Cor do texto"
+                />
+                <div className="flex items-center gap-0.5 border-l border-zinc-800 pl-1">
+                  <button
+                    type="button"
+                    className="px-1.5 py-0.5 rounded text-[11px] bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
+                    onClick={() => onChangeLayer({ ...activeLayer, font_size_pt: Math.max(5, activeLayer.font_size_pt - 0.5) })}
+                  >
+                    A-
+                  </button>
+                  <span className="text-[10px] font-mono px-0.5">{activeLayer.font_size_pt}pt</span>
+                  <button
+                    type="button"
+                    className="px-1.5 py-0.5 rounded text-[11px] bg-zinc-800 hover:bg-zinc-700 text-zinc-300"
+                    onClick={() => onChangeLayer({ ...activeLayer, font_size_pt: Math.min(36, activeLayer.font_size_pt + 0.5) })}
+                  >
+                    A+
+                  </button>
+                </div>
+              </>
+            )}
+
+            {activeLayer.kind === "line" && (
+              <>
+                <input
+                  type="color"
+                  className="h-5 w-6 rounded border border-zinc-700 bg-transparent p-0 cursor-pointer"
+                  value={activeLayer.color}
+                  onChange={e => onChangeLayer({ ...activeLayer, color: e.target.value })}
+                  title="Cor da linha"
+                />
+                <div className="flex items-center gap-1 pl-1 border-l border-zinc-800">
+                  <span className="text-[10px] text-zinc-400">Espessura</span>
+                  <input
+                    type="range"
+                    min="0.25"
+                    max="6"
+                    step="0.25"
+                    className="w-12 h-1 accent-blue-500 cursor-pointer"
+                    value={activeLayer.line_thickness_pt}
+                    onChange={e => onChangeLayer({ ...activeLayer, line_thickness_pt: e.target.valueAsNumber })}
+                  />
+                </div>
+              </>
+            )}
+
+            <button
+              type="button"
+              className="px-1.5 py-0.5 rounded text-[10px] bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition"
+              onClick={() => onChangeLayer({ ...activeLayer, x_percent: 50 - activeLayer.width_percent / 2 })}
+              title="Centralizar horizontalmente na página"
+            >
+              Centralizar
+            </button>
+
+            {onDeleteLayer && (
+              <button
+                type="button"
+                className="p-1 rounded text-rose-400 hover:text-rose-200 hover:bg-rose-950/40 transition ml-0.5"
+                onClick={() => onDeleteLayer(activeLayer.id)}
+                title="Excluir camada"
+              >
+                <Trash2 size={13} />
+              </button>
+            )}
+          </div>
+        );
+      })()}
+
       <main style={{ fontSize: `${Math.max(6, tokens.body_size_pt * (compact ? .48 : .65))}px`, lineHeight: tokens.line_spacing }}><p className="mb-[5%] text-right text-[0.8em]">Cidade, 2 de setembro de 2026.</p>{tokens.show_document_title && <h4 className={`mb-[8%] text-center font-semibold ${tokens.heading_uppercase ? "uppercase" : ""}`} style={{ color: tokens.primary_color, fontFamily: family(tokens.heading_font_family), letterSpacing: `${tokens.heading_letter_spacing_pt}px`, fontSize: `${Math.max(8, tokens.heading_size_pt * (compact ? .52 : .72))}px` }}>{sample?.title || "Documento jurídico"}</h4>}{(sample?.paragraphs || []).map(paragraph => <p key={paragraph} className="mb-[5%] text-justify">{paragraph}</p>)}<div className="mt-[10%] space-y-[5%]"><div className="h-px bg-zinc-200" /><div className="h-px w-5/6 bg-zinc-200" /><div className="h-px w-4/6 bg-zinc-200" /></div></main>
       {!exact && !composed && <footer className={`absolute left-[8%] right-[8%] pt-2 whitespace-pre-line ${alignments[tokens.footer_alignment]}`} style={{ bottom: `${tokens.footer_bottom_mm / 2.97}%`, borderColor: tokens.accent_color, fontFamily: family(tokens.utility_font_family), fontSize: `${Math.max(5, tokens.footer_font_size_pt * (compact ? .38 : .55))}px`, letterSpacing: `${tokens.footer_letter_spacing_pt}px`, textTransform: tokens.footer_uppercase ? "uppercase" : undefined }}>{tokens.footer_divider && <span className={`mb-2 block ${tokens.footer_alignment === "center" ? "mx-auto" : tokens.footer_alignment === "right" ? "ml-auto" : ""}`} style={{ width: `${tokens.footer_divider_width_percent}%`, borderTop: `${Math.max(1, tokens.footer_divider_thickness_pt)}px solid ${tokens.accent_color}` }} />}{tokens.footer_text || "Informações profissionais"}{tokens.page_numbers && <span className="float-right">1</span>}</footer>}
       {composed && tokens.page_numbers && <span className="absolute bottom-[1.5%] right-[2%] text-[7px]">1</span>}{exact && tokens.page_numbers && <span className="absolute bottom-[2%] right-[3%] text-[7px]">1</span>}

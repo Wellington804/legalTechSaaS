@@ -194,6 +194,15 @@ export function brandPreflight(settings: BrandSettings, assets: BrandAsset[], pr
   if (settings.layout_layers.some(layer => layer.visible === false)) issues.push({ level: "warning", text: "Existem camadas ocultas; elas não aparecerão nos documentos publicados." });
   const completed = new Set((professional?.fields || []).filter(field => field.complete).map(field => field.key));
   if (settings.layout_layers.some(layer => layer.visible !== false && !!layer.binding && !completed.has(layer.binding))) issues.push({ level: "error", text: "Complete os dados profissionais usados nas camadas automáticas." });
+  const pjeCollision = (settings.layout_layers || []).some(layer =>
+    layer.visible !== false &&
+    layer.kind !== "rectangle" &&
+    (layer.x_percent + layer.width_percent > 68) &&
+    layer.y_percent < 16
+  );
+  if (pjeCollision) {
+    issues.push({ level: "warning", text: "Uma camada pode invadir a área de carimbo de protocolo do PJe/Tribunais (canto superior direito)." });
+  }
   if (!issues.length) issues.push({ level: "ok", text: "Imagens, dados e área segura estão prontos para a prévia final." });
   return issues;
 }

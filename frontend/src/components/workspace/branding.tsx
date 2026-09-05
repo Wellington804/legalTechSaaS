@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type Dispatch, type FormEvent, type SetStateAction } from "react";
-import { Archive, ArrowDown, ArrowLeft, ArrowUp, CheckCircle2, ChevronRight, Copy, Eye, EyeOff, FileText, GripVertical, Lock, Palette, Plus, Redo2, Sparkles, Trash2, Undo2, Unlock, Upload, X } from "lucide-react";
+import { Archive, ArrowDown, ArrowLeft, ArrowUp, CheckCircle2, ChevronRight, Copy, Download, Eye, EyeOff, FileText, GripVertical, Lock, Mic, MicOff, Palette, Plus, Redo2, ShieldCheck, Sparkles, Trash2, Undo2, Unlock, Upload, X } from "lucide-react";
 import { api, apiBlob, apiClient } from "@/lib/api-client";
 import { isOfficeAdminRole, useUser } from "@/context/user-context";
 import {
@@ -46,6 +46,19 @@ const editorAreas: { id: EditorElement; label: string; hint: string }[] = [
   { id: "watermark", label: "Marca-d'água", hint: "Texto, imagem e intensidade" },
   { id: "paper", label: "Papel e margens", hint: "Formato e área útil" },
   { id: "publish", label: "Revisar e publicar", hint: "PDF real e histórico" },
+];
+const primaryEditorAreas: { id: EditorElement; label: string }[] = [
+  { id: "layers", label: "Camadas Canvas" },
+  { id: "identity", label: "Cores & Fontes" },
+  { id: "references", label: "Referências & Logos" },
+  { id: "publish", label: "Exportar & Revisar" },
+];
+const secondaryEditorAreas: { id: EditorElement; label: string }[] = [
+  { id: "header", label: "Cabeçalho" },
+  { id: "body", label: "Texto" },
+  { id: "footer", label: "Rodapé" },
+  { id: "watermark", label: "Marca-d'água" },
+  { id: "paper", label: "Papel & Margens" },
 ];
 const signature = (name: string, settings: BrandSettings, variants: BrandVariants) => JSON.stringify({ name, settings, variants });
 
@@ -103,9 +116,17 @@ function BrandEditor({ initial, initialElement, initialMobileTab, capabilities, 
   const [kind, setKind] = useState<BrandAsset["kind"]>("reference"); const [uploading, setUploading] = useState(false); const [brief, setBrief] = useState(""); const [referenceIds, setReferenceIds] = useState<string[]>([]); const [referencePages, setReferencePages] = useState<Record<string, number>>({}); const [referenceIntent, setReferenceIntent] = useState<ReferenceIntent>("reproduce"); const [generateLogo, setGenerateLogo] = useState(false); const [proposals, setProposals] = useState<Proposal[]>([]);
   const [selectedReferenceId, setSelectedReferenceId] = useState(""); const [crop, setCrop] = useState<Crop>({ x_percent: 10, y_percent: 5, width_percent: 80, height_percent: 20 }); const [overlayOpacity, setOverlayOpacity] = useState(0); const [compareMode, setCompareMode] = useState<"overlay" | "side" | "difference">("overlay");
   const [previewZoom, setPreviewZoom] = useState(100);
+  const [showPjeGuide, setShowPjeGuide] = useState(false);
   const [aiExpanded, setAiExpanded] = useState(true);
   const [selectedLayerId, setSelectedLayerId] = useState(initialSettings.layout_layers[0]?.id || "");
   const [saveGeneration, setSaveGeneration] = useState(0);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const [audioPayload, setAudioPayload] = useState<{ base64: string; mime: string } | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const timerRef = useRef<number | null>(null);
+  const speechRecognitionRef = useRef<any | null>(null);
   const assets = useResource<Items<BrandAsset>>(profile.can_edit ? `/branding/profiles/${profile.id}/assets` : null);
   const versions = useResource<Items<BrandVersion>>(profile.can_edit ? `/branding/profiles/${profile.id}/versions` : null);
   const professional = useResource<ProfessionalData>(profile.can_edit ? `/branding/profiles/${profile.id}/professional-data` : null);
@@ -169,13 +190,138 @@ function BrandEditor({ initial, initialElement, initialMobileTab, capabilities, 
     try { if (file.size > 10 * 1024 * 1024) throw new Error("Envie um arquivo de até 10 MB."); const body = new FormData(); body.set("file", file); body.set("kind", uploadKind); const asset = await apiClient<BrandAsset>(`/branding/profiles/${profile.id}/assets`, { method: "POST", body }); assets.reload(); setReferenceIds(ids => asset.kind === "reference" ? [...ids, asset.id].slice(-3) : ids); if (asset.kind === "reference") setSelectedReferenceId(asset.id); if (asset.kind === "logo") change("logo_asset_id", asset.id); if (asset.kind === "watermark") change("watermark_asset_id", asset.id); if (asset.kind === "background") { change("background_asset_id", asset.id); change("layout_mode", "exact"); } setMessage(`${asset.filename} foi analisado e adicionado${asset.kind === "reference" ? ". Nenhuma alteração foi aplicada automaticamente." : " ao rascunho."}`); }
     catch (reason) { setError(errorText(reason)); } finally { setUploading(false); }
   }
+  async function startVoiceRecording() {
+    setError("");
+    try {
+      if (typeof window === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+        setError("Seu navegador não possui suporte à gravação de microfone.");
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported("audio/webm")
+        ? "audio/webm"
+        : typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported("audio/mp4")
+        ? "audio/mp4"
+        : "";
+
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
+      recorder.onstop = () => {
+        const actualMime = recorder.mimeType || "audio/webm";
+        const blob = new Blob(audioChunksRef.current, { type: actualMime });
+        stream.getTracks().forEach(t => t.stop());
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const resultStr = reader.result as string;
+          const base64String = resultStr ? resultStr.split(",")[1] : "";
+          if (base64String) {
+            setAudioPayload({ base64: base64String, mime: actualMime });
+            setMessage("Gravação de voz anexada! A IA entenderá o áudio e ajustará o modelo.");
+          }
+        };
+        reader.readAsDataURL(blob);
+      };
+
+      const SpeechRecognition = typeof window !== "undefined" && ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+      if (SpeechRecognition) {
+        try {
+          const recognition = new SpeechRecognition();
+          recognition.lang = "pt-BR";
+          recognition.continuous = true;
+          recognition.interimResults = true;
+          recognition.onresult = (e: any) => {
+            let transcript = "";
+            for (let i = e.resultIndex; i < e.results.length; ++i) {
+              if (e.results[i].isFinal) transcript += e.results[i][0].transcript;
+            }
+            if (transcript.trim()) {
+              setBrief(prev => prev ? `${prev.trim()} ${transcript.trim()}` : transcript.trim());
+            }
+          };
+          recognition.start();
+          speechRecognitionRef.current = recognition;
+        } catch {
+          // ignore fallback transcription failure
+        }
+      }
+
+      recorder.start(250);
+      setIsRecording(true);
+      setRecordingDuration(0);
+      if (timerRef.current) window.clearInterval(timerRef.current);
+      timerRef.current = window.setInterval(() => {
+        setRecordingDuration(d => d + 1);
+      }, 1000);
+    } catch (err: any) {
+      setError(`Erro ao acessar microfone: ${err.message || err}`);
+    }
+  }
+
+  function stopVoiceRecording() {
+    if (timerRef.current) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    if (speechRecognitionRef.current) {
+      try { speechRecognitionRef.current.stop(); } catch {}
+      speechRecognitionRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
+    setIsRecording(false);
+  }
+
+  function cancelVoiceRecording() {
+    if (timerRef.current) {
+      window.clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    if (speechRecognitionRef.current) {
+      try { speechRecognitionRef.current.stop(); } catch {}
+      speechRecognitionRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stream.getTracks().forEach(t => t.stop());
+      mediaRecorderRef.current.stop();
+    }
+    audioChunksRef.current = [];
+    setAudioPayload(null);
+    setIsRecording(false);
+    setRecordingDuration(0);
+  }
+
   async function requestAi(prompt: string) {
-    if (dirty || !prompt.trim()) return; setBusy(true); setError("");
+    if (dirty || (!prompt.trim() && !audioPayload)) return; setBusy(true); setError("");
     try {
       const selectedElement = element === "references" || element === "publish" ? "identity" : element;
-      const result = await api.post<Omit<Proposal, "id" | "changes" | "selected">>(`/branding/profiles/${profile.id}/suggest`, { brief: prompt, reference_ids: referenceIds, reference_pages: Object.fromEntries(Object.entries(referencePages).filter(([id]) => referenceIds.includes(id))), consent: true, generate_logo: generateLogo, reference_intent: referenceIntent, document_type: documentType, selected_element: selectedElement, selected_layer_id: selectedLayerId || null, expected_revision: revisionRef.current });
+      const result = await api.post<Omit<Proposal, "id" | "changes" | "selected">>(`/branding/profiles/${profile.id}/suggest`, {
+        brief: prompt || (audioPayload ? "Instrução via áudio de voz do advogado." : ""),
+        audio_base64: audioPayload?.base64 || null,
+        audio_mime: audioPayload?.mime || null,
+        reference_ids: referenceIds,
+        reference_pages: Object.fromEntries(Object.entries(referencePages).filter(([id]) => referenceIds.includes(id))),
+        consent: true,
+        generate_logo: generateLogo,
+        reference_intent: referenceIntent,
+        document_type: documentType,
+        selected_element: selectedElement,
+        selected_layer_id: selectedLayerId || null,
+        expected_revision: revisionRef.current
+      });
       const changed = (Object.keys(defaultBrandSettings) as (keyof BrandSettings)[]).filter(key => JSON.stringify(effective[key]) !== JSON.stringify(result.settings[key]));
-      setProposals(current => [{ ...result, id: Date.now(), changes: changed, selected: changed }, ...current].slice(0, 3)); setBrief(""); assets.reload();
+      setProposals(current => [{ ...result, id: Date.now(), changes: changed, selected: changed }, ...current].slice(0, 3));
+      setBrief("");
+      setAudioPayload(null);
+      assets.reload();
     } catch (reason) { setError(errorText(reason)); } finally { setBusy(false); }
   }
   async function askAi(event: FormEvent<HTMLFormElement>) { event.preventDefault(); await requestAi(brief); }
@@ -192,7 +338,40 @@ function BrandEditor({ initial, initialElement, initialMobileTab, capabilities, 
     setProposals(current => current.filter(item => item.id !== proposal.id)); setMessage("Sugestão aplicada ao rascunho. Revise a prévia; o salvamento automático não publica a identidade.");
   }
   async function preview() {
-    setBusy(true); setError(""); setPdf(null); try { setPdf(await apiBlob(`/branding/profiles/${profile.id}/preview`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expected_revision: revisionRef.current, document_type: documentType }) })); } catch (reason) { setError(errorText(reason)); } finally { setBusy(false); }
+    setBusy(true); setError(""); setPdf(null); try { setPdf(await apiBlob(`/branding/profiles/${profile.id}/preview`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expected_revision: revisionRef.current, document_type: documentType, format: "pdf" }) })); } catch (reason) { setError(errorText(reason)); } finally { setBusy(false); }
+  }
+  async function previewDocx() {
+    setBusy(true); setError("");
+    try {
+      const blob = await apiBlob(`/branding/profiles/${profile.id}/preview`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expected_revision: revisionRef.current, document_type: documentType, format: "docx" }),
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `minuta-${profile.name.toLowerCase().replace(/\s+/g, "_")}-${documentType}.docx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setMessage("Minuta Word (.docx) baixada com sucesso. Abra no Microsoft Word para validar a edição.");
+    } catch (reason) { setError(errorText(reason)); } finally { setBusy(false); }
+  }
+  async function isolateAsset(assetId: string) {
+    setBusy(true); setError("");
+    try {
+      const newAsset = await api.post<BrandAsset>(`/branding/assets/${assetId}/isolate`, {});
+      assets.reload();
+      if (selectedLayerId) {
+        const layer = settings.layout_layers.find(l => l.id === selectedLayerId);
+        if (layer && layer.kind === "image" && layer.asset_id === assetId) {
+          changeLayer({ ...layer, asset_id: newAsset.id });
+        }
+      }
+      setMessage("Fundo removido com sucesso! Imagem transparente gerada e vinculada à camada.");
+    } catch (reason) { setError(errorText(reason)); } finally { setBusy(false); }
   }
   async function openReference(asset: BrandAsset) { setBusy(true); setError(""); try { setReferencePdf({ blob: await apiBlob(`/branding/assets/${asset.id}/download`), filename: asset.filename }); } catch (reason) { setError(errorText(reason)); } finally { setBusy(false); } }
   async function extractReference(asset: BrandAsset, extractKind: "logo" | "watermark" | "background") {
@@ -254,6 +433,26 @@ function BrandEditor({ initial, initialElement, initialMobileTab, capabilities, 
               <button type="button" className={button} aria-label="Desfazer" title="Desfazer" disabled={!undoRef.current.length} onClick={undo}><Undo2 aria-hidden="true" size={15} /></button>
               <button type="button" className={button} aria-label="Refazer" title="Refazer" disabled={!redoRef.current.length} onClick={redo}><Redo2 aria-hidden="true" size={15} /></button>
             </div>
+            <button
+              type="button"
+              className={`${button} gap-1.5 text-xs text-blue-300 border-blue-900/60 bg-blue-950/30 hover:bg-blue-900/40`}
+              disabled={busy || dirty}
+              onClick={() => void previewDocx()}
+              title="Baixar minuta de teste editável em Microsoft Word (.docx)"
+            >
+              <Download aria-hidden="true" size={14} />
+              <span className="hidden sm:inline">Minuta Word (.docx)</span>
+            </button>
+            <button
+              type="button"
+              className={`${button} gap-1.5 text-xs`}
+              disabled={busy || dirty || !capabilities.pdf_available}
+              onClick={() => void preview()}
+              title="Visualizar PDF oficial"
+            >
+              <FileText aria-hidden="true" size={14} />
+              <span className="hidden sm:inline">PDF real</span>
+            </button>
             <Action className={`${button} gap-1.5 text-xs`} run={duplicate}><Copy aria-hidden="true" size={14} /> Duplicar</Action>
             <Action className={`${button} gap-1.5 text-xs`} run={archive}><Archive aria-hidden="true" size={14} /> Arquivar</Action>
             <button
@@ -323,26 +522,51 @@ function BrandEditor({ initial, initialElement, initialMobileTab, capabilities, 
     <div className={`grid min-w-0 gap-4 ${aiExpanded ? "lg:grid-cols-[minmax(19rem,23rem)_1fr_minmax(18rem,21rem)]" : "lg:grid-cols-[minmax(20rem,24rem)_1fr]"}`}>
       {/* Left Column: Categorized Inspector */}
       <aside className={`${mobileTab === "edit" ? "block" : "hidden"} min-w-0 space-y-3 lg:block`}>
-        {/* Compact 3x3 Category Grid */}
-        <nav aria-label="Elementos da identidade" className="grid grid-cols-3 gap-1 p-1 rounded-xl border border-zinc-800/80 bg-zinc-900/40 shadow-inner">
-          {editorAreas.map(area => {
-            const active = element === area.id;
-            return (
-              <button
-                key={area.id}
-                type="button"
-                aria-current={active ? "page" : undefined}
-                onClick={() => setElement(area.id)}
-                className={`flex flex-col items-center justify-center rounded-lg px-1 py-2 text-center transition ${
-                  active
-                    ? "bg-blue-600 text-white font-medium shadow-sm shadow-blue-950"
-                    : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50"
-                }`}
-              >
-                <span className="text-xs truncate max-w-full">{area.label}</span>
-              </button>
-            );
-          })}
+        {/* Modern Studio Navigation Dock */}
+        <nav aria-label="Elementos da identidade" className="space-y-1.5">
+          <div className="grid grid-cols-4 gap-1 p-1 rounded-xl border border-zinc-800/80 bg-zinc-900/40 shadow-inner">
+            {primaryEditorAreas.map(area => {
+              const active = element === area.id;
+              return (
+                <button
+                  key={area.id}
+                  type="button"
+                  aria-current={active ? "page" : undefined}
+                  onClick={() => setElement(area.id)}
+                  className={`flex flex-col items-center justify-center rounded-lg px-1 py-2 text-center transition ${
+                    active
+                      ? "bg-blue-600 text-white font-medium shadow-sm shadow-blue-950"
+                      : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50"
+                  }`}
+                >
+                  <span className="text-xs truncate max-w-full font-medium">{area.label}</span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex items-center justify-between gap-1 overflow-x-auto px-1 py-0.5 border-b border-zinc-800/40 pb-1">
+            <span className="text-[10px] text-zinc-500 uppercase font-semibold shrink-0">Ajustes:</span>
+            <div className="flex items-center gap-1 overflow-x-auto">
+              {secondaryEditorAreas.map(area => {
+                const active = element === area.id;
+                return (
+                  <button
+                    key={area.id}
+                    type="button"
+                    aria-current={active ? "page" : undefined}
+                    onClick={() => setElement(area.id)}
+                    className={`px-2 py-0.5 rounded text-[11px] transition shrink-0 ${
+                      active
+                        ? "bg-zinc-800 text-blue-300 font-medium border border-blue-800/60"
+                        : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40"
+                    }`}
+                  >
+                    {area.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </nav>
 
         {/* Controls Container */}
@@ -363,6 +587,8 @@ function BrandEditor({ initial, initialElement, initialMobileTab, capabilities, 
           upload={upload}
           openReference={openReference}
           preview={preview}
+          previewDocx={previewDocx}
+          isolateAsset={isolateAsset}
           publish={publish}
           approved={approved}
           setApproved={setApproved}
@@ -395,6 +621,16 @@ function BrandEditor({ initial, initialElement, initialMobileTab, capabilities, 
               <span className="text-[11px] text-zinc-500 hidden xl:inline">· Roda do mouse na folha para zoom</span>
             </div>
             <div className="flex items-center gap-1.5" role="group" aria-label="Zoom da pré-visualização">
+              <button
+                type="button"
+                className={`text-xs px-2.5 py-1 rounded-lg transition flex items-center gap-1.5 ${showPjeGuide ? "bg-amber-950/60 text-amber-300 border border-amber-700/80 shadow-sm" : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 border border-zinc-800/60"}`}
+                aria-pressed={showPjeGuide}
+                onClick={() => setShowPjeGuide(v => !v)}
+                title="Mostrar área reservada para carimbo e protocolo do PJe (30x60mm)"
+              >
+                <ShieldCheck size={14} className={showPjeGuide ? "text-amber-400" : "text-zinc-500"} />
+                <span>Guia PJe</span>
+              </button>
               <button
                 type="button"
                 className={`${button} h-7 w-7 p-0 flex items-center justify-center`}
@@ -472,6 +708,8 @@ function BrandEditor({ initial, initialElement, initialMobileTab, capabilities, 
               onChangeLayer={changeLayer}
               onDeleteLayer={deleteLayer}
               showSafeArea={element === "layers" || element === "header" || element === "footer" || element === "paper"}
+              showPjeGuide={showPjeGuide}
+              onIsolateAsset={isolateAsset}
               zoom={previewZoom}
               onZoomChange={setPreviewZoom}
               referenceOverlay={overlayReference && compareMode !== "side" ? { assetId: overlayReference.id, page: referencePages[overlayReference.id] || 1, opacity: compareMode === "difference" ? 1 : overlayOpacity, blendMode: compareMode === "difference" ? "difference" : undefined } : undefined}
@@ -574,31 +812,91 @@ function BrandEditor({ initial, initialElement, initialMobileTab, capabilities, 
               </button>
             )}
 
-            <Field label="Mensagem para a IA">
+            {isRecording ? (
+              <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl border border-rose-800/80 bg-rose-950/40 text-rose-200 text-xs animate-pulse shadow-sm">
+                <div className="flex items-center gap-2">
+                  <span className="h-2.5 w-2.5 rounded-full bg-rose-500 animate-ping" />
+                  <span className="font-medium">Gravando instrução ({recordingDuration}s)...</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    className="px-2.5 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white font-medium text-xs shadow transition"
+                    onClick={stopVoiceRecording}
+                  >
+                    Concluir
+                  </button>
+                  <button
+                    type="button"
+                    className="px-2 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs transition"
+                    onClick={cancelVoiceRecording}
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            ) : audioPayload ? (
+              <div className="flex items-center justify-between gap-2 p-2 rounded-xl border border-emerald-800/60 bg-emerald-950/30 text-emerald-200 text-xs shadow-sm">
+                <div className="flex items-center gap-2">
+                  <Mic className="text-emerald-400 shrink-0" size={15} />
+                  <span>Áudio de voz anexado à instrução</span>
+                </div>
+                <button
+                  type="button"
+                  className="text-zinc-400 hover:text-rose-300 text-xs underline"
+                  onClick={() => setAudioPayload(null)}
+                >
+                  Remover
+                </button>
+              </div>
+            ) : null}
+
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <span className="text-xs font-medium text-zinc-300">Mensagem ou áudio</span>
+                <button
+                  type="button"
+                  className={`text-xs px-2.5 py-1 rounded-lg transition flex items-center gap-1.5 ${isRecording ? "bg-rose-600 text-white font-medium" : "border border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:text-white hover:border-blue-700"}`}
+                  onClick={isRecording ? stopVoiceRecording : startVoiceRecording}
+                  disabled={busy || !capabilities.ai_available || !profile.can_edit}
+                  title={isRecording ? "Parar gravação de voz" : "Gravar instrução por microfone"}
+                >
+                  {isRecording ? <MicOff size={13} className="animate-bounce" /> : <Mic size={13} className="text-blue-400" />}
+                  <span>{isRecording ? "Parar" : "Gravar voz"}</span>
+                </button>
+              </div>
               <textarea
                 className={control}
                 rows={3}
-                minLength={10}
+                minLength={audioPayload ? 0 : 5}
                 maxLength={4000}
-                required
+                required={!audioPayload}
                 value={brief}
                 disabled={!profile.can_edit}
                 onChange={event => setBrief(event.target.value)}
-                placeholder={`O que deseja mudar em ${editorAreas.find(area => area.id === element)?.label.toLocaleLowerCase("pt-BR") || "identidade"}?`}
+                placeholder={audioPayload ? "Áudio gravado. Se desejar, adicione mais detalhes em texto..." : `O que deseja mudar em ${editorAreas.find(area => area.id === element)?.label.toLocaleLowerCase("pt-BR") || "identidade"}?`}
               />
-            </Field>
+            </div>
 
             {/* Quick Prompt Chips */}
             <div className="flex flex-wrap gap-1">
-              <button type="button" className="text-[11px] px-2 py-0.5 rounded border border-blue-900/60 bg-blue-950/40 text-blue-300 hover:bg-blue-900/50 transition" onClick={() => setBrief("Tornar a identidade mais sóbria, elegante e formal para advocacia.")}>
-                Estilo Sóbrio
+              <button type="button" className="text-[11px] px-2 py-0.5 rounded border border-blue-900/60 bg-blue-950/40 text-blue-300 hover:bg-blue-900/50 transition" onClick={() => setBrief("Tornar a identidade mais sóbria, elegante e formal para advocacia de alto padrão.")}>
+                🏛️ Padrão Tribunais
+              </button>
+              <button type="button" className="text-[11px] px-2 py-0.5 rounded border border-blue-900/60 bg-blue-950/40 text-blue-300 hover:bg-blue-900/50 transition" onClick={() => setBrief("Harmonizar cores da identidade com o logotipo anexado, preservando legibilidade e sofisticação jurídica.")}>
+                ✨ Harmonizar com logo
+              </button>
+              <button type="button" className="text-[11px] px-2 py-0.5 rounded border border-blue-900/60 bg-blue-950/40 text-blue-300 hover:bg-blue-900/50 transition" onClick={() => setBrief("Ajustar cabeçalho e margens para respeitar a área de carimbo e protocolo do PJe no canto superior direito.")}>
+                📐 Margens PJe
               </button>
               <button type="button" className="text-[11px] px-2 py-0.5 rounded border border-blue-900/60 bg-blue-950/40 text-blue-300 hover:bg-blue-900/50 transition" onClick={() => setBrief("Destacar o número da OAB e contatos de forma harmoniosa no cabeçalho e rodapé.")}>
-                Destacar OAB
+                ⚖️ Destacar OAB
               </button>
-              <button type="button" className="text-[11px] px-2 py-0.5 rounded border border-blue-900/60 bg-blue-950/40 text-blue-300 hover:bg-blue-900/50 transition" onClick={() => setBrief("Otimizar margens e espaçamentos para petições longas mantendo excelente legibilidade.")}>
-                Otimizar Margens
-              </button>
+              {capabilities.image_ai_available && (
+                <button type="button" className="text-[11px] px-2 py-0.5 rounded border border-purple-900/60 bg-purple-950/40 text-purple-300 hover:bg-purple-900/50 transition" onClick={() => { setGenerateLogo(true); setBrief("Criar proposta de monograma e símbolo jurídico original e elegante para o escritório."); }}>
+                  🖋️ Criar Símbolo
+                </button>
+              )}
             </div>
 
             {!!(assets.data?.items || []).filter(asset => asset.kind === "reference").length && (
@@ -644,7 +942,7 @@ function BrandEditor({ initial, initialElement, initialMobileTab, capabilities, 
               </label>
             )}
 
-            <button className={`${primary} w-full text-xs py-2`} disabled={busy || dirty || !capabilities.ai_available || !profile.can_edit}>
+            <button className={`${primary} w-full text-xs py-2`} disabled={busy || dirty || !capabilities.ai_available || !profile.can_edit || (!brief.trim() && !audioPayload)}>
               {busy ? "Preparando sugestão…" : "Enviar e comparar"}
             </button>
             {dirty && <p className="text-[11px] text-amber-300 text-center">Aguarde o salvamento do rascunho antes de pedir uma sugestão.</p>}
@@ -657,10 +955,10 @@ function BrandEditor({ initial, initialElement, initialMobileTab, capabilities, 
   </div>;
 }
 
-function EditorControls({ element, scope, capabilities, settings, baseSettings, assets, professional, documentType, busy, change, toggleProfessional, kind, setKind, upload, openReference, preview, publish, approved, setApproved, dirty, versions, restoreVersion, preflight, selectedReferenceId, setSelectedReferenceId, referencePages, setReferencePages, crop, setCrop, extractReference, selectedLayerId, setSelectedLayerId, setLayers, deleteLayer, editImage }: {
+function EditorControls({ element, scope, capabilities, settings, baseSettings, assets, professional, documentType, busy, change, toggleProfessional, kind, setKind, upload, openReference, preview, previewDocx, isolateAsset, publish, approved, setApproved, dirty, versions, restoreVersion, preflight, selectedReferenceId, setSelectedReferenceId, referencePages, setReferencePages, crop, setCrop, extractReference, selectedLayerId, setSelectedLayerId, setLayers, deleteLayer, editImage }: {
   element: EditorElement; scope: BrandProfile["scope"]; capabilities: BrandCapabilities; settings: BrandSettings; baseSettings: BrandSettings; assets: BrandAsset[]; professional: ProfessionalData | null; documentType: DocumentType; busy: boolean;
   change: <K extends keyof BrandSettings>(key: K, value: BrandSettings[K]) => void; toggleProfessional: (area: "header_fields" | "footer_fields", field: ProfessionalField) => void;
-  kind: BrandAsset["kind"]; setKind: (kind: BrandAsset["kind"]) => void; upload: (file?: File, kind?: BrandAsset["kind"]) => Promise<void>; openReference: (asset: BrandAsset) => Promise<void>; preview: () => Promise<void>; publish: () => Promise<void>;
+  kind: BrandAsset["kind"]; setKind: (kind: BrandAsset["kind"]) => void; upload: (file?: File, kind?: BrandAsset["kind"]) => Promise<void>; openReference: (asset: BrandAsset) => Promise<void>; preview: () => Promise<void>; previewDocx: () => Promise<void>; isolateAsset: (assetId: string) => Promise<void>; publish: () => Promise<void>;
   approved: boolean; setApproved: (value: boolean) => void; dirty: boolean; versions: ReturnType<typeof useResource<Items<BrandVersion>>>;
   restoreVersion: (version: BrandVersion) => void; preflight: ReturnType<typeof brandPreflight>;
   selectedReferenceId: string; setSelectedReferenceId: (id: string) => void; referencePages: Record<string, number>; setReferencePages: Dispatch<SetStateAction<Record<string, number>>>;
@@ -678,21 +976,21 @@ function EditorControls({ element, scope, capabilities, settings, baseSettings, 
     <div><h2 className="font-semibold">{editorAreas.find(area => area.id === element)?.label}</h2>{shared}</div>
     {element === "identity" && <><div className="grid grid-cols-2 gap-3">{(["primary_color", "accent_color", "text_color", "paper_color"] as const).map(key => <Field key={key} label={brandSettingLabels[key]}><div className="flex items-center gap-2"><input type="color" className="h-11 w-14 rounded border border-zinc-700 bg-zinc-950 p-1" value={baseSettings[key]} disabled={busy} onChange={event => change(key, event.target.value)} /><span className="text-xs">{baseSettings[key]}</span></div></Field>)}</div>{(["heading_font_family", "font_family", "utility_font_family"] as const).map(key => <Field key={key} label={brandSettingLabels[key]}><select className={control} value={baseSettings[key]} disabled={busy} onChange={event => change(key, event.target.value as BrandSettings[typeof key])}>{capabilities.fonts.map(font => <option key={font}>{font}</option>)}</select></Field>)}<p className="text-xs text-zinc-400">{capabilities.fonts.length} fontes disponíveis para exportação. A prévia usa a fonte instalada no aparelho ou uma equivalente. Arial, Calibri, Cambria e Times New Roman usam equivalentes métricos livres no servidor.</p></>}
     {element === "references" && <ReferenceTools assets={assets} busy={busy} dirty={dirty} kind={kind} setKind={setKind} upload={upload} openReference={openReference} change={change} selectedReferenceId={selectedReferenceId} setSelectedReferenceId={setSelectedReferenceId} referencePages={referencePages} setReferencePages={setReferencePages} crop={crop} setCrop={setCrop} extractReference={extractReference} />}
-    {element === "layers" && <LayerEditor settings={baseSettings} assets={assets} professional={professional} fonts={capabilities.fonts} busy={busy} selectedId={selectedLayerId} select={setSelectedLayerId} setLayers={setLayers} remove={deleteLayer} editImage={editImage} />}
+    {element === "layers" && <LayerEditor settings={baseSettings} assets={assets} professional={professional} fonts={capabilities.fonts} busy={busy} selectedId={selectedLayerId} select={setSelectedLayerId} setLayers={setLayers} remove={deleteLayer} editImage={editImage} isolateAsset={isolateAsset} />}
     {element === "header" && <>{fieldPicker("header_fields")}<p className="text-xs text-zinc-400"><Link className="text-blue-300 underline" href="/dashboard/account">Editar dados profissionais e do escritório</Link>. {scope === "office" ? "Dados do advogado acompanham o responsável pelo processo." : "Ajustes abaixo valem só nesta identidade."}</p>{PROFESSIONAL_FIELDS.filter(field => settings.header_fields.includes(field) && (scope === "personal" || !personalFields.has(field))).map(field => <Field key={field} label={`Substituir ${professionalFieldLabels[field]} (opcional)`}><input className={control} value={baseSettings.professional_overrides[field] || ""} disabled={busy} onChange={event => change("professional_overrides", { ...baseSettings.professional_overrides, [field]: event.target.value })} /></Field>)}<Field label="Texto adicional"><textarea className={control} rows={3} value={settings.header_text} disabled={busy} onChange={event => change("header_text", event.target.value)} /></Field>{alignment("header_alignment")}{assetSelect("logo_asset_id", "logo")}<label className={`${button} w-full cursor-pointer gap-2`}><Upload aria-hidden="true" size={17} /> Enviar logotipo<input className="sr-only" type="file" accept=".png,.jpg,.jpeg" disabled={busy} onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; void upload(file, "logo"); }} /></label><div className="grid grid-cols-2 gap-3">{number("logo_width_mm", 10, 60)}{number("logo_top_mm", 0, 60, .5)}{number("header_font_size_pt", 6, 18, .5)}{number("header_letter_spacing_pt", 0, 5, .1)}{number("header_top_mm", 0, 60, .5)}</div><label className="flex min-h-11 items-center gap-3 text-sm"><input type="checkbox" checked={settings.header_uppercase} disabled={busy} onChange={event => change("header_uppercase", event.target.checked)} />Cabeçalho em maiúsculas</label><label className="flex min-h-11 items-center gap-3 text-sm"><input type="checkbox" checked={settings.header_divider} disabled={busy} onChange={event => change("header_divider", event.target.checked)} />Mostrar linha de separação</label>{settings.header_divider && <div className="grid grid-cols-2 gap-3">{number("header_divider_width_percent", 20, 100, 1)}{number("header_divider_thickness_pt", .25, 3, .25)}</div>}</>}
     {element === "body" && <>{number("body_size_pt", 9, 16, .5)}{number("heading_size_pt", 12, 28, .5)}{number("heading_letter_spacing_pt", 0, 3, .1)}{number("line_spacing", 1, 2, .05)}<label className="flex min-h-11 items-center gap-3 text-sm"><input type="checkbox" checked={settings.heading_uppercase} disabled={busy} onChange={event => change("heading_uppercase", event.target.checked)} />Usar títulos em maiúsculas</label><label className="flex min-h-11 items-center gap-3 text-sm"><input type="checkbox" checked={settings.show_document_title} disabled={busy} onChange={event => change("show_document_title", event.target.checked)} />Mostrar título automático antes do conteúdo</label><p className="text-xs text-zinc-400">Desative o título automático quando a própria petição ou o timbrado já trouxer a abertura visual.</p></>}
     {element === "footer" && <>{fieldPicker("footer_fields")}<Field label="Texto adicional"><textarea className={control} rows={3} value={settings.footer_text} disabled={busy} onChange={event => change("footer_text", event.target.value)} /></Field>{alignment("footer_alignment")}<div className="grid grid-cols-2 gap-3">{number("footer_font_size_pt", 6, 18, .5)}{number("footer_letter_spacing_pt", 0, 5, .1)}{number("footer_bottom_mm", 0, 60, .5)}</div><label className="flex min-h-11 items-center gap-3 text-sm"><input type="checkbox" checked={settings.footer_uppercase} disabled={busy} onChange={event => change("footer_uppercase", event.target.checked)} />Rodapé em maiúsculas</label><label className="flex min-h-11 items-center gap-3 text-sm"><input type="checkbox" checked={settings.footer_divider} disabled={busy} onChange={event => change("footer_divider", event.target.checked)} />Mostrar linha de separação</label>{settings.footer_divider && <div className="grid grid-cols-2 gap-3">{number("footer_divider_width_percent", 20, 100, 1)}{number("footer_divider_thickness_pt", .25, 3, .25)}</div>}<label className="flex min-h-11 items-center gap-3 text-sm"><input type="checkbox" checked={settings.page_numbers} disabled={busy} onChange={event => change("page_numbers", event.target.checked)} />Mostrar número da página</label></>}
     {element === "watermark" && <>{assetSelect("watermark_asset_id", "watermark")}<label className={`${button} w-full cursor-pointer gap-2`}><Upload aria-hidden="true" size={17} /> Enviar imagem da marca-d'água<input className="sr-only" type="file" accept=".png,.jpg,.jpeg" disabled={busy} onChange={event => { const file = event.target.files?.[0]; event.target.value = ""; void upload(file, "watermark"); }} /></label><Field label="Texto da marca-d'água"><input className={control} maxLength={80} value={baseSettings.watermark_text} disabled={busy} onChange={event => change("watermark_text", event.target.value)} /></Field><div className="grid grid-cols-2 gap-3">{number("watermark_opacity", .03, .3, .01)}{number("watermark_width_mm", 30, 150)}{number("watermark_font_size_pt", 24, 180, 1)}{number("watermark_x_percent", 0, 100, 1)}{number("watermark_y_percent", 0, 100, 1)}</div><Field label="Orientação"><select className={control} value={settings.watermark_position} disabled={busy} onChange={event => change("watermark_position", event.target.value as BrandSettings["watermark_position"])}><option value="diagonal">Diagonal</option><option value="center">Sem rotação</option></select></Field>{settings.watermark_position === "diagonal" && number("watermark_rotation_deg", -90, 90, 1)}</>}
     {element === "paper" && <><Field label="Papel"><select className={control} value={baseSettings.paper_size} disabled={busy} onChange={event => change("paper_size", event.target.value as BrandSettings["paper_size"])}><option value="A4">A4</option><option value="LETTER">Carta</option></select></Field><Field label="Cor do papel"><div className="flex items-center gap-2"><input type="color" className="h-11 w-14 rounded border border-zinc-700 bg-zinc-950 p-1" value={baseSettings.paper_color} disabled={busy} onChange={event => change("paper_color", event.target.value)} /><span className="text-xs">{baseSettings.paper_color}</span></div></Field>{(settings.margin_top_mm < safeMargins.top || settings.margin_bottom_mm < safeMargins.bottom) && <div className="rounded-lg border border-amber-800 bg-amber-950/20 p-3 text-sm text-amber-200"><p>O desenho precisa de {safeMargins.top} mm no topo e {safeMargins.bottom} mm no rodapé para não cobrir o texto.</p>{safeMargins.top <= 80 && safeMargins.bottom <= 80 && <button type="button" className={`${button} mt-2`} onClick={() => { change("margin_top_mm", safeMargins.top); change("margin_bottom_mm", safeMargins.bottom); }}>Aplicar área segura</button>}</div>}<div className="grid grid-cols-2 gap-3">{number("margin_top_mm", 20, 80)}{number("margin_bottom_mm", 20, 80)}{number("margin_left_mm", 15, 50)}{number("margin_right_mm", 15, 50)}</div><Field label="Timbrado"><select className={control} value={settings.background_scope} disabled={busy} onChange={event => change("background_scope", event.target.value as BrandSettings["background_scope"])}><option value="all">Todas as páginas</option><option value="first">Somente primeira página</option></select></Field></>}
-    {element === "publish" && <><p className="text-sm text-zinc-400">{dirty ? "Aguarde o salvamento do rascunho." : "Rascunho salvo e pronto para conferência."}</p><div className="space-y-2" aria-label="Verificação antes de publicar">{preflight.map(issue => <p key={issue.text} className={`rounded-lg border p-2 text-xs ${issue.level === "error" ? "border-rose-800 bg-rose-950/20 text-rose-200" : issue.level === "warning" ? "border-amber-800 bg-amber-950/20 text-amber-200" : "border-emerald-800 bg-emerald-950/20 text-emerald-200"}`}>{issue.level === "error" ? "Corrigir: " : issue.level === "warning" ? "Conferir: " : "Pronto: "}{issue.text}</p>)}</div><button type="button" className={button} disabled={busy || dirty || hasPreflightError || !capabilities.pdf_available} onClick={() => void preview()}><FileText aria-hidden="true" size={17} /> Gerar PDF real desta variação</button><label className="flex min-h-11 items-start gap-3 text-sm"><input className="mt-1" type="checkbox" checked={approved} disabled={dirty || busy || hasPreflightError} onChange={event => setApproved(event.target.checked)} /><span>Conferi dados profissionais, imagens e visual em todas as variações que pretendo usar.</span></label><button type="button" className={primary} disabled={busy || dirty || !approved || hasPreflightError} onClick={() => void publish()}><CheckCircle2 aria-hidden="true" size={17} /> Publicar nova versão</button><div className="border-t border-zinc-800 pt-3"><h3 className="text-sm font-medium">Versões publicadas</h3><State loading={versions.loading} error={versions.error} empty={!(versions.data?.items || []).length} />{(versions.data?.items || []).map(version => <div key={version.id} className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-zinc-800 p-2"><p className="text-xs text-zinc-400">v{version.version} · {dateText(version.created_at)}</p><button type="button" className={button} disabled={busy} onClick={() => restoreVersion(version)}>Restaurar como rascunho</button></div>)}</div></>}
+    {element === "publish" && <><p className="text-sm text-zinc-400">{dirty ? "Aguarde o salvamento do rascunho." : "Rascunho salvo e pronto para conferência."}</p><div className="space-y-2" aria-label="Verificação antes de publicar">{preflight.map(issue => <p key={issue.text} className={`rounded-lg border p-2 text-xs ${issue.level === "error" ? "border-rose-800 bg-rose-950/20 text-rose-200" : issue.level === "warning" ? "border-amber-800 bg-amber-950/20 text-amber-200" : "border-emerald-800 bg-emerald-950/20 text-emerald-200"}`}>{issue.level === "error" ? "Corrigir: " : issue.level === "warning" ? "Conferir: " : "Pronto: "}{issue.text}</p>)}</div><div className="grid grid-cols-2 gap-2"><button type="button" className={button} disabled={busy || dirty || hasPreflightError || !capabilities.pdf_available} onClick={() => void preview()}><FileText aria-hidden="true" size={17} /> PDF real</button><button type="button" className={`${button} border-blue-800 text-blue-300 hover:bg-blue-950/30`} disabled={busy || dirty} onClick={() => void previewDocx()}><Download aria-hidden="true" size={17} /> Minuta Word (.docx)</button></div><label className="flex min-h-11 items-start gap-3 text-sm"><input className="mt-1" type="checkbox" checked={approved} disabled={dirty || busy || hasPreflightError} onChange={event => setApproved(event.target.checked)} /><span>Conferi dados profissionais, imagens e visual em todas as variações que pretendo usar.</span></label><button type="button" className={primary} disabled={busy || dirty || !approved || hasPreflightError} onClick={() => void publish()}><CheckCircle2 aria-hidden="true" size={17} /> Publicar nova versão</button><div className="border-t border-zinc-800 pt-3"><h3 className="text-sm font-medium">Versões publicadas</h3><State loading={versions.loading} error={versions.error} empty={!(versions.data?.items || []).length} />{(versions.data?.items || []).map(version => <div key={version.id} className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-zinc-800 p-2"><p className="text-xs text-zinc-400">v{version.version} · {dateText(version.created_at)}</p><button type="button" className={button} disabled={busy} onClick={() => restoreVersion(version)}>Restaurar como rascunho</button></div>)}</div></>}
   </section>;
 }
 
 const layerIconLabels = { none: "Sem ícone", whatsapp: "WhatsApp", phone: "Telefone", email: "E-mail", location: "Localização", website: "Site" } as const;
 
-function LayerEditor({ settings, assets, professional, fonts, busy, selectedId, select, setLayers, remove, editImage }: {
+function LayerEditor({ settings, assets, professional, fonts, busy, selectedId, select, setLayers, remove, editImage, isolateAsset }: {
   settings: BrandSettings; assets: BrandAsset[]; professional: ProfessionalData | null; fonts: BrandFontFamily[]; busy: boolean;
-  selectedId: string; select: (id: string) => void; setLayers: (layers: BrandLayer[]) => void; remove: (id: string) => void; editImage: () => void;
+  selectedId: string; select: (id: string) => void; setLayers: (layers: BrandLayer[]) => void; remove: (id: string) => void; editImage: () => void; isolateAsset: (assetId: string) => Promise<void>;
 }) {
   const layers = settings.layout_layers;
   const selected = layers.find(layer => layer.id === selectedId);
@@ -743,7 +1041,15 @@ function LayerEditor({ settings, assets, professional, fonts, busy, selectedId, 
       {selected.locked && <p className="text-xs text-amber-300">Desbloqueie este elemento na lista para movê-lo ou excluí-lo.</p>}
       <div className="grid grid-cols-2 gap-2"><button type="button" className={button} disabled={busy || selected.locked} onClick={() => moveTo("back")}><ArrowDown aria-hidden="true" size={15} /> Enviar ao fundo</button><button type="button" className={button} disabled={busy || selected.locked} onClick={() => moveTo("front")}><ArrowUp aria-hidden="true" size={15} /> Trazer à frente</button></div>
       <Field label="Nome da camada"><input className={control} maxLength={80} value={selected.label} disabled={busy} onChange={event => update({ label: event.target.value })} /></Field>
-      {selected.kind === "image" && <><div className="grid grid-cols-3 gap-2">{images.map(asset => <button key={asset.id} type="button" className={`overflow-hidden rounded-lg border p-1 ${selected.asset_id === asset.id ? "border-blue-500" : "border-zinc-700"}`} onClick={() => update({ asset_id: asset.id })}><PrivateBrandImage asset={asset} alt={asset.filename} className="aspect-square w-full object-contain" /><span className="mt-1 block truncate text-[10px]">{asset.filename}</span></button>)}</div><button type="button" className={`${button} w-full`} onClick={editImage}>Refazer recorte ou remover fundo</button></>}
+      {selected.kind === "image" && <>
+        <div className="grid grid-cols-3 gap-2">{images.map(asset => <button key={asset.id} type="button" className={`overflow-hidden rounded-lg border p-1 ${selected.asset_id === asset.id ? "border-blue-500" : "border-zinc-700"}`} onClick={() => update({ asset_id: asset.id })}><PrivateBrandImage asset={asset} alt={asset.filename} className="aspect-square w-full object-contain" /><span className="mt-1 block truncate text-[10px]">{asset.filename}</span></button>)}</div>
+        {selected.asset_id && (
+          <button type="button" className={`${button} w-full border-blue-800 text-blue-300 hover:bg-blue-950/40 gap-1.5 text-xs`} disabled={busy} onClick={() => void isolateAsset(selected.asset_id!)}>
+            <Sparkles size={14} className="text-blue-400" /> Remover fundo branco (1 clique)
+          </button>
+        )}
+        <button type="button" className={`${button} w-full`} onClick={editImage}>Refazer recorte ou trocar imagem</button>
+      </>}
       {selected.kind === "text" && <Field label="Texto visual"><textarea className={control} rows={2} maxLength={500} value={selected.text} disabled={busy} onChange={event => update({ text: event.target.value })} /></Field>}
       {selected.kind === "icon_text" && <><Field label="Dado automático"><select className={control} value={selected.binding || ""} disabled={busy} onChange={event => update({ binding: event.target.value as ProfessionalField })}>{PROFESSIONAL_FIELDS.map(field => <option key={field} value={field}>{professionalFieldLabels[field]}{professional?.fields.find(item => item.key === field)?.complete ? "" : " — não preenchido"}</option>)}</select></Field><Field label="Símbolo"><select className={control} value={selected.icon} disabled={busy} onChange={event => update({ icon: event.target.value as BrandLayer["icon"] })}>{Object.entries(layerIconLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>{selected.icon !== "none" && <button type="button" className={button} disabled={busy} onClick={() => update({ icon: "none" })}>Remover somente o símbolo</button>}</>}
       <fieldset className="space-y-2"><legend className="text-sm font-medium">Posição na folha</legend><p className="text-xs text-zinc-400">Escolha uma região ou arraste o elemento diretamente na folha.</p><div className="grid grid-cols-3 gap-2">{([['left', 'Esquerda'], ['center', 'Centro'], ['right', 'Direita']] as const).map(([value, label]) => { const target = value === "left" ? 0 : value === "center" ? (100 - selected.width_percent) / 2 : 100 - selected.width_percent; const active = Math.abs(selected.x_percent - target) < .1; return <button key={value} type="button" className={active ? primary : button} aria-pressed={active} disabled={busy || selected.locked} onClick={() => horizontal(value)}>{label}</button>; })}</div><div className="grid grid-cols-3 gap-2">{([['top', 'Topo'], ['middle', 'Meio'], ['bottom', 'Rodapé']] as const).map(([value, label]) => { const target = value === "top" ? 0 : value === "middle" ? (100 - selected.height_percent) / 2 : 100 - selected.height_percent; const active = Math.abs(selected.y_percent - target) < .1; return <button key={value} type="button" className={active ? primary : button} aria-pressed={active} disabled={busy || selected.locked} onClick={() => vertical(value)}>{label}</button>; })}</div><div className="grid grid-cols-4 gap-2" aria-label="Mover um pouco"><button type="button" className={button} aria-label="Mover um pouco para a esquerda" disabled={busy || selected.locked} onClick={() => update({ x_percent: selected.x_percent - 1 })}>←</button><button type="button" className={button} aria-label="Mover um pouco para cima" disabled={busy || selected.locked} onClick={() => update({ y_percent: selected.y_percent - 1 })}>↑</button><button type="button" className={button} aria-label="Mover um pouco para baixo" disabled={busy || selected.locked} onClick={() => update({ y_percent: selected.y_percent + 1 })}>↓</button><button type="button" className={button} aria-label="Mover um pouco para a direita" disabled={busy || selected.locked} onClick={() => update({ x_percent: selected.x_percent + 1 })}>→</button></div></fieldset>

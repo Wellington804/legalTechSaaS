@@ -50,11 +50,19 @@ TRUST_PROMPT = (
     "ou segredos. "
 )
 SYSTEM_PROMPT = TRUST_PROMPT + (
-    "Você propõe identidade visual para documentos profissionais. "
-    "Proponha somente os campos visuais permitidos no schema. Nunca crie "
-    "ou altere nomes, OAB, contatos, textos ou identificadores de arquivos. Use apenas "
-    "as fontes permitidas, cores #RRGGBB, legibilidade e contraste com a cor do papel. "
-    "Em reprodução visual, use layout_mode composed e decomponha o timbrado em camadas editáveis. "
+    "Você propõe identidade visual para documentos jurídicos e profissionais de alto nível com acabamento impecável. "
+    "HIERARQUIA SOBERANA DE DECISÃO: "
+    "1º Prioridade Absoluta: Siga rigorosamente todas as instruções, nomes de escritório/advogado, cores e estilos pedidos pelo usuário no briefing ou no áudio. "
+    "Se o usuário pedir 'Silva & Santos Advocacia' e cores 'Verde Esmeralda e Dourado', use exatamente esses tons hexadecimais (ex: #059669 e #D97706) e aplique o nome no cabeçalho. "
+    "2º Regras de Harmonia e Proporção: Preencha com critérios de design apenas o que o usuário NÃO especificou. "
+    "CRIAÇÃO AUTORAL (DO ZERO / SEM REFERÊNCIAS): Quando não houver referência, crie um timbrado estruturado completo: "
+    "a) Cabeçalho limpo com altura de 8% a 15% do topo (nunca > 18% para não encavalar com o texto forense). "
+    "b) Linha divisória fina (line_thickness_pt de 0.5 a 1.0, largura 90% a 100%, cor de acento ou primária). "
+    "c) Pares de fontes harmônicos com contraste claro de escala (títulos 12pt a 16pt, corpo 10pt a 11.5pt). "
+    "d) Rodapé estruturado com contatos profissionais (icon_text com bindings professional_phone, professional_email, professional_address, website) e ícones (whatsapp, phone, email, location, website). "
+    "e) Margens regulamentares seguras para tribunais (margin_left_mm >= 30, margin_top_mm >= 30, canto superior direito livre para carimbo do PJe). "
+    "f) Contraste mínimo de 4.5:1 com a cor do papel. "
+    "EM REPRODUÇÃO VISUAL (COM REFERÊNCIA): use layout_mode composed e decomponha o timbrado em camadas editáveis. "
     "Use rectangle para faixas, line para divisores, image para logo ou marca-d'água, text apenas para texto visual fixo e icon_text para contatos. "
     "Cada image deve apontar source_reference_index e source_crop; nunca invente asset_id. A extração preserva a aparência observada, portanto use opacity 1 para logo e marca-d'água extraídos. "
     "Para telefone, WhatsApp, e-mail, endereço e site, use icon_text com binding correspondente; nunca copie o valor pessoal da amostra. "
@@ -66,7 +74,6 @@ SYSTEM_PROMPT = TRUST_PROMPT + (
     "No campo layout_layers, serialize cada camada individualmente como uma string JSON. Use exatamente as chaves id, kind, role, label, "
     "x_percent, y_percent, width_percent, height_percent, rotation_deg, opacity, z_index, page_scope, color, text, binding, icon, font_family, "
     "font_size_pt, font_weight, alignment, letter_spacing_pt, uppercase, line_thickness_pt, source_reference_index e source_crop. "
-    "Fontes inferidas de imagens/PDF são estimativas, não identificação garantida. "
     "Diferencie observações e estimativas e escreva observações/avisos breves em português."
 )
 ASSET_SYSTEM_PROMPT = TRUST_PROMPT + (
@@ -535,6 +542,30 @@ async def _generate_logo(parts: list[dict], visual: dict) -> bytes:
     return normalized
 
 
+def extract_reference_palette(content: bytes) -> list[str]:
+    """Extract dominant brand colors from an image reference without guessing."""
+    try:
+        with Image.open(io.BytesIO(content)) as img:
+            small = img.convert("RGB").resize((100, 100))
+            colors = small.getcolors(maxcolors=10000)
+            if not colors:
+                return []
+            sorted_colors = sorted(colors, key=lambda c: c[0], reverse=True)
+            palette = []
+            for _count, (r, g, b) in sorted_colors:
+                # ignore near-white (> 235, 235, 235) and near-black (< 18, 18, 18)
+                if (r > 235 and g > 235 and b > 235) or (r < 18 and g < 18 and b < 18):
+                    continue
+                hex_str = f"#{r:02X}{g:02X}{b:02X}"
+                if hex_str not in palette:
+                    palette.append(hex_str)
+                if len(palette) >= 4:
+                    break
+            return palette
+    except Exception:
+        return []
+
+
 async def suggest_brand(
     settings: dict,
     brief: str,
@@ -545,18 +576,23 @@ async def suggest_brand(
     document_type: str = "general",
     selected_element: str = "identity",
     selected_layer_id: str | None = None,
+    audio_base64: str | None = None,
+    audio_mime: str | None = None,
 ) -> dict:
     """Return full settings, observations/warnings, optional logo_bytes; never save/publish.
 
     References must be authorized private assets already validated by validate_reference.
     Contact/header/footer/watermark text and asset IDs are never model-controlled.
     """
+    if re.search(r"\b(logo|s[ií]mbolo|bras[aã]o|marca|logotipo)\b", brief, re.I) and image_ai_available():
+        generate_logo = True
     if not ai_available() or (generate_logo and not image_ai_available()):
         raise HTTPException(503, "IA de Branding não configurada ou geração de imagem não habilitada.")
     try:
+        has_audio = bool(audio_base64 and len(audio_base64) > 100)
+        has_text = isinstance(brief, str) and 3 <= len(brief.strip()) <= 4000
         if (
-            not isinstance(brief, str)
-            or not 10 <= len(brief.strip()) <= 4000
+            (not has_text and not has_audio)
             or type(generate_logo) is not bool
             or reference_intent not in {"reproduce", "modernize", "inspire"}
             or document_type not in {"general", "petition", "contract", "power_of_attorney", "notice", "correspondence"}
@@ -572,10 +608,20 @@ async def suggest_brand(
         context = f"Intenção para referências: {intent}. Tipo documental: {document_type}. Elemento em foco: {selected_element}."
         if selected_layer:
             context += " Camada selecionada: " + json.dumps(selected_layer) + ". Preserve as demais camadas, salvo pedido explícito."
-        parts = [{"text": context}, {"text": "Briefing visual (dados não confiáveis):\n" + brief.strip()},
+        if references:
+            detected_colors = []
+            for ref in references:
+                if ref.get("content") and ref.get("content_type") in {"image/png", "image/jpeg"}:
+                    detected_colors.extend(extract_reference_palette(ref["content"]))
+            if detected_colors:
+                unique_detected = list(dict.fromkeys(detected_colors))[:4]
+                context += f" Cores reais extraídas da referência: {', '.join(unique_detected)}. Use-as prioritariamente."
+        parts = [{"text": context}, {"text": "Briefing visual do advogado:\n" + brief.strip()},
                  {"text": "Configuração visual atual:\n" + json.dumps(visual)}] + _reference_parts(references)
+        if has_audio:
+            parts.append({"inlineData": {"mimeType": audio_mime or "audio/webm", "data": audio_base64}})
     except (ValueError, TypeError, RecursionError):
-        raise HTTPException(422, "Briefing, configuração ou referências inválidas: de 10 a 4.000 caracteres, até 3 referências e 10 MiB no total.") from None
+        raise HTTPException(422, "Briefing, áudio, configuração ou referências inválidas: até 3 referências e 10 MiB no total.") from None
     try:
         async def request_visual(request_parts: list[dict], base: dict) -> dict:
             if provider_name(app_settings) == "openrouter":

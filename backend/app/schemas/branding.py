@@ -328,7 +328,9 @@ class BrandUpdate(BrandRevision):
 
 
 class BrandSuggestion(BrandRevision):
-    brief: str = Field(min_length=10, max_length=4000)
+    brief: str = Field(default="", max_length=4000)
+    audio_base64: str | None = Field(default=None, max_length=15_000_000)
+    audio_mime: str | None = Field(default="audio/webm", max_length=64)
     reference_ids: list[str] = Field(default_factory=list, max_length=3)
     reference_pages: dict[str, int] = Field(default_factory=dict, max_length=3)
     consent: bool = False
@@ -337,6 +339,16 @@ class BrandSuggestion(BrandRevision):
     document_type: DocumentType = "general"
     selected_element: EditorElement = "identity"
     selected_layer_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
+
+    @model_validator(mode="after")
+    def valid_brief_or_audio(self):
+        has_text = len(self.brief.strip()) >= 3
+        has_audio = bool(self.audio_base64 and len(self.audio_base64) > 100)
+        if not has_text and not has_audio:
+            raise ValueError("Descreva o que deseja no briefing ou grave uma instrução por áudio.")
+        if not self.brief.strip() and has_audio:
+            self.brief = "Instrução de voz do advogado fornecida via áudio gravado."
+        return self
 
     @field_validator("reference_pages")
     @classmethod
@@ -365,6 +377,7 @@ class BrandAssetExtract(BrandRevision):
 
 class BrandPreview(BrandRevision):
     document_type: DocumentType = "general"
+    format: Literal["pdf", "docx"] = "pdf"
 
 
 class BrandDuplicate(BrandRevision):
