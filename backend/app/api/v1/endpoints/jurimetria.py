@@ -79,11 +79,12 @@ async def analyze(
     db: AsyncSession = Depends(get_db),
 ):
     require_role(user, ALLOWED_ROLES)
-    await ensure_tenant_write_access(db, user.tenant_id)
+    tenant_id, user_id = user.tenant_id, user.id
+    await ensure_tenant_write_access(db, tenant_id)
     fingerprint = jurimetry_service.request_fingerprint(body)
     request_id = str(body.request_id)
     if body.persist_snapshot:
-        existing = await _existing_snapshot(db, user.tenant_id, request_id)
+        existing = await _existing_snapshot(db, tenant_id, request_id)
         if existing:
             return _idempotent_response(existing, fingerprint)
     if not settings.DATAJUD_ENABLED or not settings.DATAJUD_API_KEY:
@@ -91,8 +92,8 @@ async def analyze(
 
     # Release the tenant-scoped database connection while waiting on the external provider.
     await db.rollback()
-    await _reserve_inflight_query(user.tenant_id, request_id)
-    await reserve_request(user.tenant_id, "datajud", 30, 3600)
+    await _reserve_inflight_query(tenant_id, request_id)
+    await reserve_request(tenant_id, "datajud", 30, 3600)
     try:
         sample = await jurimetry_service.DataJudJurimetryProvider(settings.DATAJUD_API_KEY).query(body)
         response = jurimetry_service.analysis_response(body, sample)
@@ -101,13 +102,13 @@ async def analyze(
     except JudicialProviderError as exc:
         raise HTTPException(502, "Fonte judicial indisponível ou resposta inválida. Nenhuma análise foi salva.") from exc
 
-    await _set_tenant_context(db, user.tenant_id)
+    await _set_tenant_context(db, tenant_id)
     snapshot = None
     if body.persist_snapshot:
         snapshot = jurimetry_service.snapshot_from_response(
             response,
-            tenant_id=user.tenant_id,
-            user_id=user.id,
+            tenant_id=tenant_id,
+            user_id=user_id,
             fingerprint=fingerprint,
         )
         try:
@@ -115,8 +116,8 @@ async def analyze(
                 db.add(snapshot)
                 await db.flush()
         except IntegrityError:
-            await _set_tenant_context(db, user.tenant_id)
-            existing = await _existing_snapshot(db, user.tenant_id, request_id)
+            await _set_tenant_context(db, tenant_id)
+            existing = await _existing_snapshot(db, tenant_id, request_id)
             if not existing:
                 raise
             return _idempotent_response(existing, fingerprint)
@@ -125,8 +126,8 @@ async def analyze(
 
     await AuditService.log_action(
         db,
-        user.tenant_id,
-        user.id,
+        tenant_id,
+        user_id,
         "DATAJUD_JURIMETRY_QUERIED",
         "jurimetry_snapshots" if snapshot else "jurimetry_queries",
         snapshot.id if snapshot else request_id,

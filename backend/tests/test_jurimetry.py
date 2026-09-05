@@ -193,6 +193,39 @@ class JurimetryTests(unittest.TestCase):
             "legaltech:jurimetry:inflight:tenant-a:request-a", "1", ex=120, nx=True
         )
 
+    def test_authenticated_ids_are_captured_before_transaction_release(self):
+        async def run():
+            db = FakeDatabase()
+
+            class ExpiringUser:
+                role = "lawyer"
+
+                @property
+                def tenant_id(self):
+                    if db.rollbacks:
+                        raise AssertionError("tenant_id was read after rollback")
+                    return "tenant-a"
+
+                @property
+                def id(self):
+                    if db.rollbacks:
+                        raise AssertionError("user id was read after rollback")
+                    return "user-a"
+
+            with (
+                patch.object(jurimetria, "settings", SimpleNamespace(DATAJUD_ENABLED=True, DATAJUD_API_KEY="test-key")),
+                patch.object(jurimetria, "ensure_tenant_write_access", AsyncMock()),
+                patch.object(jurimetria, "_reserve_inflight_query", AsyncMock()),
+                patch.object(jurimetria, "reserve_request", AsyncMock()),
+                patch.object(jurimetry.DataJudJurimetryProvider, "query", AsyncMock(return_value=sample())),
+                patch.object(jurimetria, "_set_tenant_context", AsyncMock()),
+                patch.object(jurimetria.AuditService, "log_action", AsyncMock()),
+            ):
+                return await jurimetria.analyze(analysis_request(), ExpiringUser(), db)
+
+        result = asyncio.run(run())
+        self.assertEqual(result.sample_size, 0)
+
     def test_persisted_snapshot_is_tenant_scoped_audited_and_idempotent(self):
         async def run():
             db = FakeDatabase()
